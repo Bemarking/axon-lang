@@ -120,6 +120,9 @@ pub fn check_proof(proof: &ProofTerm, ir: &IRProgram) -> CheckOutcome {
         (PropertyClass::UpstreamProjectionSoundness, Witness::UpstreamProjectionSoundness(w)) => {
             check_upstream_projection_soundness(w, ir)
         }
+        (PropertyClass::CorsPolicyConsistency, Witness::CorsPolicyConsistency(w)) => {
+            check_cors_policy_consistency(w, ir)
+        }
         _ => CheckOutcome::UnknownProperty,
     }
 }
@@ -917,6 +920,60 @@ fn check_channel_egress_soundness(
                  persistence is '{}' — signed egress requires `persistence: \
                  persistent_axonstore` (axon-T848)",
                 actual.channel_name, actual.shield_ref, actual.derived_sign, actual.persistence
+            ),
+        };
+    }
+    CheckOutcome::Verified
+}
+
+/// §83.c — independent checker for [`PropertyClass::CorsPolicyConsistency`].
+/// Re-derives the whole-program witness and rejects on ANY of: a forged/
+/// stale witness, an unresolved `cors:` reference (T856), a wildcard+
+/// credentials violation (T853), or a cross-method path conflict (T857).
+fn check_cors_policy_consistency(
+    claimed: &super::proof_term::CorsPolicyConsistencyWitness,
+    ir: &IRProgram,
+) -> CheckOutcome {
+    let actual = match super::generate::derive_cors_policy_consistency_witness(ir) {
+        Some(w) => w,
+        None => {
+            return CheckOutcome::Refuted {
+                reason: "no cors contract exists in this artifact (no `cors` declarations, \
+                         no `cors:` references) — forged or stale proof"
+                    .to_string(),
+            }
+        }
+    };
+    if actual != *claimed {
+        return CheckOutcome::Refuted {
+            reason: "witness disagrees with artifact re-derivation (forged or stale proof)"
+                .to_string(),
+        };
+    }
+    if !actual.all_references_resolve {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axon-T856 an `axonendpoint.cors:` reference does not resolve to a declared \
+                 `cors` — declared: {:?}, referenced: {:?}",
+                actual.declared_cors_names, actual.endpoint_cors_refs
+            ),
+        };
+    }
+    if !actual.wildcard_credential_violations.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axon-T853 cors declaration(s) combine an any-origin `allow_origins` with \
+                 `allow_credentials: true` (CORS spec violation): {:?}",
+                actual.wildcard_credential_violations
+            ),
+        };
+    }
+    if !actual.cross_method_conflicts.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axon-T857 axonendpoints sharing a path disagree on `cors:` \
+                 (endpoint_a, endpoint_b) pairs: {:?}",
+                actual.cross_method_conflicts
             ),
         };
     }

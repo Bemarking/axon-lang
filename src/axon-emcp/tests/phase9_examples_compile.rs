@@ -48,8 +48,10 @@ const EXPECTED: &[(&str, ExampleTopic)] = &[
     // Agents (2)
     ("agent_react", ExampleTopic::Agents),
     ("reflex_to_immune", ExampleTopic::Agents),
-    // Endpoints (1)
+    // Endpoints (2)
     ("axonendpoint_rest", ExampleTopic::Endpoints),
+    // §Fase 83.a — the named, referenced browser-origin policy.
+    ("cors_named_origin_policy", ExampleTopic::Endpoints),
     // Memory (1)
     ("memory_scopes", ExampleTopic::Memory),
     // Validation (2)

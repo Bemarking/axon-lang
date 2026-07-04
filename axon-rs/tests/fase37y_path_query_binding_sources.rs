@@ -507,7 +507,10 @@ fn s_static_grep_surface_fields_and_parser_hook_are_present() {
 
     let server_src = include_str!("../src/axon_server.rs");
     assert!(
-        server_src.contains("pub(crate) fn match_path_template("),
+        // §Fase 78 (Kivi brief #54) promoted this from `pub(crate)` to
+        // `pub` so the enterprise `flow_dispatch::DispatchTable` reuses
+        // this matcher instead of forking a parallel implementation.
+        server_src.contains("pub fn match_path_template("),
         "§37.y §S — `match_path_template` helper must exist in \
          `axon-rs/src/axon_server.rs`. This is the template-matching \
          scanner backing the dynamic-route dispatcher's two-step \

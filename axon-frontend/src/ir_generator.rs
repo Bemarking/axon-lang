@@ -297,6 +297,7 @@ impl IRGenerator {
             Declaration::Topology(n) => ir.topologies.push(self.visit_topology(n)),
             Declaration::Socket(n) => ir.sockets.push(self.visit_socket(n)),
             Declaration::Upstream(n) => ir.upstreams.push(self.visit_upstream(n)),
+            Declaration::Cors(n) => ir.cors_policies.push(self.visit_cors(n)),
             // §Fase 80.g — `voice` never reaches the IR: the parser already
             // expanded it into ordinary ots/session/socket/upstream
             // declarations (in this same program), and THOSE are the
@@ -1475,6 +1476,9 @@ impl IRGenerator {
             // them. Direct clone; IR JSON omits the field when empty
             // (D5 backwards-compat).
             requires_capabilities: n.requires_capabilities.clone(),
+            // §Fase 83.a — the `cors: <Name>` reference. Direct clone;
+            // IR JSON omits the field when empty (D83.5 / zero IR-SHA drift).
+            cors_ref: n.cors_ref.clone(),
         }
     }
 
@@ -1904,6 +1908,25 @@ impl IRGenerator {
             overflow: n.overflow.clone(),
             backpressure_credit: n.backpressure_credit,
             preset: n.preset.clone(),
+        }
+    }
+
+    /// §Fase 83.a — lower a `cors Name { … }` declaration. Field-shape
+    /// checks (wildcard+credentials T853, origin-glob T854, closed-method
+    /// T855) already ran at type-check time — lowering is a pure
+    /// shape-translation, no validation logic here.
+    fn visit_cors(&self, n: &crate::ast::CorsDefinition) -> IRCors {
+        IRCors {
+            node_type: "cors",
+            source_line: n.loc.line,
+            source_column: n.loc.column,
+            name: n.name.clone(),
+            allow_origins: n.allow_origins.clone(),
+            allow_methods: n.allow_methods.clone(),
+            allow_headers: n.allow_headers.clone(),
+            allow_credentials: n.allow_credentials,
+            max_age: n.max_age.clone(),
+            expose_headers: n.expose_headers.clone(),
         }
     }
 

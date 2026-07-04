@@ -548,6 +548,7 @@ mod tests {
             observables: vec![],
             witnesses: vec![],
             upstreams: vec![],
+            cors_policies: vec![],
             effects: vec![],
         };
 
@@ -619,6 +620,7 @@ mod tests {
             observables: vec![],
             witnesses: vec![],
             upstreams: vec![],
+            cors_policies: vec![],
             effects: vec![],
         };
 
@@ -692,6 +694,7 @@ mod tests {
             observables: vec![],
             witnesses: vec![],
             upstreams: vec![],
+            cors_policies: vec![],
             effects: vec![],
         };
 

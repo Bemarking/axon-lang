@@ -1241,7 +1241,8 @@ Body prose.
         // (`channel` / `emit` / `publish` / `discover`, Kivi brief #51 §B.2).
         // §Fase 80.b: 54 → 55 with `upstream` (the outbound vendor connection).
         // §Fase 80.g: 55 → 56 with `voice` (the inspectable voice-agent sugar).
-        assert_eq!(s.total, 56);
+        // §Fase 83: 56 → 57 with `cors` (the named browser-origin policy).
+        assert_eq!(s.total, 57);
     }
 
     /// §Phase 5 — every MCP prompt shipped under
@@ -1302,6 +1303,9 @@ Body prose.
             "content_moderation", "knowledge_extraction",
             "compliance_monitoring", "recruitment",
             "education", "financial_advisor", "data_pipeline",
+            // §Fase 80.h — the blessed voice-preset template (the whole
+            // program is one `voice` declaration).
+            "voice_preset",
         ];
         for slug in expected {
             let t = cat
@@ -1312,10 +1316,13 @@ Body prose.
                 !t.source.is_empty(),
                 "template `{slug}`: empty source — compose would return nothing"
             );
-            // Every template carries at least one `flow` declaration —
-            // the canonical agent-facing surface.
+            // Every template carries at least one `flow` declaration — the
+            // canonical agent-facing surface — EXCEPT `voice_preset`
+            // (§Fase 80.g/h), whose whole program is one `voice`
+            // declaration that desugars to a flow-shaped session; `axon
+            // desugar` is how an adopter inspects the expansion.
             assert!(
-                t.source.contains("flow "),
+                t.source.contains("flow ") || t.source.contains("voice "),
                 "template `{slug}`: missing `flow` declaration"
             );
         }

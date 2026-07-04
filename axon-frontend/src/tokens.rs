@@ -185,6 +185,13 @@ pub enum TokenType {
     // vendor legs. Under 20 lines to a working phone agent for a blessed
     // preset; never a black box.
     Voice,
+    // `cors` (§Fase 83.a) — a named, referenced origin-policy declaration
+    // (mirrors `shield`'s shape exactly), resolved per `axonendpoint.cors:`
+    // reference. Makes the browser-facing origin policy a property of the
+    // ENDPOINT, not a single process-wide knob — the only shape that fits
+    // a multi-tenant deploy where different bundles need different origins
+    // for a path with the same name.
+    Cors,
     // `quant` as a cognitive primitive (§Fase 51.a) — a flow-body block that
     // projects an MEK semantic tensor into a complex Hilbert space, evolves it
     // under a variational / kernel-feature map, and collapses back to classical
@@ -515,6 +522,8 @@ pub fn keyword_type(word: &str) -> TokenType {
         "upstream" => TokenType::Upstream,
         // `voice` (§Fase 80.g) — the inspectable voice-agent sugar.
         "voice" => TokenType::Voice,
+        // `cors` (§Fase 83.a) — the named origin-policy declaration.
+        "cors" => TokenType::Cors,
         // `quant` as a cognitive primitive (§Fase 51.a) — flow-body block.
         "quant" => TokenType::Quant,
         // `observable` (§Fase 51.c.2) — top-level Pauli-sum declaration.
@@ -611,6 +620,8 @@ pub fn is_declaration_keyword(tt: &TokenType) -> bool {
             | TokenType::Upstream
             // §Fase 80.g — the voice-agent simplicity layer
             | TokenType::Voice
+            // §Fase 83.a — the named origin-policy declaration
+            | TokenType::Cors
             // §Fase 51.c.2 — Pauli-sum observable declaration
             | TokenType::Observable
             // §Fase 69.a — Advantage-Witness declaration

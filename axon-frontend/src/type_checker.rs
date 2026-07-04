@@ -203,6 +203,27 @@ fn valid_list(set: &[&str]) -> String {
     set.join(", ")
 }
 
+/// §Fase 83.c (`axon-T854`) — is `origin` a legal CORS origin glob? Three
+/// accepted shapes, closed/decidable by construction (D5 — no full regex):
+/// (1) the literal any-origin sentinel `"*"` (validity of PAIRING it with
+/// credentials is a separate check, `axon-T853`); (2) an exact origin with
+/// no `*` at all; (3) exactly one `*` as the leading host label immediately
+/// after `scheme://`, e.g. `"https://*.kivi.io"`. Anything else (multiple
+/// wildcards, a wildcard mid-host, a wildcard with no scheme) is invalid.
+fn is_valid_origin_glob(origin: &str) -> bool {
+    if origin == "*" {
+        return true;
+    }
+    match origin.matches('*').count() {
+        0 => true,
+        1 => match origin.find("://") {
+            Some(scheme_end) => origin[scheme_end + 3..].starts_with("*."),
+            None => false,
+        },
+        _ => false,
+    }
+}
+
 /// §Fase 71.e — is `s` a real ISO `YYYY-MM-DD` calendar date? Pure + total (no
 /// chrono — the frontend is zero-dependency): exact `dddd-dd-dd` shape, month
 /// 1..12, day 1..days-in-month with a proleptic-Gregorian leap-year rule. The
@@ -876,6 +897,9 @@ impl<'a> TypeChecker<'a> {
         // validation so the augmented provenance catalogs are populated.
         self.collect_and_validate_extensions(&self.program.declarations);
         self.check_declarations(&self.program.declarations);
+        // §Fase 83.c — cross-declaration pass (needs every axonendpoint's
+        // final `path`/`cors_ref`, so it runs after the per-declaration walk).
+        self.check_cors_cross_method_consistency(&self.program.declarations);
         self.errors
     }
 
@@ -894,6 +918,8 @@ impl<'a> TypeChecker<'a> {
         // §Fase 53.c — see `check`.
         self.collect_and_validate_extensions(&self.program.declarations);
         self.check_declarations(&self.program.declarations);
+        // §Fase 83.c — see `check`.
+        self.check_cors_cross_method_consistency(&self.program.declarations);
         (self.errors, self.warnings)
     }
 
@@ -1286,6 +1312,11 @@ impl<'a> TypeChecker<'a> {
                 Declaration::Voice(n) => {
                     registrations.push((n.name.clone(), "voice".into(), n.loc.line, n.loc.clone()));
                 }
+                // §Fase 83.a — register the named origin-policy declaration
+                // so an `axonendpoint.cors:` reference resolves to it.
+                Declaration::Cors(n) => {
+                    registrations.push((n.name.clone(), "cors".into(), n.loc.line, n.loc.clone()));
+                }
                 // §Fase 51.c.2 — register the Pauli-sum observable so a
                 // `quant(observable: <Name>)` reference resolves to it.
                 Declaration::Observable(n) => {
@@ -1481,6 +1512,7 @@ impl<'a> TypeChecker<'a> {
                 Declaration::Socket(n) => self.check_socket(n),
                 Declaration::Upstream(n) => self.check_upstream(n),
                 Declaration::Voice(n) => self.check_voice(n),
+                Declaration::Cors(n) => self.check_cors(n),
                 Declaration::Observable(n) => self.check_observable(n),
                 Declaration::Witness(n) => self.check_witness(n),
                 Declaration::Immune(n) => self.check_immune(n),
@@ -2894,6 +2926,115 @@ impl<'a> TypeChecker<'a> {
                 ),
                 &node.loc,
             );
+        }
+    }
+
+    /// §Fase 83.c — validate one `cors { … }` declaration's own fields
+    /// (cross-declaration checks — the undefined-reference check on
+    /// `axonendpoint.cors:` and the cross-method path-consistency check —
+    /// live in [`Self::check_axonendpoint`] and
+    /// [`Self::check_cors_cross_method_consistency`] respectively).
+    fn check_cors(&mut self, node: &CorsDefinition) {
+        // axon-T854 — origin glob shape: exact literal, or a single
+        // leading-wildcard host label. No full regex (D5 — closed/decidable).
+        for origin in &node.allow_origins {
+            if !is_valid_origin_glob(origin) {
+                self.emit(
+                    format!(
+                        "axon-T854 invalid origin glob '{}' in cors '{}' — must be an exact \
+                         origin or a single leading wildcard host label (e.g. \
+                         \"https://*.kivi.io\"), not a full pattern",
+                        origin, node.name
+                    ),
+                    &node.loc,
+                );
+            }
+        }
+
+        // axon-T853 — the CORS spec forbids any-origin + credentials;
+        // browsers already reject this combination silently at runtime.
+        // Caught here, before deploy, with the spec rule named (D83.2 —
+        // the flagship diagnostic this fase exists to catch).
+        let any_origin = node.allow_origins.iter().any(|o| o == "*");
+        if any_origin && node.allow_credentials {
+            self.emit(
+                format!(
+                    "axon-T853 cors '{}' combines an any-origin `allow_origins: [\"*\"]` with \
+                     `allow_credentials: true` — the CORS specification forbids this pairing \
+                     (a browser silently REJECTS the credentialed response); narrow \
+                     `allow_origins` to explicit origins or drop `allow_credentials`",
+                    node.name
+                ),
+                &node.loc,
+            );
+        }
+
+        // axon-T855 — allow_methods reuses the closed axonendpoint method
+        // catalog (GET/POST/PUT/PATCH/DELETE), not a free string.
+        for method in &node.allow_methods {
+            let upper = method.to_uppercase();
+            if !is_valid(&upper, crate::parser::AXONENDPOINT_METHOD_VALUES) {
+                self.emit(
+                    format!(
+                        "axon-T855 unknown method '{}' in cors '{}'. Valid: {}",
+                        method,
+                        node.name,
+                        valid_list(crate::parser::AXONENDPOINT_METHOD_VALUES)
+                    ),
+                    &node.loc,
+                );
+            }
+        }
+    }
+
+    /// §Fase 83.c (`axon-T857`, D83.4) — every `axonendpoint` sharing the
+    /// same `path:` (differing only by `method:`) must reference the SAME
+    /// `cors:` declaration, or all leave it unset. A browser's preflight is
+    /// per-PATH, not per-method — divergent policies on the same path are
+    /// inherently ambiguous (whose `max_age` wins? whose `expose_headers`?);
+    /// v1 requires consistency instead of a merged/union preflight (§5).
+    /// Cross-declaration, so it runs AFTER the per-declaration walk, once
+    /// every endpoint's final `path`/`cors_ref` is known.
+    fn check_cors_cross_method_consistency(&mut self, decls: &[Declaration]) {
+        let mut seen: std::collections::HashMap<String, (String, String)> =
+            std::collections::HashMap::new();
+        for decl in decls {
+            let Declaration::AxonEndpoint(ep) = decl else {
+                continue;
+            };
+            if ep.path.is_empty() {
+                continue;
+            }
+            match seen.get(&ep.path) {
+                None => {
+                    seen.insert(ep.path.clone(), (ep.cors_ref.clone(), ep.name.clone()));
+                }
+                Some((first_cors_ref, first_name)) if first_cors_ref != &ep.cors_ref => {
+                    fn describe(r: &str) -> &str {
+                        if r.is_empty() {
+                            "<none>"
+                        } else {
+                            r
+                        }
+                    }
+                    self.emit(
+                        format!(
+                            "axon-T857 axonendpoint '{}' and '{}' share path '{}' but declare \
+                             different `cors:` references ('{}' vs '{}') — a browser's \
+                             preflight is per-path, not per-method; every axonendpoint on the \
+                             same path must reference the SAME cors declaration (or all leave \
+                             it unset)",
+                            first_name,
+                            ep.name,
+                            ep.path,
+                            describe(first_cors_ref),
+                            describe(&ep.cors_ref),
+                        ),
+                        &ep.loc,
+                    );
+                }
+                Some(_) => {}
+            }
         }
     }
 
@@ -5500,6 +5641,28 @@ impl<'a> TypeChecker<'a> {
                     format!(
                         "'{}' is a {}, not a shield (referenced in axonendpoint '{}')",
                         node.shield_ref, sym.kind, node.name
+                    ),
+                    &node.loc,
+                ),
+                _ => {}
+            }
+        }
+
+        // §Fase 83.c — cors reference (axon-T856). Mirrors the shield
+        // reference check exactly, `"cors"` swapped in for `"shield"`.
+        if !node.cors_ref.is_empty() {
+            match self.symbols.lookup(&node.cors_ref) {
+                None => self.emit(
+                    format!(
+                        "axon-T856 undefined cors '{}' in axonendpoint '{}'",
+                        node.cors_ref, node.name
+                    ),
+                    &node.loc,
+                ),
+                Some(sym) if sym.kind != "cors" => self.emit(
+                    format!(
+                        "axon-T856 '{}' is a {}, not a cors (referenced in axonendpoint '{}')",
+                        node.cors_ref, sym.kind, node.name
                     ),
                     &node.loc,
                 ),

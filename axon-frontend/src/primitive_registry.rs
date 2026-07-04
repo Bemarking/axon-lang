@@ -530,6 +530,14 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         doc_status: DocStatus::Documented,
     },
     PrimitiveInfo {
+        name: "cors",
+        category: "operators",
+        top_level: true,
+        since: "Fase 83 (v2.38.0)",
+        summary: "A named, referenced browser-origin policy — `axonendpoint.cors:` resolves it dynamically per tenant at the enterprise HTTP edge, secure by default when absent.",
+        doc_status: DocStatus::Documented,
+    },
+    PrimitiveInfo {
         name: "mandate",
         category: "operators",
         top_level: true,
@@ -696,9 +704,11 @@ mod tests {
         // §Fase 80.b added `upstream` (the outbound vendor connection,
         // the client dual of `socket`) → 54→55.
         // §Fase 80.g added `voice` (the inspectable voice-agent sugar) → 55→56.
+        // §Fase 83 added `cors` (the named, referenced browser-origin
+        // policy) → 56→57.
         assert_eq!(
             PRIMITIVE_REGISTRY.len(),
-            56,
+            57,
             "PRIMITIVE_REGISTRY count drift — add/remove the primitive intentionally + update this assertion"
         );
     }
@@ -793,6 +803,8 @@ mod tests {
             // §Fase 80.b/80.g — the outbound vendor connection + the
             // inspectable voice-agent sugar.
             "upstream", "voice",
+            // §Fase 83 — the named, referenced browser-origin policy.
+            "cors",
         ]
         .into_iter()
         .collect();
@@ -812,13 +824,14 @@ mod tests {
         // §Fase 77: 50 → 54 with the π-calc channel quartet
         // (`channel` / `emit` / `publish` / `discover`).
         // §Fase 80.b: 54 → 55 with `upstream`; §80.g: 55 → 56 with `voice`.
-        assert_eq!(s.total, 56);
+        // §Fase 83: 56 → 57 with `cors`.
+        assert_eq!(s.total, 57);
         assert_eq!(s.documented + s.pending, s.total);
         // §Fase 6.d achieves **100% coverage** — every entry in the
         // registry has a `.md` and a passing drift-gated canonical
         // program. Pending count is 0; any future drop is a
         // regression the gate catches.
-        assert_eq!(s.documented, 56);
+        assert_eq!(s.documented, 57);
         assert_eq!(s.pending, 0);
     }
 

@@ -212,6 +212,16 @@ pub enum PropertyClass {
     /// vendor's side is defended + witnessed, never claimed). Compile-time
     /// mirror: the §80.c type-checker (T849/T850/T851).
     UpstreamProjectionSoundness,
+    /// §Fase 83 — `CorsPolicyConsistency`: for every `axonendpoint.cors:`
+    /// reference in the program, the referenced `cors` declaration exists;
+    /// no `cors` declaration combines an any-origin `allow_origins` with
+    /// `allow_credentials: true` (the CORS spec's own forbidden pairing);
+    /// and no two `axonendpoint`s sharing a `path:` reference different (or
+    /// inconsistently unset/set) `cors:` declarations. Re-derives the same
+    /// closed checks the §83.c type-checker already ran (T853/T856/T857) —
+    /// belt-and-suspenders against a stored IR whose compile-time proof has
+    /// gone stale (a hand-edited or version-drifted deployment).
+    CorsPolicyConsistency,
 }
 
 /// §72.f — the closed period catalog for `budget` quotas. The checker's own
@@ -256,6 +266,7 @@ impl PropertyClass {
             PropertyClass::InterruptibleSessionSoundness => "interruptible_session_soundness",
             PropertyClass::ParkedResidualSoundness => "parked_residual_soundness",
             PropertyClass::UpstreamProjectionSoundness => "upstream_projection_soundness",
+            PropertyClass::CorsPolicyConsistency => "cors_policy_consistency",
         }
     }
 }
@@ -704,6 +715,35 @@ pub struct UpstreamProjectionSoundnessWitness {
     pub config_keys_valid: bool,
 }
 
+/// §83.c — witness for [`PropertyClass::CorsPolicyConsistency`].
+///
+/// Unlike most witnesses (one channel / socket / upstream), this property is
+/// inherently PROGRAM-WIDE: "every reference resolves" and "no two endpoints
+/// on one path disagree" are statements about the whole declaration set, not
+/// one declaration. The checker RE-DERIVES every field from the IR's
+/// `cors_policies` + `endpoints` and rejects the proof if the witness
+/// disagrees (D51.2). A verifying proof has `all_references_resolve == true`
+/// and both violation lists empty.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CorsPolicyConsistencyWitness {
+    /// Every `cors` declaration's name, source order.
+    pub declared_cors_names: Vec<String>,
+    /// `(endpoint_name, cors_ref)` for every endpoint with a non-empty
+    /// `cors_ref`, source order.
+    pub endpoint_cors_refs: Vec<(String, String)>,
+    /// Every `endpoint_cors_refs` entry's `cors_ref` is in
+    /// `declared_cors_names` (`axon-T856`, re-derived).
+    pub all_references_resolve: bool,
+    /// Names of `cors` declarations combining an any-origin `allow_origins`
+    /// with `allow_credentials: true` — the CORS spec's forbidden pairing
+    /// (`axon-T853`, re-derived). Empty for a verifying proof.
+    pub wildcard_credential_violations: Vec<String>,
+    /// `(first_endpoint_name, conflicting_endpoint_name)` pairs sharing a
+    /// `path` but disagreeing on `cors_ref` (`axon-T857`, re-derived). Empty
+    /// for a verifying proof.
+    pub cross_method_conflicts: Vec<(String, String)>,
+}
+
 /// The property-specific witness. Tagged so the JSON is self-describing
 /// + a future class adds a variant without ambiguity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -724,6 +764,7 @@ pub enum Witness {
     InterruptibleSessionSoundness(InterruptibleSessionSoundnessWitness),
     ParkedResidualSoundness(ParkedResidualSoundnessWitness),
     UpstreamProjectionSoundness(UpstreamProjectionSoundnessWitness),
+    CorsPolicyConsistency(CorsPolicyConsistencyWitness),
 }
 
 impl Witness {
@@ -753,6 +794,8 @@ impl Witness {
             Witness::InterruptibleSessionSoundness(w) => &w.session_name,
             Witness::ParkedResidualSoundness(w) => &w.socket_name,
             Witness::UpstreamProjectionSoundness(w) => &w.upstream_name,
+            // §83.c — program-wide property, no single named subject.
+            Witness::CorsPolicyConsistency(_) => "<program>",
         }
     }
 }

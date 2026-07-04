@@ -17,7 +17,8 @@ use super::proof_term::{
     AggregateSoundnessWitness, CallSoundnessCertificate, CapabilityContainmentWitness,
     CapabilityIsolationWitness,
     ChannelEgressSoundnessWitness,
-    ChannelDeliverySoundnessWitness, ComplianceCoverageWitness, EffectBudgetedWitness,
+    ChannelDeliverySoundnessWitness, ComplianceCoverageWitness, CorsPolicyConsistencyWitness,
+    EffectBudgetedWitness,
     EffectRowSoundnessWitness, InterruptibleSessionSoundnessWitness, JsonShapeSoundnessWitness,
     ParkedResidualSoundnessWitness, ProofTerm, PropertyClass,
     ResourceBoundsWitness, ShieldHaltGuaranteeWitness, ToolCallSoundnessWitness,
@@ -1700,6 +1701,75 @@ pub fn generate_call_soundness_certificate(
     })
 }
 
+// ── §Fase 83.c — CorsPolicyConsistency ───────────────────────────────────────
+
+/// §83.c — re-derive the whole-program CORS witness from `ir.cors_policies`
+/// + `ir.endpoints`. "No contract → no proof" (the standing convention): a
+/// program with no `cors` declarations AND no `cors_ref` anywhere returns
+/// `None` — there is nothing to certify.
+pub fn derive_cors_policy_consistency_witness(ir: &IRProgram) -> Option<CorsPolicyConsistencyWitness> {
+    if ir.cors_policies.is_empty() && ir.endpoints.iter().all(|e| e.cors_ref.is_empty()) {
+        return None;
+    }
+    let declared_cors_names: Vec<String> =
+        ir.cors_policies.iter().map(|c| c.name.clone()).collect();
+    let endpoint_cors_refs: Vec<(String, String)> = ir
+        .endpoints
+        .iter()
+        .filter(|e| !e.cors_ref.is_empty())
+        .map(|e| (e.name.clone(), e.cors_ref.clone()))
+        .collect();
+    let all_references_resolve = endpoint_cors_refs
+        .iter()
+        .all(|(_, r)| declared_cors_names.contains(r));
+    let wildcard_credential_violations: Vec<String> = ir
+        .cors_policies
+        .iter()
+        .filter(|c| c.allow_credentials && c.allow_origins.iter().any(|o| o == "*"))
+        .map(|c| c.name.clone())
+        .collect();
+    // Cross-method path consistency: same shape as the §83.c type-checker
+    // pass (axon-T857), re-derived from the compiled IR instead of the AST.
+    let mut by_path: std::collections::HashMap<&str, (&str, &str)> = std::collections::HashMap::new();
+    let mut cross_method_conflicts: Vec<(String, String)> = Vec::new();
+    for ep in &ir.endpoints {
+        if ep.path.is_empty() {
+            continue;
+        }
+        match by_path.get(ep.path.as_str()) {
+            None => {
+                by_path.insert(ep.path.as_str(), (ep.name.as_str(), ep.cors_ref.as_str()));
+            }
+            Some((first_name, first_ref)) => {
+                if *first_ref != ep.cors_ref {
+                    cross_method_conflicts.push((first_name.to_string(), ep.name.clone()));
+                }
+            }
+        }
+    }
+    Some(CorsPolicyConsistencyWitness {
+        declared_cors_names,
+        endpoint_cors_refs,
+        all_references_resolve,
+        wildcard_credential_violations,
+        cross_method_conflicts,
+    })
+}
+
+/// §83.c — generate the (at most one) CorsPolicyConsistency proof for `ir`.
+/// Program-wide, so this is a Vec of length 0 or 1, unlike most generators.
+pub fn generate_cors_policy_consistency_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm> {
+    match derive_cors_policy_consistency_witness(ir) {
+        Some(witness) => vec![ProofTerm {
+            property: PropertyClass::CorsPolicyConsistency,
+            artifact_digest: artifact_digest(ir),
+            witness: Witness::CorsPolicyConsistency(witness),
+            axon_version: axon_version.to_string(),
+        }],
+        None => Vec::new(),
+    }
+}
+
 /// §51.f — generate proofs across ALL property classes for `ir`. The
 /// `axon pcc prove` entry point. Concatenates every per-class
 /// generator (compliance / effects / capability-gate / resources /
@@ -1723,5 +1793,6 @@ pub fn generate_all_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm>
     proofs.extend(generate_interruptible_session_soundness_proofs(ir, axon_version));
     proofs.extend(generate_parked_residual_soundness_proofs(ir, axon_version));
     proofs.extend(generate_upstream_projection_soundness_proofs(ir, axon_version));
+    proofs.extend(generate_cors_policy_consistency_proofs(ir, axon_version));
     proofs
 }

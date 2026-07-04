@@ -141,6 +141,10 @@ pub enum Declaration {
     /// AST for provenance + §80.c validation (T852); the IR carries only
     /// the expansion — sugar the compliance reviewer can always see through.
     Voice(VoiceDefinition),
+    /// §Fase 83.a — a named, referenced browser-origin policy (mirrors
+    /// `shield`'s shape exactly), resolved per `axonendpoint.cors:`
+    /// reference (docs/fase/fase_83_cors_first_class_endpoint_property.md).
+    Cors(CorsDefinition),
     /// §Fase 51.c.2 — a Pauli-sum observable `M = Σ cₖ Pₖ` that a `quant`
     /// block measures against (paper §3.2; plan D5).
     Observable(ObservableDefinition),
@@ -525,6 +529,59 @@ pub struct VoiceDefinition {
     /// Optional references wired for the flow layer (validated to exist).
     pub persona: Option<String>,
     pub context: Option<String>,
+    pub loc: Loc,
+    /// Fase 14.b — leading comment trivia.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
+}
+
+/// `cors Name { allow_origins:, allow_methods:, allow_headers:,
+/// allow_credentials:, max_age:, expose_headers: }`
+///
+/// §Fase 83.a — a named, referenced origin-policy declaration, mirroring
+/// `shield`'s shape exactly: declared once, referenced from any number of
+/// `axonendpoint`s via `cors: <Name>` (`AxonEndpointDefinition::cors_ref`).
+/// Makes the browser-facing origin policy a property of the ENDPOINT,
+/// resolved per the tenant's live deployed bundle — the shape a single
+/// process-wide CORS knob (the market-standard pattern) cannot express for
+/// a multi-tenant deploy where different bundles need different origins
+/// for a path with the same name (D83.1/D83.3).
+///
+/// **Unknown fields are a hard parse error** (D83.7) — a CORS policy is
+/// security-relevant, so `upstream`/`voice`'s stricter posture is followed
+/// here, not `shield`'s lenient `axon-W010` record-and-skip.
+#[derive(Debug, Default)]
+pub struct CorsDefinition {
+    pub name: String,
+    /// `["https://app.example.com", "https://*.kivi.io"]` — exact origins
+    /// or a single leading-wildcard host-label glob (D83.1/T854); no full
+    /// regex, matching the closed/decidable spirit of the rest of the
+    /// language. `["*"]` (any-origin) is legal UNLESS `allow_credentials`
+    /// is also `true` — that combination is `axon-T853` (D83.2, the CORS
+    /// spec's own rule, caught at compile time instead of a silent browser
+    /// rejection).
+    pub allow_origins: Vec<String>,
+    /// Reuses the closed `axonendpoint` method catalog (GET/POST/PUT/
+    /// PATCH/DELETE) — validated against the same list, not a free string
+    /// (T855).
+    pub allow_methods: Vec<String>,
+    /// Request headers the preflight may allow (e.g. `["Content-Type",
+    /// "Authorization"]`) — free-form header-name strings (hyphens are
+    /// common in real header names, hence string literals, not bare
+    /// identifiers).
+    pub allow_headers: Vec<String>,
+    /// `true` ⇒ `Access-Control-Allow-Credentials: true` is emitted.
+    /// Forbidden together with an any-origin `allow_origins` (T853).
+    pub allow_credentials: bool,
+    /// `Access-Control-Max-Age` — a duration literal (`"3600s"`, `"1h"`),
+    /// same lexer/token convention as `axonendpoint.timeout`. `None` ⇒ the
+    /// header is omitted (browser default caching applies).
+    pub max_age: Option<String>,
+    /// `Access-Control-Expose-Headers` — response headers the browser's
+    /// JS may read beyond the CORS-safelisted set. Free-form strings, same
+    /// rationale as `allow_headers`.
+    pub expose_headers: Vec<String>,
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia.
     pub leading_trivia: Vec<crate::tokens::Trivia>,
@@ -1195,6 +1252,10 @@ pub struct AxonEndpointDefinition {
     pub execute_flow: String,
     pub output_type: String,
     pub shield_ref: String,
+    /// §Fase 83.a — the `cors: <Name>` reference, or `""` if absent
+    /// (D83.5: absent ⇒ no CORS headers, ever — secure by default). Same
+    /// empty-string sentinel convention as `shield_ref`, not `Option`.
+    pub cors_ref: String,
     pub retries: Option<i64>,
     pub timeout: String,
     /// §ESK Fase 6.1 — regulatory coverage on the boundary.

@@ -57,11 +57,14 @@ pub use generate::{
     generate_tool_call_soundness_proofs,
     // §Fase 80 — the outbound-vendor projection obligation.
     derive_upstream_projection_witness, generate_upstream_projection_soundness_proofs,
+    // §Fase 83.c — the whole-program CORS-reference/consistency obligation.
+    derive_cors_policy_consistency_witness, generate_cors_policy_consistency_proofs,
 };
 pub use proof_term::{
     CallSoundnessCertificate, CapabilityContainmentWitness, CapabilityIsolationWitness,
     ChannelEgressSoundnessWitness,
     ComplianceCoverageWitness,
+    CorsPolicyConsistencyWitness,
     EffectRowSoundnessWitness, InterruptibleSessionSoundnessWitness, ParkedResidualSoundnessWitness,
     ProofBundle, ProofTerm,
     PropertyClass, ResourceBoundsWitness,
@@ -93,6 +96,7 @@ mod tests {
             execute_flow: "F".to_string(),
             output_type: String::new(),
             shield_ref: shield_ref.to_string(),
+            cors_ref: String::new(),
             retries: 0,
             timeout: String::new(),
             compliance: compliance.iter().map(|s| s.to_string()).collect(),
@@ -2360,6 +2364,107 @@ mod tests {
         match check_proof(&proofs[0], &ir) {
             CheckOutcome::Refuted { reason } => assert!(reason.contains("disagrees"), "{reason}"),
             other => panic!("expected Refuted (forgery), got {other:?}"),
+        }
+    }
+
+    // ── §Fase 83.c — CorsPolicyConsistency ───────────────────────────────
+
+    const CORS_PROGRAM: &str = "flow Chat() -> Unit { step S { ask: \"hi\" } }\n\
+         cors PublicWebCors {\n\
+           allow_origins: [\"https://app.example.com\"]\n\
+           allow_methods: [GET, POST]\n\
+           allow_credentials: false\n\
+         }\n\
+         axonendpoint E { method: POST path: \"/chat\" execute: Chat cors: PublicWebCors }";
+
+    #[test]
+    fn cors_policy_consistency_round_trips_and_verifies() {
+        let ir = ir_from_source(CORS_PROGRAM);
+        let proofs = super::generate::generate_cors_policy_consistency_proofs(&ir, "test");
+        assert_eq!(proofs.len(), 1, "one whole-program proof when a cors contract exists");
+        assert_eq!(proofs[0].property, PropertyClass::CorsPolicyConsistency);
+        if let Witness::CorsPolicyConsistency(ref w) = proofs[0].witness {
+            assert_eq!(w.declared_cors_names, vec!["PublicWebCors".to_string()]);
+            assert_eq!(
+                w.endpoint_cors_refs,
+                vec![("E".to_string(), "PublicWebCors".to_string())]
+            );
+            assert!(w.all_references_resolve);
+            assert!(w.wildcard_credential_violations.is_empty());
+            assert!(w.cross_method_conflicts.is_empty());
+        } else {
+            panic!("expected a CorsPolicyConsistency witness");
+        }
+        assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
+    }
+
+    #[test]
+    fn cors_less_program_carries_no_proof() {
+        let ir = ir_from_source("flow Chat() -> Unit { step S { ask: \"hi\" } }\n");
+        assert!(
+            super::generate::generate_cors_policy_consistency_proofs(&ir, "test").is_empty(),
+            "no contract → no proof"
+        );
+    }
+
+    #[test]
+    fn cors_policy_consistency_refutes_a_forged_reference() {
+        // Forge: the witness claims a reference the artifact doesn't have.
+        let ir = ir_from_source(CORS_PROGRAM);
+        let mut proofs = super::generate::generate_cors_policy_consistency_proofs(&ir, "test");
+        if let Witness::CorsPolicyConsistency(ref mut w) = proofs[0].witness {
+            w.endpoint_cors_refs.push(("Ghost".to_string(), "PublicWebCors".to_string()));
+        }
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => assert!(reason.contains("disagrees"), "{reason}"),
+            other => panic!("expected Refuted (forgery), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cors_policy_consistency_refutes_an_unresolved_reference() {
+        // Hand-craft an IR (bypassing the checker that would have caught
+        // this at compile time, axon-T856) where the endpoint's cors_ref
+        // names a declaration that doesn't exist.
+        let mut ir = ir_from_source(CORS_PROGRAM);
+        ir.endpoints[0].cors_ref = "Ghost".to_string();
+        let proofs = super::generate::generate_cors_policy_consistency_proofs(&ir, "test");
+        assert_eq!(proofs.len(), 1);
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => assert!(reason.contains("T856"), "{reason}"),
+            other => panic!("expected Refuted (unresolved reference), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cors_policy_consistency_refutes_wildcard_plus_credentials() {
+        // Hand-craft an IR with the forbidden pairing (bypassing axon-T853).
+        let mut ir = ir_from_source(CORS_PROGRAM);
+        ir.cors_policies[0].allow_origins = vec!["*".to_string()];
+        ir.cors_policies[0].allow_credentials = true;
+        let proofs = super::generate::generate_cors_policy_consistency_proofs(&ir, "test");
+        assert_eq!(proofs.len(), 1);
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => assert!(reason.contains("T853"), "{reason}"),
+            other => panic!("expected Refuted (wildcard+credentials), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cors_policy_consistency_refutes_a_cross_method_conflict() {
+        // Hand-craft an IR with two endpoints on one path disagreeing on
+        // cors_ref (bypassing axon-T857).
+        let mut ir = ir_from_source(CORS_PROGRAM);
+        let mut second = ir.endpoints[0].clone();
+        second.name = "E2".to_string();
+        second.method = "GET".to_string();
+        second.cors_ref = String::new();
+        ir.endpoints.push(second);
+        let proofs = super::generate::generate_cors_policy_consistency_proofs(&ir, "test");
+        assert_eq!(proofs.len(), 1);
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => assert!(reason.contains("T857"), "{reason}"),
+            other => panic!("expected Refuted (cross-method conflict), got {other:?}"),
         }
     }
 

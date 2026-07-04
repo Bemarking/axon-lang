@@ -234,6 +234,10 @@ fn attach_trivia_to_decl(decl: &mut Declaration, leading: Vec<Trivia>, trailing:
             n.leading_trivia = leading;
             n.trailing_trivia = trailing;
         }
+        Declaration::Cors(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
         Declaration::Observable(n) => {
             n.leading_trivia = leading;
             n.trailing_trivia = trailing;
@@ -1796,6 +1800,31 @@ impl Parser {
         Ok(items)
     }
 
+    /// §Fase 83.a — a bracketed list of quoted string literals, tolerant of
+    /// an empty `[]` and a trailing comma before `]` (the `Window.exclude`
+    /// shape, generalized into a reusable helper). Used for CORS field
+    /// lists whose values contain characters (`://`, `.`, `-`) that aren't
+    /// valid bare identifiers — `allow_origins`, `allow_headers`,
+    /// `expose_headers` — where `parse_string_list`'s "at least one item,
+    /// no trailing comma" strictness would reject a legitimate empty or
+    /// comma-terminated declaration.
+    fn parse_bracketed_strings(&mut self) -> Result<Vec<String>, ParseError> {
+        self.consume(TokenType::LBracket)?;
+        let mut items = Vec::new();
+        if !self.check(TokenType::RBracket) {
+            items.push(self.consume(TokenType::StringLit)?.value);
+            while self.check(TokenType::Comma) {
+                self.advance();
+                if self.check(TokenType::RBracket) {
+                    break; // trailing comma
+                }
+                items.push(self.consume(TokenType::StringLit)?.value);
+            }
+        }
+        self.consume(TokenType::RBracket)?;
+        Ok(items)
+    }
+
     fn parse_identifier_list(&mut self) -> Result<Vec<String>, ParseError> {
         let mut names = Vec::new();
         names.push(self.consume(TokenType::Identifier)?.value);
@@ -2030,6 +2059,9 @@ impl Parser {
 
             // ── §Fase 80.g — the voice-agent simplicity layer ───
             TokenType::Voice => self.parse_voice().map(Declaration::Voice),
+
+            // ── §Fase 83.a — the named origin-policy declaration ─
+            TokenType::Cors => self.parse_cors().map(Declaration::Cors),
 
             // ── §Fase 51.c.2 — Pauli-sum observable ────────────
             TokenType::Observable => self.parse_observable().map(Declaration::Observable),
@@ -6767,6 +6799,46 @@ impl Parser {
         Ok(node)
     }
 
+    /// §Fase 83.a — parse `cors Name { fields }`. Field-shape checks
+    /// (wildcard+credentials, origin-glob shape, closed method catalog,
+    /// cross-method path consistency) are §83.c type-checker territory
+    /// (T853-T857); the parser only builds the structural AST.
+    ///
+    /// **Unknown fields are a hard error** (D83.7, not `shield`'s lenient
+    /// `axon-W010` record-and-skip) — mirrors `upstream`'s stricter
+    /// posture, appropriate for a security-relevant declaration.
+    fn parse_cors(&mut self) -> Result<CorsDefinition, ParseError> {
+        let tok = self.consume(TokenType::Cors)?;
+        let name = self.consume(TokenType::Identifier)?.value;
+        let mut node = CorsDefinition {
+            name,
+            loc: Loc { line: tok.line, column: tok.column },
+            ..Default::default()
+        };
+        self.consume(TokenType::LBrace)?;
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            let key = self.consume_any_ident_or_kw()?.value;
+            self.consume(TokenType::Colon)?;
+            match key.as_str() {
+                "allow_origins" => node.allow_origins = self.parse_bracketed_strings()?,
+                "allow_methods" => node.allow_methods = self.parse_bracketed_identifiers()?,
+                "allow_headers" => node.allow_headers = self.parse_bracketed_strings()?,
+                "allow_credentials" => {
+                    node.allow_credentials = self.consume_any_ident_or_kw()?.value == "true"
+                }
+                "max_age" => node.max_age = Some(self.consume(TokenType::Duration)?.value),
+                "expose_headers" => node.expose_headers = self.parse_bracketed_strings()?,
+                other => return Err(self.error(&format!("unknown cors field `{other}`"))),
+            }
+            // Optional comma between fields.
+            if self.check(TokenType::Comma) {
+                self.consume(TokenType::Comma)?;
+            }
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(node)
+    }
+
     /// §Fase 80.g — parse `voice Name { fields }`. Cross-field laws
     /// (stt/tts XOR realtime, interruptible ⇒ legal_basis, ref resolution)
     /// are §80.c type-checker territory (T852), same parse/check split as
@@ -7557,6 +7629,9 @@ impl Parser {
             execute_flow: String::new(),
             output_type: String::new(),
             shield_ref: String::new(),
+            // §Fase 83.a — `cors:` reference; empty ≡ no cors declared
+            // (D83.5: no CORS headers, ever — secure by default).
+            cors_ref: String::new(),
             retries: None,
             timeout: String::new(),
             compliance: Vec::new(),
@@ -7872,6 +7947,8 @@ impl Parser {
                         node.output_type = self.parse_output_type_string()?;
                     }
                     "shield" => node.shield_ref = self.consume_any_ident_or_kw()?.value.clone(),
+                    // §Fase 83.a — the `cors: <Name>` reference.
+                    "cors" => node.cors_ref = self.consume_any_ident_or_kw()?.value.clone(),
                     "retries" => node.retries = self.parse_optional_int(),
                     "timeout" => {
                         let t = self.current().clone();

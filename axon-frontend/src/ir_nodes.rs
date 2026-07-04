@@ -115,6 +115,11 @@ pub struct IRProgram {
     /// IR-SHA drift — the standing §76.d discipline).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub upstreams: Vec<IRUpstream>,
+    /// §Fase 83.a — named, referenced browser-origin policies. `skip_serializing_if
+    /// = empty` keeps a cors-less program's IR JSON byte-identical (zero IR-SHA
+    /// drift — the standing §76.d discipline).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cors_policies: Vec<IRCors>,
     /// §Fase 23 — algebraic effect declarations (compiled).
     /// Each declared effect persists into IR so axon-rs can build the
     /// per-effect operation table at startup. The CPS state graph for
@@ -184,6 +189,7 @@ impl IRProgram {
             observables: Vec::new(),
             witnesses: Vec::new(),
             upstreams: Vec::new(),
+            cors_policies: Vec::new(),
             effects: Vec::new(),
         }
     }
@@ -1909,6 +1915,13 @@ pub struct IRAxonEndpoint {
     /// (D5 backwards-compat — empty key parses back to empty Vec).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub requires_capabilities: Vec<String>,
+    /// §Fase 83.a — the `cors: <Name>` reference, or `""` when absent
+    /// (D83.5: no CORS headers, ever). NEW field on an EXISTING struct —
+    /// `skip_serializing_if` (not `shield_ref`'s bare/always-emitted
+    /// historical shape) so a cors-less endpoint's IR stays byte-identical
+    /// to pre-§83 (zero IR-SHA drift — the standing §76.d discipline).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub cors_ref: String,
 }
 
 // ── §λ-L-E Fase 13 — Mobile Typed Channels IR ───────────────────────────────
@@ -2012,6 +2025,32 @@ pub struct IRUpstreamReconnect {
     pub backoff_ms: i64,
     pub max_attempts: i64,
     pub on_exhausted: String,
+}
+
+/// §Fase 83.a — a named, referenced browser-origin policy. Mirrors
+/// `IRShield`'s field-for-field shape; consumed by `IRAxonEndpoint.cors_ref`.
+/// Wildcard+credentials (T853), origin-glob shape (T854), and closed-method
+/// (T855) violations are all rejected before this node is ever lowered — the
+/// checker re-derives the same closed catalogs at deploy time (§83.c,
+/// `CorsPolicyConsistency`), so an IR that reaches the runtime is already
+/// proven consistent.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRCors {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub name: String,
+    pub allow_origins: Vec<String>,
+    pub allow_methods: Vec<String>,
+    pub allow_headers: Vec<String>,
+    pub allow_credentials: bool,
+    /// Duration literal (`"3600s"`) — same string-carries-the-unit
+    /// convention as `axonendpoint.timeout`; the consumer (enterprise's
+    /// dynamic CORS middleware) parses it into seconds at request time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_age: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expose_headers: Vec<String>,
 }
 
 /// Compiled emit step — `c⟨v⟩.P` (Chan-Output / Chan-Mobility).
