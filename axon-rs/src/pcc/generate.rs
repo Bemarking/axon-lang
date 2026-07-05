@@ -21,8 +21,8 @@ use super::proof_term::{
     EffectBudgetedWitness,
     EffectRowSoundnessWitness, InterruptibleSessionSoundnessWitness, JsonShapeSoundnessWitness,
     ParkedResidualSoundnessWitness, ProofTerm, PropertyClass,
-    ResourceBoundsWitness, ShieldHaltGuaranteeWitness, ToolCallSoundnessWitness,
-    UpstreamProjectionSoundnessWitness, Witness,
+    ResourceBoundsWitness, ShieldHaltGuaranteeWitness, TechnicianCommandSafetyWitness,
+    ToolCallSoundnessWitness, UpstreamProjectionSoundnessWitness, Witness,
     CALL_INTERRUPT_CAUSES, MAX_RETRIES, VALID_BREACH_POLICIES, VALID_BUDGET_PERIODS,
     VALID_ON_EXHAUSTED,
 };
@@ -1770,6 +1770,116 @@ pub fn generate_cors_policy_consistency_proofs(ir: &IRProgram, axon_version: &st
     }
 }
 
+// ── §Fase 84.c — TechnicianCommandSafety ─────────────────────────────────────
+
+/// §84.c — does this IR session-step sequence contain a reachable
+/// `branch{ approved / denied }`? Mirror of the frontend
+/// `type_checker::session_has_confirm_branch`, re-derived on the compiled IR.
+fn ir_session_has_confirm_branch(steps: &[axon_frontend::ir_nodes::IRSessionStep]) -> bool {
+    for step in steps {
+        if step.op == "branch" {
+            let has_approved = step
+                .branches
+                .iter()
+                .any(|b| b.label == axon_frontend::technician::CONFIRM_APPROVED_LABEL);
+            let has_denied = step
+                .branches
+                .iter()
+                .any(|b| b.label == axon_frontend::technician::CONFIRM_DENIED_LABEL);
+            if has_approved && has_denied {
+                return true;
+            }
+        }
+        for b in &step.branches {
+            if ir_session_has_confirm_branch(&b.steps) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// §84.c — re-derive the technician-safety witness for one `target:`-bound
+/// tool. `None` for a tool that is not a technician tool (no `target:`) — "no
+/// contract → no proof" (the standing convention).
+pub fn derive_technician_command_safety_witness(
+    tool: &axon_frontend::ir_nodes::IRToolSpec,
+    ir: &IRProgram,
+) -> Option<TechnicianCommandSafetyWitness> {
+    let target_socket = tool.target.clone()?;
+    let session_name = ir
+        .sockets
+        .iter()
+        .find(|s| s.name == target_socket)
+        .map(|s| s.protocol.clone())
+        .unwrap_or_default();
+    let risk = tool.risk.clone().unwrap_or_default();
+
+    let param_names: std::collections::HashSet<&str> =
+        tool.parameters.iter().map(|p| p.name.as_str()).collect();
+    let mut unbound_placeholders = Vec::new();
+    let mut partial_tokens = Vec::new();
+    for tok in &tool.argv {
+        match axon_frontend::technician::classify_argv_token(tok) {
+            axon_frontend::technician::ArgvToken::Placeholder(name) => {
+                if !param_names.contains(name.as_str()) {
+                    unbound_placeholders.push(name);
+                }
+            }
+            axon_frontend::technician::ArgvToken::Partial(t) => partial_tokens.push(t),
+            axon_frontend::technician::ArgvToken::Literal(_) => {}
+        }
+    }
+
+    // T858 is scoped to `provider: bash`; a non-bash target tool is not
+    // required to carry an argv template, so `argv_present` is vacuously true.
+    let argv_present = tool.provider != "bash" || !tool.argv.is_empty();
+
+    let confirm_branch_reachable =
+        if risk == axon_frontend::technician::RISK_DESTRUCTIVE {
+            ir.sessions
+                .iter()
+                .find(|s| s.name == session_name)
+                .map(|s| s.roles.iter().any(|r| ir_session_has_confirm_branch(&r.steps)))
+                .unwrap_or(false)
+        } else {
+            true
+        };
+
+    Some(TechnicianCommandSafetyWitness {
+        tool_name: tool.name.clone(),
+        target_socket,
+        session_name,
+        risk,
+        argv: tool.argv.clone(),
+        argv_present,
+        unbound_placeholders,
+        partial_tokens,
+        confirm_branch_reachable,
+    })
+}
+
+/// §84.c — one TechnicianCommandSafety proof per `target:`-bound tool.
+pub fn generate_technician_command_safety_proofs(
+    ir: &IRProgram,
+    axon_version: &str,
+) -> Vec<ProofTerm> {
+    let digest = artifact_digest(ir);
+    let mut proofs = Vec::new();
+    for tool in &ir.tools {
+        let Some(witness) = derive_technician_command_safety_witness(tool, ir) else {
+            continue;
+        };
+        proofs.push(ProofTerm {
+            property: PropertyClass::TechnicianCommandSafety,
+            artifact_digest: digest.clone(),
+            witness: Witness::TechnicianCommandSafety(witness),
+            axon_version: axon_version.to_string(),
+        });
+    }
+    proofs
+}
+
 /// §51.f — generate proofs across ALL property classes for `ir`. The
 /// `axon pcc prove` entry point. Concatenates every per-class
 /// generator (compliance / effects / capability-gate / resources /
@@ -1794,5 +1904,6 @@ pub fn generate_all_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm>
     proofs.extend(generate_parked_residual_soundness_proofs(ir, axon_version));
     proofs.extend(generate_upstream_projection_soundness_proofs(ir, axon_version));
     proofs.extend(generate_cors_policy_consistency_proofs(ir, axon_version));
+    proofs.extend(generate_technician_command_safety_proofs(ir, axon_version));
     proofs
 }

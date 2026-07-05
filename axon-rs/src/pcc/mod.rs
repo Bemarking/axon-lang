@@ -429,6 +429,9 @@ mod tests {
             parameters: Vec::new(),
             output_type: None,
             effect_row: effects.iter().map(|s| s.to_string()).collect(),
+            target: None,
+            risk: None,
+            argv: Vec::new(),
         }
     }
 
@@ -2465,6 +2468,109 @@ mod tests {
         match check_proof(&proofs[0], &ir) {
             CheckOutcome::Refuted { reason } => assert!(reason.contains("T857"), "{reason}"),
             other => panic!("expected Refuted (cross-method conflict), got {other:?}"),
+        }
+    }
+
+    // ── §Fase 84.c — TechnicianCommandSafety ─────────────────────────────
+
+    const TECH_PROGRAM: &str = concat!(
+        "type Command { line: String }\n",
+        "type CommandResult { stdout: String, stderr: String, exit_code: Int }\n",
+        "type DenyReason { detail: String }\n",
+        "session TechSafe {\n",
+        "  server: [ send Command, receive CommandResult, end ]\n",
+        "  client: [ receive Command, send CommandResult, end ]\n",
+        "}\n",
+        "session TechConfirm {\n",
+        "  server: [ send Command, select { approved: [ receive CommandResult, end ], denied: [ receive DenyReason, end ] } ]\n",
+        "  client: [ receive Command, branch { approved: [ send CommandResult, end ], denied: [ send DenyReason, end ] } ]\n",
+        "}\n",
+        "socket TechSafeWS { protocol: TechSafe }\n",
+        "socket TechConfirmWS { protocol: TechConfirm }\n",
+        "tool Ping { provider: bash target: TechSafeWS risk: safe parameters: { count: Int, host: String } argv: [\"ping\", \"-c\", \"${count}\", \"${host}\"] }\n",
+        "tool DeleteFile { provider: bash target: TechConfirmWS risk: destructive parameters: { path: String } argv: [\"rm\", \"${path}\"] }\n",
+    );
+
+    #[test]
+    fn technician_command_safety_round_trips_and_verifies() {
+        let ir = ir_from_source(TECH_PROGRAM);
+        let proofs = super::generate::generate_technician_command_safety_proofs(&ir, "test");
+        assert_eq!(proofs.len(), 2, "one proof per target-bound tool");
+        for p in &proofs {
+            assert_eq!(p.property, PropertyClass::TechnicianCommandSafety);
+            assert_eq!(check_proof(p, &ir), CheckOutcome::Verified);
+        }
+        // The destructive tool's witness records its reachable confirm branch.
+        let del = proofs
+            .iter()
+            .find(|p| p.witness.subject_name() == "DeleteFile")
+            .expect("DeleteFile proof");
+        if let Witness::TechnicianCommandSafety(ref w) = del.witness {
+            assert_eq!(w.risk, "destructive");
+            assert!(w.confirm_branch_reachable);
+            assert!(w.argv_present);
+            assert!(w.unbound_placeholders.is_empty());
+            assert!(w.partial_tokens.is_empty());
+        } else {
+            panic!("expected a TechnicianCommandSafety witness");
+        }
+    }
+
+    #[test]
+    fn non_technician_program_carries_no_technician_proof() {
+        let ir = ir_from_source("tool WebSearch { provider: brave max_results: 5 }\n");
+        assert!(
+            super::generate::generate_technician_command_safety_proofs(&ir, "test").is_empty(),
+            "no target-bound tool → no proof"
+        );
+    }
+
+    #[test]
+    fn technician_command_safety_refutes_a_forged_witness() {
+        let ir = ir_from_source(TECH_PROGRAM);
+        let mut proofs = super::generate::generate_technician_command_safety_proofs(&ir, "test");
+        if let Witness::TechnicianCommandSafety(ref mut w) = proofs[0].witness {
+            w.argv.push("--forged".to_string());
+        }
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => assert!(reason.contains("disagrees"), "{reason}"),
+            other => panic!("expected Refuted (forgery), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn technician_command_safety_refutes_an_unbound_placeholder() {
+        // Hand-craft an IR (bypassing axon-T859) where the argv references a
+        // placeholder that is not a declared parameter.
+        let mut ir = ir_from_source(TECH_PROGRAM);
+        let ping = ir.tools.iter_mut().find(|t| t.name == "Ping").unwrap();
+        ping.argv = vec!["ping".to_string(), "${ghost}".to_string()];
+        let proofs = super::generate::generate_technician_command_safety_proofs(&ir, "test");
+        let ping_proof = proofs
+            .iter()
+            .find(|p| p.witness.subject_name() == "Ping")
+            .unwrap();
+        match check_proof(ping_proof, &ir) {
+            CheckOutcome::Refuted { reason } => assert!(reason.contains("T859"), "{reason}"),
+            other => panic!("expected Refuted (unbound placeholder), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn technician_command_safety_refutes_destructive_without_branch() {
+        // Hand-craft an IR (bypassing axon-T860) where a destructive tool is
+        // re-pointed to the confirmation-less socket.
+        let mut ir = ir_from_source(TECH_PROGRAM);
+        let del = ir.tools.iter_mut().find(|t| t.name == "DeleteFile").unwrap();
+        del.target = Some("TechSafeWS".to_string());
+        let proofs = super::generate::generate_technician_command_safety_proofs(&ir, "test");
+        let del_proof = proofs
+            .iter()
+            .find(|p| p.witness.subject_name() == "DeleteFile")
+            .unwrap();
+        match check_proof(del_proof, &ir) {
+            CheckOutcome::Refuted { reason } => assert!(reason.contains("T860"), "{reason}"),
+            other => panic!("expected Refuted (destructive w/o branch), got {other:?}"),
         }
     }
 

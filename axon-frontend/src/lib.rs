@@ -101,3 +101,7 @@ pub mod upstream_presets;
 // §Fase 80.g — `voice` macro-expansion to source text (the `axon desugar`
 // payload). Pure AST pass run by the parser before preset expansion.
 pub mod voice_desugar;
+
+// §Fase 84 — Remote Hands: the pure, shared argv-template classifier + risk
+// catalog used by BOTH the type-checker and the runtime dispatcher (D84.1).
+pub mod technician;

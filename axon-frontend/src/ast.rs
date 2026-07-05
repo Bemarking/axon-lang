@@ -1533,6 +1533,28 @@ pub struct ToolDefinition {
     /// is referenceable as `${Step.output}` with a real type (§58 D8). Flat
     /// string (mirrors step `output:`); `None` when undeclared.
     pub output_type: Option<String>,
+    /// §Fase 84.b — Remote Hands. The `socket` this technician tool dispatches
+    /// over: a program acting on a real machine dials `axon` as a `socket`
+    /// client, and a `target:`-bound tool call sends its rendered argv down
+    /// that connection. `None` ⇒ today's unchanged in-process / model-surface
+    /// behaviour (zero regression; the whole §84 surface is inert unless
+    /// `target:` is set). Resolved to a declared `socket` and duality-checked
+    /// by `axon-T861`.
+    pub target: Option<String>,
+    /// §Fase 84.b — the operation's risk class, a v1-closed catalog of exactly
+    /// `safe | destructive` (`technician::VALID_RISK_LEVELS`). `destructive`
+    /// forces the bound session to carry a reachable `branch{approved/denied}`
+    /// confirmation (`axon-T860`). `None` on a non-technician tool.
+    pub risk: Option<String>,
+    /// §Fase 84.b — the **argv template**: an ordered list of argv elements,
+    /// each either a literal token (`"ping"`, `"-c"`) or a *whole-element*
+    /// `${param}` placeholder (`"${host}"`). A placeholder binds to a declared
+    /// `parameters:` entry and is substituted as ONE opaque argv argument at
+    /// dispatch — never concatenated, never re-parsed by a shell (D84.1). This
+    /// is the injection-safety keystone: the market's free `template:` STRING
+    /// is deliberately NOT offered. Empty for a non-technician tool; required
+    /// (`axon-T858`) when `target:` is set on a `provider: bash` tool.
+    pub argv: Vec<String>,
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia attached to this declaration
     /// (comments preceding the declaration's first token, since the

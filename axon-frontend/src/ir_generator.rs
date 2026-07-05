@@ -461,6 +461,11 @@ impl IRGenerator {
                 .collect(),
             output_type: n.output_type.clone(),
             effect_row,
+            // §Fase 84.b — Remote Hands technician fields (elided from the IR
+            // when unset, per the `skip_serializing_if` on `IRToolSpec`).
+            target: n.target.clone(),
+            risk: n.risk.clone(),
+            argv: n.argv.clone(),
         }
     }
 

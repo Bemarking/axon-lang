@@ -123,6 +123,9 @@ pub fn check_proof(proof: &ProofTerm, ir: &IRProgram) -> CheckOutcome {
         (PropertyClass::CorsPolicyConsistency, Witness::CorsPolicyConsistency(w)) => {
             check_cors_policy_consistency(w, ir)
         }
+        (PropertyClass::TechnicianCommandSafety, Witness::TechnicianCommandSafety(w)) => {
+            check_technician_command_safety(w, ir)
+        }
         _ => CheckOutcome::UnknownProperty,
     }
 }
@@ -974,6 +977,83 @@ fn check_cors_policy_consistency(
                 "axon-T857 axonendpoints sharing a path disagree on `cors:` \
                  (endpoint_a, endpoint_b) pairs: {:?}",
                 actual.cross_method_conflicts
+            ),
+        };
+    }
+    CheckOutcome::Verified
+}
+
+/// §84.c — independent checker for [`PropertyClass::TechnicianCommandSafety`].
+/// Re-derives the per-tool witness and rejects on ANY of: a forged/stale
+/// witness, a missing argv template on a bash tool (T858), an unbound or
+/// partial argv placeholder (T859), or a destructive command with no reachable
+/// confirm/deny branch (T860). This proof travels with the artifact to the
+/// deploy gate — the last line before an IR reaches a real machine.
+fn check_technician_command_safety(
+    claimed: &super::proof_term::TechnicianCommandSafetyWitness,
+    ir: &IRProgram,
+) -> CheckOutcome {
+    let tool = match ir.tools.iter().find(|t| t.name == claimed.tool_name) {
+        Some(t) => t,
+        None => {
+            return CheckOutcome::Refuted {
+                reason: format!(
+                    "no technician tool '{}' exists in this artifact — forged or stale proof",
+                    claimed.tool_name
+                ),
+            }
+        }
+    };
+    let actual = match super::generate::derive_technician_command_safety_witness(tool, ir) {
+        Some(w) => w,
+        None => {
+            return CheckOutcome::Refuted {
+                reason: format!(
+                    "tool '{}' is not a technician tool (no `target:`) — forged or stale proof",
+                    claimed.tool_name
+                ),
+            }
+        }
+    };
+    if actual != *claimed {
+        return CheckOutcome::Refuted {
+            reason: "witness disagrees with artifact re-derivation (forged or stale proof)"
+                .to_string(),
+        };
+    }
+    if !actual.argv_present {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axon-T858 technician tool '{}' binds `target:` on `provider: bash` but declares \
+                 no `argv:` template",
+                actual.tool_name
+            ),
+        };
+    }
+    if !actual.unbound_placeholders.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axon-T859 technician tool '{}' has argv placeholder(s) not bound to a declared \
+                 parameter: {:?}",
+                actual.tool_name, actual.unbound_placeholders
+            ),
+        };
+    }
+    if !actual.partial_tokens.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axon-T859 technician tool '{}' has partial/fused argv token(s) (a `${{param}}` \
+                 must be a whole argv element): {:?}",
+                actual.tool_name, actual.partial_tokens
+            ),
+        };
+    }
+    if !actual.confirm_branch_reachable {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axon-T860 technician tool '{}' is `risk: destructive` but its bound session '{}' \
+                 offers no reachable `branch{{ approved / denied }}` confirmation",
+                actual.tool_name, actual.session_name
             ),
         };
     }

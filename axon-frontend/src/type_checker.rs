@@ -203,6 +203,38 @@ fn valid_list(set: &[&str]) -> String {
     set.join(", ")
 }
 
+/// §Fase 84.c (`axon-T860`) — does this session-step sequence contain a
+/// **reachable** `branch { approved: […], denied: […] }` confirmation? Walks
+/// the protocol tree: a `branch` step offering BOTH the `approved` and `denied`
+/// labels satisfies it; otherwise it recurses into every labelled sub-protocol
+/// (`select`/`branch`/`interrupt` arms), so a confirmation nested inside a
+/// choice or an interruptible region still counts. This is a purely structural
+/// existence check — the runtime (84.d) enforces the actual round-trip; the
+/// checker only guarantees the shape can never be forgotten.
+fn session_has_confirm_branch(steps: &[crate::ast::SessionStep]) -> bool {
+    for step in steps {
+        if step.op == "branch" {
+            let has_approved = step
+                .branches
+                .iter()
+                .any(|b| b.label == crate::technician::CONFIRM_APPROVED_LABEL);
+            let has_denied = step
+                .branches
+                .iter()
+                .any(|b| b.label == crate::technician::CONFIRM_DENIED_LABEL);
+            if has_approved && has_denied {
+                return true;
+            }
+        }
+        for b in &step.branches {
+            if session_has_confirm_branch(&b.steps) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// §Fase 83.c (`axon-T854`) — is `origin` a legal CORS origin glob? Three
 /// accepted shapes, closed/decidable by construction (D5 — no full regex):
 /// (1) the literal any-origin sentinel `"*"` (validity of PAIRING it with
@@ -1642,7 +1674,154 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// §Fase 84.c — Remote Hands. The technician-command laws for a
+    /// `tool { target:, risk:, argv: }`. Entirely inert unless the tool opts
+    /// into the surface (sets one of those fields), so the entire existing
+    /// corpus is unaffected (zero regression). The four load-bearing laws:
+    ///
+    /// - **axon-T858** — a `target:`-bound `provider: bash` tool with no
+    ///   `argv:`. A free-string command would reopen the injection surface the
+    ///   fase exists to close (D84.1), so the argv template is mandatory.
+    /// - **axon-T859** — an `argv:` placeholder that is not a whole-element
+    ///   `${param}` bound to a declared `parameters:` entry. Whole-element is
+    ///   the crux: `"${x}.txt"` is rejected so an argument can never fuse with
+    ///   adjacent text or be split (D84.1).
+    /// - **axon-T860** — a `risk: destructive` tool whose bound session offers
+    ///   no reachable `branch{ approved / denied }` confirmation (D84.2). The
+    ///   human confirm/deny exit must be visible in the protocol's own shape.
+    /// - **axon-T861** — `target:` does not resolve to a declared `socket`.
+    /// - **axon-T862** — a `risk:` value outside the closed `safe | destructive`
+    ///   catalog.
+    fn check_technician_tool(&mut self, node: &ToolDefinition) {
+        let is_technician =
+            node.target.is_some() || node.risk.is_some() || !node.argv.is_empty();
+        if !is_technician {
+            return;
+        }
+
+        // axon-T862 — the risk class is a v1-closed catalog.
+        if let Some(risk) = &node.risk {
+            if !crate::technician::VALID_RISK_LEVELS.contains(&risk.as_str()) {
+                self.emit(
+                    format!(
+                        "axon-T862 technician tool '{}' has an unknown risk class '{}' — valid: {}",
+                        node.name,
+                        risk,
+                        crate::technician::VALID_RISK_LEVELS.join(", ")
+                    ),
+                    &node.loc,
+                );
+            }
+        }
+
+        // axon-T861 — `target:` must resolve to a declared `socket`. Duality of
+        // that socket's own protocol is enforced separately by `check_socket`;
+        // here we only bind the reference (mirrors the T856 cors-ref check).
+        if let Some(target) = &node.target {
+            match self.symbols.lookup(target) {
+                None => self.emit(
+                    format!(
+                        "axon-T861 technician tool '{}' targets undefined socket '{}'",
+                        node.name, target
+                    ),
+                    &node.loc,
+                ),
+                Some(sym) if sym.kind != "socket" => self.emit(
+                    format!(
+                        "axon-T861 '{}' is a {}, not a socket (target of technician tool '{}')",
+                        target, sym.kind, node.name
+                    ),
+                    &node.loc,
+                ),
+                _ => {}
+            }
+        }
+
+        // axon-T858 — a `target:`-bound bash tool must declare an argv template.
+        if node.target.is_some() && node.provider == "bash" && node.argv.is_empty() {
+            self.emit(
+                format!(
+                    "axon-T858 technician tool '{}' binds `target:` on `provider: bash` but \
+                     declares no `argv:` — a free-string command would reopen the injection \
+                     surface §Fase 84 exists to close (D84.1); declare an argv template, e.g. \
+                     `argv: [\"ping\", \"-c\", \"${{count}}\", \"${{host}}\"]`",
+                    node.name
+                ),
+                &node.loc,
+            );
+        }
+
+        // axon-T859 — every `${param}` in argv is a WHOLE argv element bound to
+        // a declared parameter; partial/mixed tokens are rejected.
+        let param_names: std::collections::HashSet<&str> =
+            node.parameters.iter().map(|p| p.name.as_str()).collect();
+        for tok in &node.argv {
+            match crate::technician::classify_argv_token(tok) {
+                crate::technician::ArgvToken::Placeholder(name) => {
+                    if !param_names.contains(name.as_str()) {
+                        self.emit(
+                            format!(
+                                "axon-T859 argv placeholder '${{{}}}' in technician tool '{}' is \
+                                 not a declared `parameters:` entry — every argv placeholder must \
+                                 bind to a typed argument (the §54.b interpolation discipline)",
+                                name, node.name
+                            ),
+                            &node.loc,
+                        );
+                    }
+                }
+                crate::technician::ArgvToken::Partial(t) => {
+                    self.emit(
+                        format!(
+                            "axon-T859 argv element '{}' in technician tool '{}' is not a \
+                             whole-element placeholder — a `${{param}}` must be an ENTIRE argv \
+                             element (never fused with surrounding text like `${{x}}.txt` or \
+                             `pre${{x}}`), so an argument can neither be split nor escape its \
+                             slot (D84.1)",
+                            t, node.name
+                        ),
+                        &node.loc,
+                    );
+                }
+                crate::technician::ArgvToken::Literal(_) => {}
+            }
+        }
+
+        // axon-T860 — a destructive command needs a reachable confirm/deny
+        // branch in its bound session's protocol. Structural: the runtime
+        // enforces the actual round-trip (84.d), but the SHAPE must exist at
+        // compile time so the confirmation can never be forgotten.
+        if node.risk.as_deref() == Some(crate::technician::RISK_DESTRUCTIVE) {
+            let has_branch = node
+                .target
+                .as_ref()
+                .and_then(|t| self.find_socket(t))
+                .and_then(|sock| self.find_session(&sock.protocol))
+                .map(|sess| {
+                    sess.roles
+                        .iter()
+                        .any(|r| session_has_confirm_branch(&r.steps))
+                })
+                .unwrap_or(false);
+            if !has_branch {
+                self.emit(
+                    format!(
+                        "axon-T860 technician tool '{}' is `risk: destructive` but its bound \
+                         session offers no reachable `branch{{ approved: […], denied: […] }}` — a \
+                         destructive command must have a human confirm/deny exit visible in the \
+                         protocol's own shape (D84.2); add the branch, or reclassify `risk: safe`",
+                        node.name
+                    ),
+                    &node.loc,
+                );
+            }
+        }
+    }
+
     fn check_tool(&mut self, node: &ToolDefinition) {
+        // §Fase 84.c — Remote Hands technician-command laws (T858–T862). Inert
+        // for any tool that does not set `target:`/`risk:`/`argv:`.
+        self.check_technician_tool(node);
         if let Some(v) = node.max_results {
             if v <= 0 {
                 self.emit(
@@ -6382,6 +6561,22 @@ impl<'a> TypeChecker<'a> {
     fn find_store(&self, name: &str) -> Option<&'a AxonStoreDefinition> {
         self.program.declarations.iter().find_map(|d| match d {
             Declaration::AxonStore(s) if s.name == name => Some(s),
+            _ => None,
+        })
+    }
+
+    /// §Fase 84.c — Resolve a socket declaration by name.
+    fn find_socket(&self, name: &str) -> Option<&'a SocketDefinition> {
+        self.program.declarations.iter().find_map(|d| match d {
+            Declaration::Socket(s) if s.name == name => Some(s),
+            _ => None,
+        })
+    }
+
+    /// §Fase 84.c — Resolve a session declaration by name.
+    fn find_session(&self, name: &str) -> Option<&'a SessionDefinition> {
+        self.program.declarations.iter().find_map(|d| match d {
+            Declaration::Session(s) if s.name == name => Some(s),
             _ => None,
         })
     }

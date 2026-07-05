@@ -222,6 +222,18 @@ pub enum PropertyClass {
     /// belt-and-suspenders against a stored IR whose compile-time proof has
     /// gone stale (a hand-edited or version-drifted deployment).
     CorsPolicyConsistency,
+    /// §84.c — for each `target:`-bound technician `tool`, re-derives the
+    /// Remote Hands safety facts the §84.c type-checker already proved
+    /// (T858/T859/T860): a `provider: bash` tool has a non-empty `argv:`
+    /// template; every `${param}` in that argv is a WHOLE argv element bound
+    /// to a declared parameter (no unbound, no partial/fused token — the
+    /// injection-safety keystone, D84.1); and a `risk: destructive` tool's
+    /// bound session offers a reachable `branch{ approved / denied }`
+    /// confirmation (D84.2). Belt-and-suspenders against a stored IR whose
+    /// compile-time proof has gone stale (a hand-edited or version-drifted
+    /// deployment reaching a real machine — the highest-stakes surface, so it
+    /// gets a deploy-time re-derivation like everything else).
+    TechnicianCommandSafety,
 }
 
 /// §72.f — the closed period catalog for `budget` quotas. The checker's own
@@ -267,6 +279,7 @@ impl PropertyClass {
             PropertyClass::ParkedResidualSoundness => "parked_residual_soundness",
             PropertyClass::UpstreamProjectionSoundness => "upstream_projection_soundness",
             PropertyClass::CorsPolicyConsistency => "cors_policy_consistency",
+            PropertyClass::TechnicianCommandSafety => "technician_command_safety",
         }
     }
 }
@@ -744,6 +757,40 @@ pub struct CorsPolicyConsistencyWitness {
     pub cross_method_conflicts: Vec<(String, String)>,
 }
 
+/// §84.c — witness for [`PropertyClass::TechnicianCommandSafety`], one per
+/// `target:`-bound technician `tool`. The checker RE-DERIVES every field from
+/// the IR (`tools` + `sockets` + `sessions`) and rejects the proof if the
+/// witness disagrees (D51.2). A verifying proof has `argv_present == true`,
+/// both violation lists empty, and (`risk != "destructive"` OR
+/// `confirm_branch_reachable == true`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TechnicianCommandSafetyWitness {
+    /// The tool this witness certifies.
+    pub tool_name: String,
+    /// The `socket` the tool dispatches over (`target:`).
+    pub target_socket: String,
+    /// The session bound by that socket (its `protocol:`).
+    pub session_name: String,
+    /// The declared `risk:` class (`safe | destructive`).
+    pub risk: String,
+    /// The argv template, verbatim (each element literal or `${param}`).
+    pub argv: Vec<String>,
+    /// A `provider: bash` tool has a non-empty argv template (`axon-T858`).
+    /// `true` for a verifying proof.
+    pub argv_present: bool,
+    /// argv placeholders that are NOT declared `parameters:` entries
+    /// (`axon-T859`). Empty for a verifying proof.
+    pub unbound_placeholders: Vec<String>,
+    /// argv elements that mention `${` but are not a whole-element placeholder
+    /// (the fused/partial tokens `axon-T859` forbids — `"${x}.txt"`). Empty for
+    /// a verifying proof.
+    pub partial_tokens: Vec<String>,
+    /// For `risk: destructive`, the bound session offers a reachable
+    /// `branch{ approved / denied }` (`axon-T860`). Always `true` for a
+    /// non-destructive tool (vacuous).
+    pub confirm_branch_reachable: bool,
+}
+
 /// The property-specific witness. Tagged so the JSON is self-describing
 /// + a future class adds a variant without ambiguity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -765,6 +812,7 @@ pub enum Witness {
     ParkedResidualSoundness(ParkedResidualSoundnessWitness),
     UpstreamProjectionSoundness(UpstreamProjectionSoundnessWitness),
     CorsPolicyConsistency(CorsPolicyConsistencyWitness),
+    TechnicianCommandSafety(TechnicianCommandSafetyWitness),
 }
 
 impl Witness {
@@ -796,6 +844,7 @@ impl Witness {
             Witness::UpstreamProjectionSoundness(w) => &w.upstream_name,
             // §83.c — program-wide property, no single named subject.
             Witness::CorsPolicyConsistency(_) => "<program>",
+            Witness::TechnicianCommandSafety(w) => &w.tool_name,
         }
     }
 }

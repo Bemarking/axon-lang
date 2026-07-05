@@ -721,6 +721,16 @@ pub struct IRToolSpec {
     /// not denormalised onto each call site).
     pub output_type: Option<String>,
     pub effect_row: Vec<String>,
+    /// §Fase 84.b — Remote Hands. All three fields are `skip_serializing_if`
+    /// so a program using none of them serialises **byte-identically** to the
+    /// pre-§84 IR (the §76.d IR-SHA / additive-only gate — no drift for the
+    /// entire existing corpus).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub risk: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub argv: Vec<String>,
 }
 
 // ── Memory ───────────────────────────────────────────────────────────────────

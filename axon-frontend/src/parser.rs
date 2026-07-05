@@ -2375,13 +2375,25 @@ impl Parser {
             effects: None,
             parameters: Vec::new(),
             output_type: None,
+            target: None,
+            risk: None,
+            argv: Vec::new(),
             loc,
             leading_trivia: Vec::new(),
             trailing_trivia: Vec::new(),
         };
 
+        // §Fase 84.b/D84.13 — unknown fields are recorded (not silently
+        // skipped) so a `target:`-bound technician tool can HARD-ERROR on one
+        // (a typo'd safety field must never quietly disable a guard), while a
+        // legacy schema-less tool keeps its lenient record-and-skip (zero
+        // regression). The decision is deferred to after the block is parsed,
+        // since `target:` may appear after the unknown field.
+        let mut unknown_fields: Vec<(String, u32, u32)> = Vec::new();
+
         while !self.check(TokenType::RBrace) {
-            let field_name = self.current().value.clone();
+            let field_tok = self.current().clone();
+            let field_name = field_tok.value.clone();
             self.advance();
             self.consume(TokenType::Colon)?;
 
@@ -2403,10 +2415,40 @@ impl Parser {
                 // §Fase 58.a — the tool's typed input schema + output type.
                 "parameters" => node.parameters = self.parse_tool_param_schema()?,
                 "output_type" => node.output_type = Some(self.parse_output_type_string()?),
-                _ => self.skip_value(),
+                // §Fase 84.b — Remote Hands technician fields.
+                "target" => node.target = Some(self.consume_any_ident_or_kw()?.value),
+                "risk" => node.risk = Some(self.consume_any_ident_or_kw()?.value),
+                // The argv template: a bracketed list of quoted elements
+                // (`argv: ["ping", "-c", "${count}", "${host}"]`). Reuses the
+                // CORS list helper (tolerant of `[]` and a trailing comma).
+                "argv" => node.argv = self.parse_bracketed_strings()?,
+                _ => {
+                    unknown_fields.push((field_name, field_tok.line, field_tok.column));
+                    self.skip_value();
+                }
             }
         }
         self.consume(TokenType::RBrace)?;
+
+        // §Fase 84.b/D84.13 — a `target:`-bound tool opts into strict field
+        // checking. An unknown field on it is a parse error, mirroring the §83
+        // `cors`/`voice` closed-catalog discipline — but scoped to the
+        // technician surface so ordinary tools are untouched.
+        if node.target.is_some() {
+            if let Some((field_name, line, column)) = unknown_fields.into_iter().next() {
+                return Err(ParseError {
+                    message: format!(
+                        "unknown field `{}` in technician tool `{}` — a `target:`-bound tool \
+                         uses strict field checking (§Fase 84 D84.13); valid fields: provider, \
+                         parameters, output_type, timeout, effects, target, risk, argv",
+                        field_name, node.name
+                    ),
+                    line,
+                    column,
+                    ..Default::default()
+                });
+            }
+        }
         Ok(node)
     }
 

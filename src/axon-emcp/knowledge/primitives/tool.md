@@ -15,6 +15,9 @@ grammar: |
       runtime: <ident>                # optional — runtime hint / endpoint slug (native | sandboxed | <slug>)
       sandbox: <true|false>           # optional — force-execute inside a sandboxed worker
       effects: <effect-row>           # optional — declared effects (<network>, <io>, ...)
+      target: <SocketRef>             # optional (§Fase 84) — dispatch over this socket (Remote Hands)
+      risk: safe | destructive        # optional (§Fase 84) — technician-command risk class
+      argv: [<token>, ...]            # required with target:+bash (§Fase 84) — the argv template
   }
 ---
 
@@ -191,6 +194,68 @@ field on the effect row and accepts the closed level catalog
 The type checker propagates the row through the flow's
 algebraic-effect signature (`§Fase 23`). At runtime, every
 invocation lands in the audit hash-chain with the row attached.
+
+### `target:` / `risk:` / `argv:` (optional, §Fase 84 — Remote Hands)
+
+These three fields turn a `tool` into a **technician command**: a
+typed, template-locked operation an agent can run on a **real
+end-user machine** (a "PC technician" agent), dispatched over a
+declared `socket` a local agent dials into.
+
+```axon
+session TechConfirm {
+    server: [ send Command,
+              select { approved: [receive CommandResult, end],
+                       denied:   [receive DenyReason, end] } ]
+    client: [ receive Command,
+              branch { approved: [send CommandResult, end],
+                       denied:   [send DenyReason, end] } ]
+}
+socket TechConfirmWS { protocol: TechConfirm }
+
+tool DeleteFile {
+    provider: bash
+    target: TechConfirmWS
+    risk: destructive
+    parameters: { path: String }
+    argv: ["rm", "${path}"]
+    output_type: CommandResult
+}
+```
+
+- **`target:`** names the `socket` this call dispatches over. Omit
+  it and the tool behaves exactly as before (§84 is inert). With
+  it, the tool is duality-checked against that socket's session
+  (`axon-T861`).
+- **`risk:`** is the closed catalog `safe | destructive`
+  (`axon-T862`). A `destructive` tool's bound session MUST contain a
+  reachable `branch{ approved / denied }` — a human confirm/deny exit
+  visible in the protocol's own shape — or it is a **compile error**
+  (`axon-T860`).
+- **`argv:`** is the **argv template**: a list where each element is
+  a literal (`"rm"`) or a *whole-element* `${param}` placeholder
+  (`"${path}"`). This is the injection-safety keystone: a `${param}`
+  is substituted as **exactly one argument**, opaquely, and is
+  **never re-parsed by a shell** — the same discipline
+  `retrieve.where:` uses for SQL parameters (§76.b). A placeholder
+  fused with other text (`"${path}.bak"`) or unbound to a
+  `parameters:` entry is a compile error (`axon-T859`); a
+  `target:`-bound `provider: bash` tool with no `argv:` is
+  `axon-T858`. The market's free command STRING is deliberately not
+  offered — a string would let an argument break out into new shell
+  syntax; the argv model makes that structurally impossible.
+
+Unknown fields inside a `target:`-bound tool are a **hard error**
+(§84 D84.13) — a typo'd safety field can never silently disable a
+guard. (A legacy schema-less tool keeps its lenient skip.)
+
+The enterprise data plane adds separation of duties (proposing and
+approving a destructive command are distinct capabilities —
+`tech:dispatch` vs `tech:approve`), a confirmation bound to the exact
+rendered command's hash (a swapped command after approval is
+refused), and fail-closed audit of every action. The local agent
+runs only argv-templates whose hash it was enrolled with, without a
+shell, least-privilege.
 
 ## Calling a tool
 

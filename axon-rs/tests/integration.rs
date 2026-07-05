@@ -2764,6 +2764,9 @@ fn tool_registry_from_ir_specs() {
             parameters: Vec::new(),
             output_type: None,
             effect_row: Vec::new(),
+            target: None,
+            risk: None,
+            argv: Vec::new(),
         },
     ]);
 

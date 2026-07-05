@@ -350,6 +350,9 @@ pub mod tool_trait;
 // for is_streaming-flagged tools + drains the resulting Stream<ToolChunk>
 // chunk-by-chunk into the wire.
 pub mod tool_dispatch_bridge;
+// §Fase 84.d — Remote Hands runtime: pure argv render + confirmation-hash
+// binding + output bounding + the axon⇄agent wire protocol.
+pub mod technician_dispatch;
 pub mod tool_validator;
 pub mod trace_export;
 pub mod trace_store;

@@ -416,6 +416,9 @@ mod tests {
                 parameters: Vec::new(),
                 output_type: None,
                 effect_row: vec!["stream:drop_oldest".to_string()],
+                target: None,
+                risk: None,
+                argv: Vec::new(),
             },
             IRToolSpec {
                 node_type: "ToolDefinition",
@@ -433,6 +436,9 @@ mod tests {
                 parameters: Vec::new(),
                 output_type: None,
                 effect_row: vec!["compute".to_string()],
+                target: None,
+                risk: None,
+                argv: Vec::new(),
             },
         ];
         reg.register_from_ir(&specs);
@@ -514,6 +520,9 @@ mod tests {
                 parameters: Vec::new(),
                 output_type: None,
                 effect_row: Vec::new(),
+                target: None,
+                risk: None,
+                argv: Vec::new(),
             },
             IRToolSpec {
                 node_type: "ToolDefinition",
@@ -531,6 +540,9 @@ mod tests {
                 parameters: Vec::new(),
                 output_type: None,
                 effect_row: Vec::new(),
+                target: None,
+                risk: None,
+                argv: Vec::new(),
             },
         ];
 

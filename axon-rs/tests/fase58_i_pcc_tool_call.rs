@@ -95,6 +95,9 @@ fn tampering_the_canonical_artifact_digest_is_rejected() {
         parameters: Vec::new(),
         output_type: None,
         effect_row: Vec::new(),
+        target: None,
+        risk: None,
+        argv: Vec::new(),
     });
     assert_eq!(check_proof(&proofs[0], &ir_b), CheckOutcome::DigestMismatch);
 }

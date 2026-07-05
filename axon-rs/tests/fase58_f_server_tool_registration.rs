@@ -29,6 +29,9 @@ fn tool(name: &str, provider: &str, runtime: &str) -> IRToolSpec {
         parameters: Vec::new(),
         output_type: None,
         effect_row: Vec::new(),
+        target: None,
+        risk: None,
+        argv: Vec::new(),
     }
 }
 
