@@ -1205,11 +1205,39 @@ pub struct IRConsensusBlock {
     pub source_column: u32,
 }
 
-#[derive(Debug, Clone, Serialize)]
+/// §Fase 86 — the compiled Directed Creative Synthesis block. This IS the
+/// "structured IR metadata that the runtime executes as an orchestrated
+/// pipeline" the README always claimed — pre-§86 it carried only a source
+/// location. New fields are `skip_serializing_if`-elided so a program with no
+/// `forge` stays IR-SHA stable.
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct IRForgeBlock {
     pub node_type: &'static str,
     pub source_line: u32,
     pub source_column: u32,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub seed: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub output_type: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub mode: String,
+    #[serde(default, skip_serializing_if = "is_default_novelty")]
+    pub novelty: f64,
+    #[serde(default, skip_serializing_if = "is_one_i64")]
+    pub depth: i64,
+    #[serde(default, skip_serializing_if = "is_one_i64")]
+    pub branches: i64,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub constraints_ref: String,
+}
+
+fn is_default_novelty(v: &f64) -> bool {
+    (*v - 0.5).abs() < f64::EPSILON
+}
+fn is_one_i64(v: &i64) -> bool {
+    *v == 1
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -91,6 +91,11 @@ const VALID_EFFECTS: &[&str] = &[
 /// default single-replica tier; `redis` is the enterprise multi-replica tier.
 const VALID_CACHE_BACKENDS: &[&str] = &["in_process", "redis"];
 
+/// §Fase 86.c — the closed `forge.mode:` catalog: Margaret Boden's three
+/// creativity types (*The Creative Mind*, 1990). Each maps to a distinct
+/// sampling-parameter profile at runtime (D86.3).
+const VALID_FORGE_MODES: &[&str] = &["combinatorial", "exploratory", "transformational"];
+
 const VALID_EPISTEMIC_LEVELS: &[&str] = &["believe", "doubt", "know", "speculate"];
 
 const VALID_DERIVATIONS: &[&str] = &["aggregated", "derived", "inferred", "raw", "transformed"];
@@ -3247,6 +3252,121 @@ impl<'a> TypeChecker<'a> {
                 ),
                 &node.loc,
             );
+        }
+    }
+
+    /// §Fase 86.c — Resolve an anchor declaration by name.
+    fn find_anchor(&self, name: &str) -> Option<&'a AnchorConstraint> {
+        self.program.declarations.iter().find_map(|d| match d {
+            Declaration::Anchor(a) if a.name == name => Some(a),
+            _ => None,
+        })
+    }
+
+    /// §Fase 86.c — Directed Creative Synthesis laws for a `forge` block:
+    /// - **axon-T868** — `mode:` must be in the closed Boden catalog (empty ⇒
+    ///   the `exploratory` default, allowed).
+    /// - **axon-T869** — `novelty:` in `[0.0, 1.0]`.
+    /// - **axon-T870** — `depth:` ≥ 1 and `branches:` ≥ 1 (a pipeline runs at
+    ///   least one incubation iteration and one illumination branch).
+    /// - **axon-T871** — a non-empty `constraints:` resolves to a declared
+    ///   `anchor` that carries a `confidence_floor:` (the coherence gate the
+    ///   verification phase checks against — an anchor with no floor cannot
+    ///   verify anything).
+    /// - **axon-T872** — `seed:` is non-empty and `-> <Type>` is present (a
+    ///   creative synthesis needs something to create *from* and a type to
+    ///   create *into*).
+    fn check_forge(&mut self, node: &ForgeBlock, flow_name: &str) {
+        if node.seed.trim().is_empty() {
+            self.emit(
+                format!(
+                    "axon-T872 forge '{}' in flow '{}' has an empty `seed:` — a creative \
+                     synthesis needs a conceptual starting point",
+                    node.name, flow_name
+                ),
+                &node.loc,
+            );
+        }
+        if node.output_type.trim().is_empty() {
+            self.emit(
+                format!(
+                    "axon-T872 forge '{}' in flow '{}' has no `-> <Type>` return type",
+                    node.name, flow_name
+                ),
+                &node.loc,
+            );
+        }
+        if !node.mode.is_empty() && !is_valid(&node.mode, VALID_FORGE_MODES) {
+            self.emit(
+                format!(
+                    "axon-T868 forge '{}' has unknown creativity mode '{}'. Valid: {}",
+                    node.name,
+                    node.mode,
+                    valid_list(VALID_FORGE_MODES)
+                ),
+                &node.loc,
+            );
+        }
+        if node.novelty < 0.0 || node.novelty > 1.0 {
+            self.emit(
+                format!(
+                    "axon-T869 forge '{}' novelty {} is outside [0.0, 1.0]",
+                    node.name, node.novelty
+                ),
+                &node.loc,
+            );
+        }
+        if node.depth < 1 {
+            self.emit(
+                format!(
+                    "axon-T870 forge '{}' depth {} must be ≥ 1 (at least one incubation iteration)",
+                    node.name, node.depth
+                ),
+                &node.loc,
+            );
+        }
+        if node.branches < 1 {
+            self.emit(
+                format!(
+                    "axon-T870 forge '{}' branches {} must be ≥ 1 (at least one illumination branch)",
+                    node.name, node.branches
+                ),
+                &node.loc,
+            );
+        }
+        if !node.constraints_ref.is_empty() {
+            match self.symbols.lookup(&node.constraints_ref) {
+                None => self.emit(
+                    format!(
+                        "axon-T871 forge '{}' `constraints:` references undefined anchor '{}'",
+                        node.name, node.constraints_ref
+                    ),
+                    &node.loc,
+                ),
+                Some(sym) if sym.kind != "anchor" => self.emit(
+                    format!(
+                        "axon-T871 '{}' is a {}, not an anchor (in forge '{}' `constraints:`)",
+                        node.constraints_ref, sym.kind, node.name
+                    ),
+                    &node.loc,
+                ),
+                _ => {
+                    if let Some(anchor) = self.find_anchor(&node.constraints_ref) {
+                        if anchor.confidence_floor.is_none() {
+                            self.emit(
+                                format!(
+                                    "axon-T871 forge '{}' constrains on anchor '{}' which declares \
+                                     no `confidence_floor:` — the verification phase has no \
+                                     coherence gate to check against; add a `confidence_floor:` to \
+                                     '{}'",
+                                    node.name, node.constraints_ref, node.constraints_ref
+                                ),
+                                &node.loc,
+                            );
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -7261,6 +7381,8 @@ impl<'a> TypeChecker<'a> {
                 FlowStep::Listen(l) if !l.body.is_empty() => {
                     self.check_flow_steps(&l.body, flow_name);
                 }
+                // §Fase 86 — Directed Creative Synthesis laws (T868–T872).
+                FlowStep::Forge(n) => self.check_forge(n, flow_name),
                 // All other steps: no cross-reference checks needed
                 _ => {}
             }

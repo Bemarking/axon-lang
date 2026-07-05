@@ -183,6 +183,7 @@ async fn fuzz_forge_never_panics() {
             node_type: "forge",
             source_line: 0,
             source_column: 0,
+                ..Default::default()
         });
         let outcome = dispatch_node(&node, &mut ctx).await;
         assert_no_panic(&format!("forge iter={iter}"), &outcome);
@@ -426,6 +427,7 @@ async fn fuzz_cognitive_nested_in_orchestration_never_panics() {
                 node_type: "forge",
                 source_line: 0,
                 source_column: 0,
+                ..Default::default()
             }),
             3 => IRFlowNode::Focus(IRFocusStep {
                 node_type: "focus",

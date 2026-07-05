@@ -2269,8 +2269,39 @@ pub struct DeliberateBlock {
 pub struct ConsensusBlock {
     pub loc: Loc,
 }
-#[derive(Debug)]
+/// §Fase 86 — `forge <Name>(seed: <string>) -> <Type> { mode:, novelty:,
+/// depth:, branches:, constraints: }` — Directed Creative Synthesis. A
+/// flow-body block that runs the Poincaré-Hadamard four-phase creative process
+/// (Preparation → Incubation → Illumination → Verification) under a **measured,
+/// fail-closed novelty guarantee** (D86.4/D86.6): the returned typed value must
+/// clear a Normalized-Compression-Distance novelty floor against the obvious
+/// baseline AND its `constraints:` anchor, or the forge fails structurally.
+///
+/// Before §86 this was a no-op stub (`{ loc }` only, body discarded). §86 makes
+/// the README's long-standing claim true.
+#[derive(Debug, Default)]
 pub struct ForgeBlock {
+    /// The synthesis name (`forge Artwork(...)` → `"Artwork"`).
+    pub name: String,
+    /// The creative seed — the conceptual starting point (`seed: "..."`).
+    pub seed: String,
+    /// The declared output type (`-> Visual` → `"Visual"`).
+    pub output_type: String,
+    /// Boden creativity mode (closed catalog: `combinatorial | exploratory |
+    /// transformational`, `axon-T868`). Empty ⇒ defaults to `exploratory`.
+    pub mode: String,
+    /// Novelty target `[0.0, 1.0]` (`axon-T869`) — sets the fail-closed novelty
+    /// floor and blends the incubation temperature. Default 0.5.
+    pub novelty: f64,
+    /// Incubation iterations (`depth ≥ 1`, `axon-T870`). Default 1.
+    pub depth: i64,
+    /// Illumination parallel branches (best-of-N, `branches ≥ 1`, `axon-T870`).
+    /// Default 1.
+    pub branches: i64,
+    /// Optional `constraints:` reference to a declared `anchor` (`axon-T871`) —
+    /// the verification predicate + coherence floor. Empty ⇒ novelty-floor-only
+    /// verification.
+    pub constraints_ref: String,
     pub loc: Loc,
 }
 #[derive(Debug)]

@@ -281,25 +281,182 @@ async fn resolve_recall_value(node: &IRRecallStep, ctx: &DispatchCtx) -> String 
 /// (StepStart + StepComplete, 0 tokens). Future IR extensions
 /// (a Fase 33.y.f.2 follow-up that adds a body via the AST/IR)
 /// wire a recursive `dispatch_body` call from `run_forge`.
+/// §Fase 86 — one LLM pass of the forge pipeline at an explicit temperature.
+/// Returns the phase's produced text (empty on a non-Completed outcome).
+async fn forge_phase(
+    ctx: &mut DispatchCtx,
+    name: &str,
+    prompt: String,
+    temperature: f64,
+) -> Result<String, DispatchError> {
+    let shape = PureShapeStep {
+        name: name.to_string(),
+        user_prompt: prompt,
+        framing_addendum: Some(
+            "You are inside a directed creative-synthesis pipeline (`forge`). Produce vivid, \
+             concrete, ORIGINAL conceptual content — never a hedge or a restatement."
+                .into(),
+        ),
+        kind_slug: "forge",
+        tools: Vec::new(),
+        requires_context: None,
+        temperature: Some(temperature),
+    };
+    match run_pure_shape(shape, ctx).await? {
+        NodeOutcome::Completed { output, .. } => Ok(output),
+        _ => Ok(String::new()),
+    }
+}
+
+/// §Fase 86 — Directed Creative Synthesis. The real Poincaré-Hadamard-Wallas
+/// four-phase pipeline (replacing the pre-§86 no-op stub), with a **measured,
+/// fail-closed novelty guarantee** (D86.4/D86.6):
+///
+/// 1. **Preparation** — expand the seed into its OBVIOUS reading `B` (low τ) —
+///    the "known" we measure novelty against.
+/// 2. **Incubation** — `depth` speculative iterations at τ_eff = τ_base·(0.5 +
+///    0.5·novelty), each pushing further past the obvious.
+/// 3. **Illumination** — `branches` crystallizations; each branch's novelty is
+///    MEASURED as ν = NCD(B, branch) — the computable Kolmogorov-novelty proxy.
+/// 4. **Verification** — select the argmax-utility branch and enforce the
+///    novelty floor **fail-closed**: a derivative result (ν < floor) is NEVER
+///    returned as creative — the forge fails with a structured error.
+///
+/// Honest v1 scope (D86.7): the runtime hard gate is the measured novelty
+/// floor; the `constraints:` anchor is statically validated (T871) and its
+/// coherence floor is read here, with per-branch coherence set to 1.0 pending
+/// the live anchor-confidence judge (§5 deferred). The novelty guarantee — the
+/// genuinely novel contribution — is fully enforced.
 pub async fn run_forge(
-    _node: &IRForgeBlock,
+    node: &IRForgeBlock,
     ctx: &mut DispatchCtx,
 ) -> Result<NodeOutcome, DispatchError> {
     if ctx.cancel.is_cancelled() {
         return Err(DispatchError::UpstreamCancelled);
     }
-
     let step_index = ctx.step_counter;
+
+    let mode = if node.mode.is_empty() {
+        "exploratory"
+    } else {
+        node.mode.as_str()
+    };
+    let depth = node.depth.max(1) as usize;
+    let branches = node.branches.max(1) as usize;
+    let nov_floor = crate::forge::novelty_floor(node.novelty);
+    let tau_base = crate::forge::boden_profile(mode).tau_base;
+    let tau_incubate = crate::forge::incubation_temperature(mode, node.novelty);
+    let out_type = if node.output_type.is_empty() {
+        "concept".to_string()
+    } else {
+        node.output_type.clone()
+    };
+
+    // Coherence floor from the declared `constraints:` anchor (0.0 ⇒ none).
+    let coherence_floor = ctx
+        .anchors
+        .iter()
+        .find(|a| a.name == node.constraints_ref)
+        .and_then(|a| a.confidence_floor)
+        .unwrap_or(0.0);
+
+    // Phase 1 — Preparation: the obvious/conventional baseline B.
+    let baseline = forge_phase(
+        ctx,
+        &node.name,
+        format!(
+            "Expand this creative seed into its CONVENTIONAL, obvious interpretation — the first \
+             associations most people make. Seed: \"{}\". Be concrete, but deliberately \
+             conventional; this is the baseline we will surpass.",
+            node.seed
+        ),
+        0.3,
+    )
+    .await?;
+
+    // Phase 2 — Incubation: `depth` speculative iterations at τ_eff.
+    let mut incubated = baseline.clone();
+    for i in 0..depth {
+        incubated = forge_phase(
+            ctx,
+            &node.name,
+            format!(
+                "Speculatively explore FAR beyond the obvious — past cliché into unexpected \
+                 territory (iteration {}/{}). Seed: \"{}\". Obvious baseline to surpass: {}. \
+                 Prior exploration: {}. Go further; break the expected frame.",
+                i + 1,
+                depth,
+                node.seed,
+                baseline,
+                incubated
+            ),
+            tau_incubate,
+        )
+        .await?;
+    }
+
+    // Phase 3 — Illumination: `branches` crystallizations; measure ν = NCD(B,·).
+    let mut candidates: Vec<crate::forge::Branch> = Vec::with_capacity(branches);
+    for _ in 0..branches {
+        let output = forge_phase(
+            ctx,
+            &node.name,
+            format!(
+                "Crystallize a single, coherent, GENUINELY NOVEL {} from this incubated \
+                 exploration. Seed: \"{}\". Exploration: {}. Deliver the finished creative \
+                 concept — surprising yet coherent.",
+                out_type, node.seed, incubated
+            ),
+            tau_base,
+        )
+        .await?;
+        let novelty = crate::forge::novelty_score(&baseline, &output);
+        candidates.push(crate::forge::Branch {
+            output,
+            coherence: 1.0, // §5 deferred: live per-branch anchor-confidence judge
+            novelty,
+        });
+    }
+
+    // Phase 4 — Verification: select + fail-closed novelty gate.
+    let winner_idx = crate::forge::select_illumination(&candidates, coherence_floor, nov_floor);
+    let verdict = crate::forge::verify(winner_idx.map(|i| &candidates[i]), nov_floor);
     ctx.step_counter += 1;
 
-    emit_step_start(ctx, "Forge", step_index, "forge")?;
-    emit_step_complete(ctx, "Forge", step_index, "", 0)?;
-
-    Ok(NodeOutcome::Completed {
-        output: String::new(),
-        tokens_emitted: 0,
-        step_index,
-    })
+    match verdict {
+        crate::forge::ForgeVerdict::Accepted {
+            output,
+            novelty,
+            coherence: _,
+        } => {
+            emit_step_start(ctx, "Forge", step_index, "forge")?;
+            emit_step_complete(ctx, "Forge", step_index, &output, 0)?;
+            let _ = novelty; // measured; surfaced via the enterprise audit (§86.g)
+            Ok(NodeOutcome::Completed {
+                output,
+                tokens_emitted: 0,
+                step_index,
+            })
+        }
+        crate::forge::ForgeVerdict::Rejected(reason) => {
+            let detail = match &reason {
+                crate::forge::ForgeRejection::NoveltyFloorBreached { measured, floor } => format!(
+                    "best branch novelty {:.3} < floor {:.3} — the synthesis was too derivative \
+                     of the obvious reading of the seed",
+                    measured, floor
+                ),
+                crate::forge::ForgeRejection::NoFeasibleBranch => {
+                    "no illumination branch satisfied the constraints anchor".to_string()
+                }
+            };
+            // Fail-closed: a forge that cannot clear its floor errors LOUDLY —
+            // never a silent derivative/empty result (D86.6).
+            Err(DispatchError::BackendError {
+                name: "forge".to_string(),
+                message: format!("{}: {}", reason.slug(), detail),
+            })
+        }
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -325,6 +482,7 @@ pub async fn run_focus(
         kind_slug: "focus",
         tools: Vec::new(),
         requires_context: None,
+        temperature: None,
     };
     run_pure_shape(shape, ctx).await
 }
@@ -355,6 +513,7 @@ pub async fn run_associate(
         kind_slug: "associate",
         tools: Vec::new(),
         requires_context: None,
+        temperature: None,
     };
     run_pure_shape(shape, ctx).await
 }
@@ -391,6 +550,7 @@ pub async fn run_aggregate(
         kind_slug: "aggregate",
         tools: Vec::new(),
         requires_context: None,
+        temperature: None,
     };
     run_pure_shape(shape, ctx).await
 }
@@ -418,6 +578,7 @@ pub async fn run_explore(
         kind_slug: "explore",
         tools: Vec::new(),
         requires_context: None,
+        temperature: None,
     };
     run_pure_shape(shape, ctx).await
 }
@@ -441,6 +602,7 @@ pub async fn run_ingest(
         kind_slug: "ingest",
         tools: Vec::new(),
         requires_context: None,
+        temperature: None,
     };
     run_pure_shape(shape, ctx).await
 }
@@ -800,6 +962,7 @@ pub async fn run_navigate(
         kind_slug: "navigate",
         tools: Vec::new(),
         requires_context: None,
+        temperature: None,
     };
     run_pure_shape(shape, ctx).await
 }
@@ -823,6 +986,7 @@ pub async fn run_corroborate(
         kind_slug: "corroborate",
         tools: Vec::new(),
         requires_context: None,
+        temperature: None,
     };
     run_pure_shape(shape, ctx).await
 }
@@ -1060,32 +1224,35 @@ mod tests {
 
     // ── Forge ─────────────────────────────────────────────────────────
 
+    /// §Fase 86 — the fail-closed guarantee. The `stub` backend returns the
+    /// SAME `"(stub)"` for every phase, so every illumination branch is
+    /// identical to the obvious baseline ⇒ measured novelty NCD ≈ 0, below the
+    /// floor. The forge MUST refuse to pass off a derivative result as creative
+    /// and fail loudly (D86.6) — never a silent empty/derivative output.
     #[tokio::test]
-    async fn run_forge_emits_canonical_wire_shape() {
-        let (mut ctx, mut rx) = fresh_ctx();
+    async fn run_forge_fails_closed_on_derivative_output() {
+        let (mut ctx, _rx) = fresh_ctx();
         let node = IRForgeBlock {
             node_type: "forge",
-            source_line: 0,
-            source_column: 0,
+            name: "Artwork".into(),
+            seed: "aurora borealis over ancient ruins".into(),
+            output_type: "Visual".into(),
+            mode: "transformational".into(),
+            novelty: 0.85,
+            depth: 2,
+            branches: 3,
+            ..Default::default()
         };
-        let outcome = run_forge(&node, &mut ctx).await.unwrap();
-        match outcome {
-            NodeOutcome::Completed { output, tokens_emitted, .. } => {
-                assert_eq!(output, "");
-                assert_eq!(tokens_emitted, 0);
+        let result = run_forge(&node, &mut ctx).await;
+        match result {
+            Err(DispatchError::BackendError { name, message }) => {
+                assert_eq!(name, "forge");
+                assert!(
+                    message.contains("forge.novelty_floor_breached"),
+                    "expected novelty-floor rejection, got: {message}"
+                );
             }
-            other => panic!("expected Completed, got {other:?}"),
-        }
-        let mut events = Vec::new();
-        while let Ok(ev) = rx.try_recv() {
-            events.push(ev);
-        }
-        assert_eq!(events.len(), 2);
-        match &events[0] {
-            FlowExecutionEvent::StepStart { step_type, .. } => {
-                assert_eq!(step_type, "forge");
-            }
-            e => panic!("expected StepStart, got {e:?}"),
+            other => panic!("expected a fail-closed forge rejection, got {other:?}"),
         }
     }
 
@@ -1470,6 +1637,7 @@ mod tests {
                     node_type: "forge",
                     source_line: 0,
                     source_column: 0,
+                ..Default::default()
                 },
                 &mut ctx,
             )

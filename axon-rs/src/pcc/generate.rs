@@ -21,8 +21,8 @@ use super::proof_term::{
     EffectBudgetedWitness,
     EffectRowSoundnessWitness, InterruptibleSessionSoundnessWitness, JsonShapeSoundnessWitness,
     ParkedResidualSoundnessWitness, ProofTerm, PropertyClass,
-    CacheSoundnessWitness, ResourceBoundsWitness, ShieldHaltGuaranteeWitness,
-    TechnicianCommandSafetyWitness, ToolCallSoundnessWitness,
+    CacheSoundnessWitness, ForgeSoundnessWitness, ResourceBoundsWitness,
+    ShieldHaltGuaranteeWitness, TechnicianCommandSafetyWitness, ToolCallSoundnessWitness,
     UpstreamProjectionSoundnessWitness, Witness,
     CALL_INTERRUPT_CAUSES, MAX_RETRIES, VALID_BREACH_POLICIES, VALID_BUDGET_PERIODS,
     VALID_ON_EXHAUSTED,
@@ -1949,6 +1949,101 @@ pub fn generate_cache_soundness_proofs(ir: &IRProgram, axon_version: &str) -> Ve
     }
 }
 
+// ── §Fase 86.c — ForgeSoundness ──────────────────────────────────────────────
+
+const FORGE_MODES: &[&str] = &["combinatorial", "exploratory", "transformational"];
+
+/// Recursively collect `(flow_name, &IRForgeBlock)` from a flow's step tree
+/// (forge blocks can nest inside `if` / `for` bodies).
+fn collect_forge_blocks<'a>(
+    steps: &'a [axon_frontend::ir_nodes::IRFlowNode],
+    flow_name: &str,
+    out: &mut Vec<(String, &'a axon_frontend::ir_nodes::IRForgeBlock)>,
+) {
+    use axon_frontend::ir_nodes::IRFlowNode;
+    for step in steps {
+        match step {
+            IRFlowNode::Forge(f) => out.push((flow_name.to_string(), f)),
+            IRFlowNode::Conditional(c) => {
+                collect_forge_blocks(&c.then_body, flow_name, out);
+                collect_forge_blocks(&c.else_body, flow_name, out);
+            }
+            IRFlowNode::ForIn(f) => collect_forge_blocks(&f.body, flow_name, out),
+            _ => {}
+        }
+    }
+}
+
+/// §86.c — collect `&IRForgeBlock` from a step tree (checker helper; recurses
+/// into `if`/`for` bodies).
+pub(crate) fn __collect_forge_for_check<'a>(
+    steps: &'a [axon_frontend::ir_nodes::IRFlowNode],
+    out: &mut Vec<&'a axon_frontend::ir_nodes::IRForgeBlock>,
+) {
+    use axon_frontend::ir_nodes::IRFlowNode;
+    for step in steps {
+        match step {
+            IRFlowNode::Forge(f) => out.push(f),
+            IRFlowNode::Conditional(c) => {
+                __collect_forge_for_check(&c.then_body, out);
+                __collect_forge_for_check(&c.else_body, out);
+            }
+            IRFlowNode::ForIn(f) => __collect_forge_for_check(&f.body, out),
+            _ => {}
+        }
+    }
+}
+
+/// §86.c — re-derive one forge block's soundness witness against the IR anchors.
+pub fn derive_forge_soundness_witness(
+    flow_name: &str,
+    forge: &axon_frontend::ir_nodes::IRForgeBlock,
+    ir: &IRProgram,
+) -> ForgeSoundnessWitness {
+    let mode_ok = forge.mode.is_empty() || FORGE_MODES.contains(&forge.mode.as_str());
+    let novelty_in_range = forge.novelty >= 0.0 && forge.novelty <= 1.0;
+    let bounds_ok = forge.depth >= 1 && forge.branches >= 1;
+    let seed_and_type_present =
+        !forge.seed.trim().is_empty() && !forge.output_type.trim().is_empty();
+    let constraints_ok = forge.constraints_ref.is_empty()
+        || ir
+            .anchors
+            .iter()
+            .any(|a| a.name == forge.constraints_ref && a.confidence_floor.is_some());
+    ForgeSoundnessWitness {
+        forge_name: forge.name.clone(),
+        flow_name: flow_name.to_string(),
+        mode: forge.mode.clone(),
+        novelty_milli: (forge.novelty * 1000.0).round() as i64,
+        depth: forge.depth,
+        branches: forge.branches,
+        constraints_ref: forge.constraints_ref.clone(),
+        mode_ok,
+        novelty_in_range,
+        bounds_ok,
+        seed_and_type_present,
+        constraints_ok,
+    }
+}
+
+/// §86.c — one ForgeSoundness proof per `forge` block in the program.
+pub fn generate_forge_soundness_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm> {
+    let digest = artifact_digest(ir);
+    let mut forges = Vec::new();
+    for flow in &ir.flows {
+        collect_forge_blocks(&flow.steps, &flow.name, &mut forges);
+    }
+    forges
+        .into_iter()
+        .map(|(flow_name, forge)| ProofTerm {
+            property: PropertyClass::ForgeSoundness,
+            artifact_digest: digest.clone(),
+            witness: Witness::ForgeSoundness(derive_forge_soundness_witness(&flow_name, forge, ir)),
+            axon_version: axon_version.to_string(),
+        })
+        .collect()
+}
+
 /// §51.f — generate proofs across ALL property classes for `ir`. The
 /// `axon pcc prove` entry point. Concatenates every per-class
 /// generator (compliance / effects / capability-gate / resources /
@@ -1975,5 +2070,6 @@ pub fn generate_all_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm>
     proofs.extend(generate_cors_policy_consistency_proofs(ir, axon_version));
     proofs.extend(generate_technician_command_safety_proofs(ir, axon_version));
     proofs.extend(generate_cache_soundness_proofs(ir, axon_version));
+    proofs.extend(generate_forge_soundness_proofs(ir, axon_version));
     proofs
 }

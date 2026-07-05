@@ -918,6 +918,7 @@ fn d1_catalog_totality_pin_45_variants() {
             node_type: "forge",
             source_line: 0,
             source_column: 0,
+                ..Default::default()
         }),
         IRFlowNode::Focus(IRFocusStep {
             node_type: "focus",

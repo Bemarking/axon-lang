@@ -243,6 +243,15 @@ pub enum PropertyClass {
     /// gone stale — a mis-cached result is a correctness bug (serving a foreign
     /// or stale value), so it gets a deploy-time re-derivation.
     CacheSoundness,
+    /// §86.c — for each `forge` block, re-derives the Directed Creative
+    /// Synthesis well-formedness the §86.c type-checker proved (T868–T872): the
+    /// creativity `mode` is in the Boden catalog; `novelty` ∈ [0,1]; `depth`
+    /// and `branches` ≥ 1; a `seed` is present; and a non-empty `constraints:`
+    /// resolves to a declared `anchor` carrying a `confidence_floor`. This
+    /// certifies the pipeline is well-formed and WILL run its fail-closed
+    /// verification gate — the measured-novelty *outcome* is data-dependent and
+    /// enforced at runtime (D86.6).
+    ForgeSoundness,
 }
 
 /// §72.f — the closed period catalog for `budget` quotas. The checker's own
@@ -290,6 +299,7 @@ impl PropertyClass {
             PropertyClass::CorsPolicyConsistency => "cors_policy_consistency",
             PropertyClass::TechnicianCommandSafety => "technician_command_safety",
             PropertyClass::CacheSoundness => "cache_soundness",
+            PropertyClass::ForgeSoundness => "forge_soundness",
         }
     }
 }
@@ -819,6 +829,33 @@ pub struct CacheSoundnessWitness {
     pub unresolved_refs: Vec<String>,
 }
 
+/// §86.c — witness for [`PropertyClass::ForgeSoundness`], one per `forge`
+/// block. The checker RE-DERIVES every field from the IR (`flows` + `anchors`)
+/// and rejects on disagreement. A verifying proof has every `*_ok` flag true.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForgeSoundnessWitness {
+    pub forge_name: String,
+    pub flow_name: String,
+    pub mode: String,
+    /// novelty × 1000, integer-encoded (Eq-friendly; the checker compares the
+    /// same rounding).
+    pub novelty_milli: i64,
+    pub depth: i64,
+    pub branches: i64,
+    pub constraints_ref: String,
+    /// `mode` is empty (⇒ exploratory default) or in the Boden catalog (T868).
+    pub mode_ok: bool,
+    /// novelty ∈ [0,1] (T869).
+    pub novelty_in_range: bool,
+    /// depth ≥ 1 AND branches ≥ 1 (T870).
+    pub bounds_ok: bool,
+    /// seed non-empty AND output_type present (T872).
+    pub seed_and_type_present: bool,
+    /// `constraints:` empty, OR resolves to a declared anchor with a
+    /// `confidence_floor` (T871).
+    pub constraints_ok: bool,
+}
+
 /// The property-specific witness. Tagged so the JSON is self-describing
 /// + a future class adds a variant without ambiguity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -842,6 +879,7 @@ pub enum Witness {
     CorsPolicyConsistency(CorsPolicyConsistencyWitness),
     TechnicianCommandSafety(TechnicianCommandSafetyWitness),
     CacheSoundness(CacheSoundnessWitness),
+    ForgeSoundness(ForgeSoundnessWitness),
 }
 
 impl Witness {
@@ -876,6 +914,7 @@ impl Witness {
             Witness::TechnicianCommandSafety(w) => &w.tool_name,
             // §85.c — program-wide property, no single named subject.
             Witness::CacheSoundness(_) => "<program>",
+            Witness::ForgeSoundness(w) => &w.forge_name,
         }
     }
 }

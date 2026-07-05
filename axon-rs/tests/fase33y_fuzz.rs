@@ -339,6 +339,7 @@ fn random_forge(_lcg: &mut Lcg) -> IRFlowNode {
         node_type: "forge",
         source_line: 0,
         source_column: 0,
+                ..Default::default()
     })
 }
 

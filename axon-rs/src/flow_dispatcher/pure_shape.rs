@@ -122,6 +122,11 @@ pub struct PureShapeStep {
     /// `ChatRequest.model` for this step. `None` (every non-`step` shape +
     /// requirement-less steps) → empty model → backend default (back-compat).
     pub requires_context: Option<u32>,
+    /// §Fase 86 — an explicit sampling temperature for this call. The `forge`
+    /// pipeline runs each creative phase at a distinct temperature (low for
+    /// Preparation/Verification, τ_eff for Incubation, τ_base for Illumination).
+    /// `None` (every pre-§86 shape) → backend default, wire-shape byte-compat.
+    pub temperature: Option<f64>,
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -191,6 +196,7 @@ pub async fn run_step(
         kind_slug: "step",
         tools,
         requires_context: step.requires_context,
+        temperature: None,
     };
     run_pure_shape(shape, ctx).await
 }
@@ -563,6 +569,7 @@ pub async fn run_probe(
         kind_slug: "probe",
         tools: Vec::new(),
         requires_context: None,
+        temperature: None,
     };
     run_pure_shape(shape, ctx).await
 }
@@ -591,6 +598,7 @@ pub async fn run_reason(
         kind_slug: "reason",
         tools: Vec::new(),
         requires_context: None,
+        temperature: None,
     };
     run_pure_shape(shape, ctx).await
 }
@@ -620,6 +628,7 @@ pub async fn run_validate(
         kind_slug: "validate",
         tools: Vec::new(),
         requires_context: None,
+        temperature: None,
     };
     run_pure_shape(shape, ctx).await
 }
@@ -649,6 +658,7 @@ pub async fn run_refine(
         kind_slug: "refine",
         tools: Vec::new(),
         requires_context: None,
+        temperature: None,
     };
     run_pure_shape(shape, ctx).await
 }
@@ -696,6 +706,7 @@ pub async fn run_weave(
         kind_slug: "weave",
         tools: Vec::new(),
         requires_context: None,
+        temperature: None,
     };
     run_pure_shape(shape, ctx).await
 }
@@ -848,7 +859,7 @@ pub async fn run_pure_shape(
             messages,
             system: if system.is_empty() { None } else { Some(system.clone()) },
             max_tokens: None,
-            temperature: None,
+            temperature: shape.temperature,
             top_p: None,
             tools: shape.tools.clone(),
             stream: true,
@@ -1428,6 +1439,7 @@ mod tests {
             navigate_ref: String::new(),
             apply_ref: String::new(),
             requires_context: None,
+
             body: Vec::new(),
         };
         let (mut ctx, _rx) = fresh_ctx();
@@ -1460,6 +1472,7 @@ mod tests {
             navigate_ref: String::new(),
             apply_ref: String::new(),
             requires_context: Some(16_000),
+
             body: Vec::new(),
         };
         let (mut ctx, _rx) = fresh_ctx();

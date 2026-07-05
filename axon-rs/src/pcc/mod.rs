@@ -2652,6 +2652,60 @@ mod tests {
         }
     }
 
+    // ── §Fase 86.c — ForgeSoundness ──────────────────────────────────────
+
+    const FORGE_PROGRAM: &str = concat!(
+        "anchor GoldenRatio { require: aesthetic_harmony confidence_floor: 0.70 }\n",
+        "flow CreateVisualConcept(brief: String) -> Visual {\n",
+        "  forge Artwork(seed: \"aurora borealis over ancient ruins\") -> Visual {\n",
+        "    mode: transformational\n",
+        "    novelty: 0.85\n",
+        "    constraints: GoldenRatio\n",
+        "    depth: 4\n",
+        "    branches: 7\n",
+        "  }\n",
+        "}\n",
+    );
+
+    #[test]
+    fn forge_soundness_round_trips_and_verifies() {
+        let ir = ir_from_source(FORGE_PROGRAM);
+        let proofs = super::generate::generate_forge_soundness_proofs(&ir, "test");
+        assert_eq!(proofs.len(), 1, "one proof per forge block");
+        assert_eq!(proofs[0].property, PropertyClass::ForgeSoundness);
+        if let Witness::ForgeSoundness(ref w) = proofs[0].witness {
+            assert_eq!(w.forge_name, "Artwork");
+            assert_eq!(w.novelty_milli, 850);
+            assert!(w.mode_ok && w.novelty_in_range && w.bounds_ok);
+            assert!(w.seed_and_type_present && w.constraints_ok);
+        } else {
+            panic!("expected a ForgeSoundness witness");
+        }
+        assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
+    }
+
+    #[test]
+    fn forge_less_program_carries_no_proof() {
+        let ir = ir_from_source("flow F() -> Unit { step S { ask: \"hi\" } }\n");
+        assert!(
+            super::generate::generate_forge_soundness_proofs(&ir, "test").is_empty(),
+            "no forge → no proof"
+        );
+    }
+
+    #[test]
+    fn forge_soundness_refutes_a_forged_witness() {
+        let ir = ir_from_source(FORGE_PROGRAM);
+        let mut proofs = super::generate::generate_forge_soundness_proofs(&ir, "test");
+        if let Witness::ForgeSoundness(ref mut w) = proofs[0].witness {
+            w.novelty_milli = 1500; // claim a novelty the artifact doesn't have
+        }
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => assert!(reason.contains("disagrees"), "{reason}"),
+            other => panic!("expected Refuted (forgery), got {other:?}"),
+        }
+    }
+
     // ── §Fase 80 — UpstreamProjectionSoundness ───────────────────────────
 
     const STT_UPSTREAM: &str = "session SttDialogue {\n\

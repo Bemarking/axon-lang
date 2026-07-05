@@ -1,6 +1,6 @@
 [package]
 name = "axon-lang"
-version = "2.40.0"
+version = "2.41.0"
 authors = ["AXON Project", "Bemarking AI S.A.S."]
 edition = "2021"
 rust-version = "1.95"
@@ -26,7 +26,7 @@ path = "src/main.rs"
 # without dragging tokio/axum/sqlx/aws. Path is used for in-tree builds;
 # `version` makes the dep cargo-publishable (crates.io requires non-path
 # deps to carry a version specifier).
-axon-frontend = { path = "../axon-frontend", version = "=1.32.0" }
+axon-frontend = { path = "../axon-frontend", version = "=1.33.0" }
 clap = { version = "4.5", features = ["derive", "env"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "rustls-tls", "stream"] }
 serde = { version = "1", features = ["derive"] }
@@ -67,6 +67,10 @@ hmac = "0.12"
 rand = "0.9"
 # §ESK Fase 6.6 — deterministic ZIP bundle for the audit evidence packager.
 zip = { version = "2", default-features = false, features = ["deflate"] }
+# §Fase 86 — the `forge` novelty engine's compressor: NCD (Normalized
+# Compression Distance) needs a real compressor C(·); deflate is the standard
+# NCD choice (CompLearn/zlib precedent). Already in the tree via `zip`.
+flate2 = "1"
 # §Fase 10.e — JWT signature verification + JWKS client for the Rust
 # tenant extractor. Closes the pre-10.e gap where `tenant.rs` extracted
 # `tenant_id` from the JWT payload without checking the signature.

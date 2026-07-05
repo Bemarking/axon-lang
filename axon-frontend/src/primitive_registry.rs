@@ -573,8 +573,8 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         name: "forge",
         category: "operators",
         top_level: false,
-        since: "Fase 18",
-        summary: "A flow-body block that constructs typed values from sub-step outputs under explicit construction discipline.",
+        since: "Fase 18 (stub); Fase 86 (v2.41.0)",
+        summary: "Directed Creative Synthesis — a flow-body block running the Poincaré-Hadamard four-phase creative process under a measured, fail-closed novelty guarantee (NCD), so an LLM can genuinely CREATE, not just interpolate.",
         doc_status: DocStatus::Documented,
     },
     PrimitiveInfo {

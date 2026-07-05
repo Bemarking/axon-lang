@@ -2882,7 +2882,7 @@ impl Parser {
             TokenType::Hibernate => self.parse_hibernate_step(),
             TokenType::Deliberate => self.parse_block_step("deliberate").map(|l| FlowStep::Deliberate(DeliberateBlock { loc: l })),
             TokenType::Consensus => self.parse_block_step("consensus").map(|l| FlowStep::Consensus(ConsensusBlock { loc: l })),
-            TokenType::Forge => self.parse_block_step("forge").map(|l| FlowStep::Forge(ForgeBlock { loc: l })),
+            TokenType::Forge => self.parse_forge_step().map(FlowStep::Forge),
             TokenType::Focus => self.parse_flow_step_simple("focus").map(|l| FlowStep::Focus(FocusStep { expression: l.1, loc: l.0 })),
             TokenType::Associate => self.parse_associate_step(),
             TokenType::Aggregate => self.parse_aggregate_step(),
@@ -3912,6 +3912,66 @@ impl Parser {
             line: tok.line,
             column: tok.column,
         })
+    }
+
+    /// §Fase 86 — parse `forge <Name>(seed: "<text>") -> <Type> { mode:,
+    /// novelty:, depth:, branches:, constraints: }`. Real field capture
+    /// (replacing the pre-§86 discard-everything stub). Strict closed-catalog:
+    /// an unknown field is a hard parse error; all cross-field laws (Boden mode
+    /// catalog, novelty range, depth/branches ≥ 1, `constraints:` → `anchor`)
+    /// are §86.c type-checker territory.
+    fn parse_forge_step(&mut self) -> Result<ForgeBlock, ParseError> {
+        let tok = self.consume(TokenType::Forge)?;
+        let name = self.consume(TokenType::Identifier)?.value;
+        let mut node = ForgeBlock {
+            name,
+            novelty: 0.5,
+            depth: 1,
+            branches: 1,
+            loc: Loc { line: tok.line, column: tok.column },
+            ..Default::default()
+        };
+        // `(seed: "...")`
+        self.consume(TokenType::LParen)?;
+        let arg = self.consume_any_ident_or_kw()?.value;
+        self.consume(TokenType::Colon)?;
+        if arg != "seed" {
+            return Err(self.error(&format!(
+                "forge '{}' expects `seed:` as its argument, found `{arg}`",
+                node.name
+            )));
+        }
+        node.seed = self.consume(TokenType::StringLit)?.value;
+        self.consume(TokenType::RParen)?;
+        // `-> <Type>`
+        self.consume(TokenType::Arrow)?;
+        node.output_type = self.consume_any_ident_or_kw()?.value;
+        // `{ fields }`
+        self.consume(TokenType::LBrace)?;
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            let field = self.consume_any_ident_or_kw()?.value;
+            self.consume(TokenType::Colon)?;
+            match field.as_str() {
+                "mode" => node.mode = self.consume_any_ident_or_kw()?.value,
+                "novelty" => node.novelty = self.consume_number()?,
+                "depth" => {
+                    node.depth = self.consume(TokenType::Integer)?.value.parse::<i64>().unwrap_or(0)
+                }
+                "branches" => {
+                    node.branches =
+                        self.consume(TokenType::Integer)?.value.parse::<i64>().unwrap_or(0)
+                }
+                "constraints" => node.constraints_ref = self.consume_any_ident_or_kw()?.value,
+                other => {
+                    return Err(self.error(&format!("unknown forge field `{other}`")))
+                }
+            }
+            if self.check(TokenType::Comma) {
+                self.consume(TokenType::Comma)?;
+            }
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(node)
     }
 
     /// §Fase 65 — Parse `par { stmt1  stmt2  … }` into CONCURRENT branches.

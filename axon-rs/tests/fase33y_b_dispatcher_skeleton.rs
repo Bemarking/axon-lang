@@ -268,6 +268,7 @@ fn forge_node() -> IRFlowNode {
         node_type: "forge",
         source_line: 0,
         source_column: 0,
+                ..Default::default()
     })
 }
 
@@ -720,6 +721,11 @@ const PARALLEL_ALGEBRAIC_GRADUATED: &[&str] = &["par", "stream_block"];
 /// - **Focus/Associate/Aggregate/Explore/Ingest/Navigate/Corroborate**:
 ///   route through `pure_shape::run_pure_shape` which calls the
 ///   stub backend → 1 chunk of "(stub)" → 1 token.
+// §Fase 86 — `forge` stays in the graduated set (it routes to a real handler),
+// but it is no longer a strict-empty no-op: it runs the Directed Creative
+// Synthesis pipeline and, with the stub's identical output, fails closed. The
+// `every_ir_flow_node_routes_to_its_labeled_handler` assertion special-cases it
+// BEFORE the strict-empty arm.
 const COGNITIVE_PEM_BOUND_GRADUATED: &[&str] = &["remember", "recall", "forge"];
 
 const COGNITIVE_FRAMING_GRADUATED: &[&str] = &[
@@ -806,6 +812,24 @@ async fn every_ir_flow_node_routes_to_its_labeled_handler() {
         // entries to `s`", etc.) so they need a separate arm that
         // doesn't assert output equality.
         let strict_empty_completed = parallel_algebraic || cognitive_pem;
+
+        // §Fase 86 — `forge` runs the real creative pipeline; with the stub's
+        // identical output it correctly fails closed (novelty floor breached).
+        // That IS the node routing to its handler and enforcing its guarantee.
+        if expected_kind == "forge" {
+            // Routing check only: `forge` reaches its handler and runs the real
+            // pipeline. Either it clears the (tiny-input) novelty floor and
+            // Completes, or it fails closed with a structured `forge:` error —
+            // both are valid routing; the forge-logic assertions live in the
+            // `forge` + `cognitive::run_forge` unit tests.
+            match outcome {
+                Ok(NodeOutcome::Completed { .. }) => {}
+                Err(axon::flow_dispatcher::DispatchError::BackendError { name, .. })
+                    if name == "forge" => {}
+                other => panic!("forge routed to an unexpected outcome: {other:?}"),
+            }
+            continue;
+        }
 
         match (outcome, pure_shape_like, orchestration, strict_empty_completed, algebraic_handler) {
             // Pure-shape: stub-backend produces "(stub)" with 1 token.

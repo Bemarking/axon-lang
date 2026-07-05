@@ -129,6 +129,9 @@ pub fn check_proof(proof: &ProofTerm, ir: &IRProgram) -> CheckOutcome {
         (PropertyClass::CacheSoundness, Witness::CacheSoundness(w)) => {
             check_cache_soundness(w, ir)
         }
+        (PropertyClass::ForgeSoundness, Witness::ForgeSoundness(w)) => {
+            check_forge_soundness(w, ir)
+        }
         _ => CheckOutcome::UnknownProperty,
     }
 }
@@ -1057,6 +1060,76 @@ fn check_technician_command_safety(
                 "axon-T860 technician tool '{}' is `risk: destructive` but its bound session '{}' \
                  offers no reachable `branch{{ approved / denied }}` confirmation",
                 actual.tool_name, actual.session_name
+            ),
+        };
+    }
+    CheckOutcome::Verified
+}
+
+/// §86.c — independent checker for [`PropertyClass::ForgeSoundness`]. Finds the
+/// forge block by (flow, name), re-derives its witness, and rejects a forged/
+/// stale proof or any structural violation (T868–T872).
+fn check_forge_soundness(
+    claimed: &super::proof_term::ForgeSoundnessWitness,
+    ir: &IRProgram,
+) -> CheckOutcome {
+    // Locate the forge block the witness claims.
+    let mut found = None;
+    for flow in &ir.flows {
+        if flow.name != claimed.flow_name {
+            continue;
+        }
+        let mut forges = Vec::new();
+        super::generate::__collect_forge_for_check(&flow.steps, &mut forges);
+        if let Some(f) = forges.into_iter().find(|f| f.name == claimed.forge_name) {
+            found = Some(f);
+            break;
+        }
+    }
+    let forge = match found {
+        Some(f) => f,
+        None => {
+            return CheckOutcome::Refuted {
+                reason: format!(
+                    "no forge '{}' in flow '{}' — forged or stale proof",
+                    claimed.forge_name, claimed.flow_name
+                ),
+            }
+        }
+    };
+    let actual = super::generate::derive_forge_soundness_witness(&claimed.flow_name, forge, ir);
+    if actual != *claimed {
+        return CheckOutcome::Refuted {
+            reason: "witness disagrees with artifact re-derivation (forged or stale proof)"
+                .to_string(),
+        };
+    }
+    if !actual.mode_ok {
+        return CheckOutcome::Refuted {
+            reason: format!("axon-T868 forge '{}' has an unknown creativity mode", actual.forge_name),
+        };
+    }
+    if !actual.novelty_in_range {
+        return CheckOutcome::Refuted {
+            reason: format!("axon-T869 forge '{}' novelty is outside [0,1]", actual.forge_name),
+        };
+    }
+    if !actual.bounds_ok {
+        return CheckOutcome::Refuted {
+            reason: format!("axon-T870 forge '{}' depth/branches < 1", actual.forge_name),
+        };
+    }
+    if !actual.seed_and_type_present {
+        return CheckOutcome::Refuted {
+            reason: format!("axon-T872 forge '{}' missing seed or return type", actual.forge_name),
+        };
+    }
+    if !actual.constraints_ok {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axon-T871 forge '{}' `constraints:` does not resolve to an anchor with a \
+                 confidence_floor",
+                actual.forge_name
             ),
         };
     }

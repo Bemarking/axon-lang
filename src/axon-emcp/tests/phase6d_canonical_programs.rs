@@ -283,7 +283,9 @@ flow AssembleReport(case: Text) -> CaseReport {
         ask: "Fetch case history."
         output: CaseHistory
     }
-    forge {
+    forge Synthesis(seed: "a novel legal argument from these case facts") -> CaseReport {
+        mode: exploratory
+        novelty: 0.6
     }
     step Render {
         given: LoadFacts.output

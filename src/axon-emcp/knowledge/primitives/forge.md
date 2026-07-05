@@ -1,127 +1,132 @@
 ---
 name: forge
-summary: A flow-body block that constructs typed values from sub-step outputs under explicit construction discipline.
+summary: "Directed Creative Synthesis — a flow-body block that runs the Poincaré-Hadamard four-phase creative process under a measured, fail-closed novelty guarantee (NCD), so an LLM can genuinely CREATE, not just interpolate."
 category: operators
 top_level: false
-since: Fase 18
+since: Fase 18 (stub); Fase 86 (v2.41.0, real implementation)
 grammar: |
-  # Flow-body block (sibling of step). Body is currently parsed
-  # structurally (skipped + audited as a unit); the runtime
-  # consumes the block as a typed constructor session.
-  forge { ... }
+  forge <Name>(seed: "<text>") -> <Type> {
+      mode:        combinatorial | exploratory | transformational   # optional (default exploratory)
+      novelty:     <0.0..1.0>                                        # optional (default 0.5)
+      depth:       <int ≥ 1>                                         # optional (default 1) — incubation iterations
+      branches:    <int ≥ 1>                                         # optional (default 1) — illumination best-of-N
+      constraints: <AnchorRef>                                       # optional — verification anchor + coherence floor
+  }
 ---
 
 # `forge`
 
-`forge` is **a flow-body block** that constructs typed values
-from sub-step outputs under explicit construction discipline.
-Where `step` operations emit one output each and `weave`
-braids multiple step outputs into a unified conclusion,
-`forge` declares **an explicit construction session** —
-"these inputs combine into this typed output, recorded as a
-single audit unit".
+`forge` is **Directed Creative Synthesis** — the primitive that lets an LLM
+*create*, not merely interpolate. It compiles to structured IR metadata that the
+runtime executes as an orchestrated **Poincaré-Hadamard four-phase pipeline**
+(the documented structure of mathematical invention — Poincaré 1908, Hadamard
+1945, Wallas 1926), under a **measured, fail-closed novelty guarantee**: a forge
+returns a value ONLY if it provably clears a novelty floor; a derivative result
+is never passed off as creative.
 
-The Fase 18 §λ-L-E charter introduced `forge` for cases where
-the constructor logic is non-trivial enough to deserve its
-own audit row but not big enough to merit a sub-flow. Common
-patterns: typed-record assembly from heterogeneous step
-outputs, multi-source citation bundles, evidence packages.
+> **This is not a prompt template.** Novelty is a *measured quantity*, not an
+> assertion, and the pipeline fails closed when it isn't met.
 
 ## Surface
 
-`forge` is **nested** — it appears as a flow-body block
-alongside `step`, `if`, `for`, `weave`. It is *not* a
-top-level declaration.
+`forge` is a **flow-body block** (sibling of `step`), not a top-level
+declaration.
 
 ```axon
-flow AssembleReport(case: CaseId) -> CaseReport {
-    step LoadFacts {
-        given: case
-        ask: "Fetch case facts."
-        output: CaseFacts
-    }
-    step LoadHistory {
-        given: case
-        ask: "Fetch case history."
-        output: CaseHistory
-    }
-    step LoadRulings {
-        given: case
-        ask: "Fetch prior rulings."
-        output: RulingsList
-    }
+anchor GoldenRatio {
+    require: aesthetic_harmony
+    confidence_floor: 0.70
+}
 
-    # Explicit construction session — the audit chain treats this
-    # block as one unit of work, with the three sources cited.
-    forge {
-        # The block body is structurally parsed today; the runtime
-        # consumes it as a typed constructor. Future Fase increments
-        # will land typed fields here (e.g. `sources:`, `target:`).
-    }
-
-    step Render {
-        given: LoadFacts.output
-        ask: "Render the final report from the forged record."
-        output: CaseReport
+flow CreateVisualConcept(brief: String) -> Visual {
+    forge Artwork(seed: "aurora borealis over ancient ruins") -> Visual {
+        mode:        transformational
+        novelty:     0.85
+        constraints: GoldenRatio
+        depth:       4
+        branches:    7
     }
 }
 ```
 
-## Anatomy
+## The four phases
 
-### Block — `forge { ... }`
+| Phase | What it does | Temperature |
+|---|---|---|
+| **1. Preparation** | Expand the seed into its *obvious/conventional* reading `B` — the baseline novelty is measured against. | low (0.3) |
+| **2. Incubation** | `depth` speculative iterations pushing far past the obvious. | τ_eff = τ_base·(0.5 + 0.5·novelty) |
+| **3. Illumination** | `branches` crystallizations (best-of-N); each branch's novelty is **measured** as ν = NCD(B, branch). | τ_base(mode) |
+| **4. Verification** | Select the argmax-utility branch and enforce the novelty floor **fail-closed**. | ~0 |
 
-The body is **currently parsed structurally** (via
-`parse_block_step("forge")`) — the lexer's brace pair
-encloses the block, and the parser skips its contents while
-recording the block's position. The runtime treats the block
-as a typed constructor session; the audit chain records the
-block's input set + output type + duration as a single row.
+## Fields
 
-**Future Fase increments will land typed fields** —
-`sources:`, `target:`, `format:` — analogous to `weave`'s
-structured body. Until then, the block is a marker /
-audit-row primitive, not a rich grammar surface.
+### `mode:` — Boden's creativity taxonomy
 
-## Runtime behaviour
+A closed catalog (`axon-T868`) from Margaret Boden's *The Creative Mind* (1990),
+each mapping to a sampling profile `(τ_base, freedom, rule_flexibility)`:
 
-`forge` lowers to a `ForgeBlock` IR node carrying only its
-source location. At execution:
+| Mode | τ_base | freedom | rule_flex | Character |
+|---|---|---|---|---|
+| `combinatorial` | 0.9 | 0.8 | 0.3 | novel recombination of known ideas |
+| `exploratory` (default) | 0.7 | 0.6 | 0.5 | structured navigation of a possibility space |
+| `transformational` | 1.2 | 1.0 | 0.9 | rule-breaking synthesis, new paradigms |
 
-1. The runtime takes a snapshot of the current flow scope.
-2. The block body runs (today: a no-op constructor placeholder
-   the runtime treats per its registered handler).
-3. The output is bound back into the flow scope.
-4. Audit row `forge:<source_loc>:assembled` carries
-   `(input_keys, output_type, duration)`.
+### `novelty:` — the measured floor
 
-The audit row's correlation key lets downstream consumers
-trace which step outputs contributed to which constructed
-value — useful for evidence-citation patterns in regulated
-flows.
+A value in `[0.0, 1.0]` (`axon-T869`). It (a) blends the incubation temperature
+(`τ_eff = τ_base·(0.5 + 0.5·novelty)`) and (b) sets the fail-closed novelty floor
+the final output must clear.
+
+**How novelty is measured (honest mathematics).** Kolmogorov complexity `K(x)`
+is *uncomputable*, so novelty cannot be computed exactly. `forge` uses the
+**Normalized Compression Distance** — `NCD(x,y) = [C(xy) − min(C(x),C(y))] /
+max(C(x),C(y))` with a real compressor `C` — the standard *computable*
+approximation of the Normalized Information Distance, a universal metric
+grounded in Kolmogorov complexity (Li, Chen, Li, Ma, Vitányi, IEEE TIT 2004).
+Novelty ν(O) = NCD(baseline, O): "how much of the output is NOT already implied
+by the obvious reading of the seed." Genuine creation ⇔ the output does not
+compress away given the baseline ⇔ ν ≥ floor.
+
+### `depth:` / `branches:`
+
+Incubation iterations and illumination branches, each `≥ 1` (`axon-T870`).
+
+### `constraints:` — the verification anchor
+
+An optional reference to a declared `anchor` carrying a `confidence_floor`
+(`axon-T871`). The verification phase uses it as the coherence gate.
+
+## The fail-closed guarantee
+
+A `forge` returns its typed value **only if** the winning synthesis clears the
+measured novelty floor. Otherwise it fails with a structured error — never a
+silent, derivative, or empty result:
+
+- `forge.novelty_floor_breached` — the best branch was too derivative of the
+  obvious reading of the seed (ν < floor).
+- `forge.no_feasible_branch` — no branch satisfied the `constraints:` anchor.
+
+This is the load-bearing property: **creativity you can verify, or a loud
+failure.**
+
+## Honest limits
+
+- `forge` synthesizes a typed *concept/specification*, not a rendered
+  image/audio (v1). "Novelty" is novelty-relative-to-the-obvious-baseline — a
+  computable proxy, not a claim of absolute unprecedentedness.
+- The runtime hard gate in v1 is the measured **novelty** floor; per-branch live
+  anchor-confidence judging is a follow-up (the anchor is statically validated).
 
 ## What this primitive is NOT
 
-- **Not a `weave`.** Weave declares HOW multiple step outputs
-  combine (synthesise / reconcile / rank / consensus); forge
-  is a CONSTRUCTOR session — "these become that". Different
-  intent.
-- **Not a `step`.** A step is one cognitive operation
-  producing one typed output via prompting; forge is a
-  structural-construction session typically with no LLM
-  invocation.
-- **Not a top-level declaration.** The parser rejects `forge`
-  outside a flow body.
-- **Not free of audit cost.** Each forge block emits its own
-  audit row even when the body is a placeholder; for very
-  hot paths, batch forges across iterations.
+- **Not a prompt with a high temperature.** The novelty floor is measured and
+  enforced; a temperature knob asserts nothing and fails open.
+- **Not a `step`.** A step is one cognitive operation; `forge` is a
+  multi-phase, verified creative pipeline.
+- **Not a top-level declaration.** It lives inside a flow body.
 
 ## See also
 
-- `axon://primitives/weave` — multi-source aggregation
-  counterpart.
+- `axon://primitives/anchor` — the `constraints:` verification predicate.
 - `axon://primitives/step` — single-operation counterpart.
-- `axon://primitives/transact` — atomic-mutation block
-  counterpart (different intent: forge = construct, transact
-  = mutate).
 - `axon://primitives/flow` — the parent of every forge block.

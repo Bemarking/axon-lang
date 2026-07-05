@@ -357,6 +357,10 @@ pub mod technician_dispatch;
 // in-process LRU tier with single-flight + TTL jitter + size bound, the
 // `CacheBackend` trait (enterprise injects Redis), and policy resolution.
 pub mod cache_runtime;
+// §Fase 86 — the mathematical core of `forge` Directed Creative Synthesis:
+// Boden profiles, NCD novelty (the computable Kolmogorov-novelty proxy),
+// best-of-N selection, and fail-closed verification.
+pub mod forge;
 pub mod tool_validator;
 pub mod trace_export;
 pub mod trace_store;

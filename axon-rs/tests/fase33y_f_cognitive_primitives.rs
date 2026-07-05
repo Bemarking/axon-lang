@@ -63,6 +63,7 @@ fn forge() -> IRFlowNode {
         node_type: "forge",
         source_line: 0,
         source_column: 0,
+                ..Default::default()
     })
 }
 
@@ -305,21 +306,33 @@ async fn pem_recall_finds_latest_entry_when_key_repeated() {
 //  §4 — Forge canonical wire shape
 // ────────────────────────────────────────────────────────────────────
 
+/// §Fase 86 — `forge` is no longer a 1-step no-op; it routes to the real
+/// Directed Creative Synthesis pipeline (Preparation → Incubation → Illumination
+/// → Verification), so it emits MANY sub-step events and returns either a
+/// Completed synthesis or a fail-closed structured error. This test asserts it
+/// routes and runs (emits phase events); the forge-logic assertions live in the
+/// `forge` + `cognitive::run_forge` unit tests.
 #[tokio::test]
 async fn dispatch_node_routes_forge_to_cognitive_handler() {
     let (mut ctx, mut rx) = fresh_ctx();
-    dispatch_node(&forge(), &mut ctx).await.unwrap();
+    // The pipeline may accept (Ok) or fail closed (Err) with the stub backend;
+    // either is valid routing — we only assert it reached the handler.
+    let _ = dispatch_node(&forge(), &mut ctx).await;
     let mut events = Vec::new();
     while let Ok(ev) = rx.try_recv() {
         events.push(ev);
     }
-    assert_eq!(events.len(), 2);
-    match &events[0] {
-        FlowExecutionEvent::StepStart { step_type, .. } => {
-            assert_eq!(step_type, "forge");
-        }
-        e => panic!("expected StepStart, got {e:?}"),
-    }
+    assert!(
+        !events.is_empty(),
+        "forge must route to a handler and emit at least one phase event"
+    );
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            FlowExecutionEvent::StepStart { step_type, .. } if step_type == "forge"
+        )),
+        "forge pipeline must emit a `forge` step event"
+    );
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -501,8 +514,11 @@ async fn cognitive_handlers_all_advance_step_counter_by_one() {
     assert_eq!(ctx.step_counter, 1);
     dispatch_node(&recall("a", "b"), &mut ctx).await.unwrap();
     assert_eq!(ctx.step_counter, 2);
-    dispatch_node(&forge(), &mut ctx).await.unwrap();
-    assert_eq!(ctx.step_counter, 3);
+    // §Fase 86 — `forge` is now a composite multi-phase pipeline, so it
+    // advances the counter by MORE than 1 (one per LLM phase + the forge
+    // wrapper). It is no longer a "advance by exactly 1" cognitive handler;
+    // excluded from this simple-handler contract.
+    let before_focus = ctx.step_counter;
     dispatch_node(&focus("x"), &mut ctx).await.unwrap();
-    assert_eq!(ctx.step_counter, 4);
+    assert_eq!(ctx.step_counter, before_focus + 1);
 }

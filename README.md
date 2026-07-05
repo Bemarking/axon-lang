@@ -608,19 +608,33 @@ Phase 4: VERIFICATION  — Adversarial doubt + anchor validation
 ```
 
 **Boden Creativity Taxonomy.** The `mode` parameter maps Margaret Boden's three
-creativity types to concrete LLM parameter overrides at compile time:
+creativity types (*The Creative Mind*, 1990) to concrete sampling-parameter
+profiles at compile time:
 
 ```text
-B : Mode → (τ, freedom, rule_flexibility)
+B : Mode → (τ_base, freedom, rule_flexibility)
 
-B(combinatory)      = (0.9,  0.8, 0.3)   — novel recombination of known ideas
+B(combinatorial)    = (0.9,  0.8, 0.3)   — novel recombination of known ideas
 B(exploratory)      = (0.7,  0.6, 0.5)   — structured navigation of possibility spaces
 B(transformational) = (1.2,  1.0, 0.9)   — rule-breaking synthesis, new paradigms
 ```
 
-**Novelty Operator K(x|K).** The `novelty` parameter (0.0–1.0) controls the
-Kolmogorov-inspired tradeoff between utility and surprise. It blends into the
-effective temperature used during incubation:
+**Novelty, measured — not asserted.** Kolmogorov complexity `K(x)` is
+*uncomputable*, so novelty cannot be computed exactly. `forge` measures it with
+the **Normalized Compression Distance** — the standard *computable* approximation
+of the Normalized Information Distance, a universal metric grounded in Kolmogorov
+complexity (Li, Chen, Li, Ma, Vitányi, IEEE TIT 2004):
+
+```text
+NCD(x, y) = [C(xy) − min(C(x), C(y))] / max(C(x), C(y))
+
+ν(output) = NCD(baseline, output)   — how much of the output is NOT
+                                       already implied by the obvious
+                                       reading of the seed
+```
+
+The `novelty` parameter (0.0–1.0) both blends the incubation temperature AND sets
+the **fail-closed floor** the final output must clear:
 
 ```text
 τ_eff = τ_base × (0.5 + 0.5 × novelty)
@@ -658,13 +672,26 @@ What the compiler does:
    `τ_eff = 1.2 × 0.925 = 1.11`, pushing beyond obvious associations
 3. **Illumination** — launches 7 parallel branches, each crystallizing the
    incubated ideas, then selects the most coherent output (Best-of-N)
-4. **Verification** — applies adversarial doubt against the `GoldenRatio`
-   anchor, validating that the result is genuinely novel (`K(x|K) > 0`) and
-   aesthetically balanced
+4. **Verification** — measures the winning branch's novelty ν = NCD(baseline,
+   output) and enforces it **fail-closed**: if ν is below the floor set by
+   `novelty`, the forge does NOT return a derivative result — it fails with a
+   structured `forge.novelty_floor_breached` error. Only a synthesis that
+   provably cleared the measured novelty floor (and its `GoldenRatio` anchor) is
+   returned.
 
-This is **not** a prompt template. The `forge` primitive compiles to structured
-IR metadata that the runtime executes as an orchestrated pipeline — the same
-precision AXON applies to every other cognitive primitive.
+This is **not** a prompt template. `forge` compiles to structured IR metadata
+(`IRForgeBlock` — seed, mode, novelty, depth, branches, constraints) that the
+runtime executes as the orchestrated four-phase pipeline above, with a
+`ForgeSoundness` proof-carrying-code certificate checked at the deploy gate. And
+unlike every prompt-based "creative mode," its novelty is **measured** (NCD) and
+**enforced fail-closed** — a derivative result is never passed off as creative.
+
+> **Honest scope.** `forge` synthesizes a typed *concept/specification*, not a
+> rendered artifact; "novelty" is novelty-relative-to-the-obvious-baseline (a
+> computable proxy for the uncomputable Kolmogorov novelty), not a claim of
+> absolute unprecedentedness. See
+> [`docs/fase/fase_86_forge_creative_synthesis.md`](https://github.com/Bemarking/axon-lang)
+> for the full mathematics and deferred scope.
 
 ### V. Autonomous Goal-Seeking — the `agent` Primitive
 
