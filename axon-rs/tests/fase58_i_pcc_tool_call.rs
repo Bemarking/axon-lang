@@ -98,6 +98,7 @@ fn tampering_the_canonical_artifact_digest_is_rejected() {
         target: None,
         risk: None,
         argv: Vec::new(),
+        cache: String::new(),
     });
     assert_eq!(check_proof(&proofs[0], &ir_b), CheckOutcome::DigestMismatch);
 }

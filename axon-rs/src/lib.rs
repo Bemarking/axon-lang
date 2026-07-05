@@ -353,6 +353,10 @@ pub mod tool_dispatch_bridge;
 // §Fase 84.d — Remote Hands runtime: pure argv render + confirmation-hash
 // binding + output bounding + the axon⇄agent wire protocol.
 pub mod technician_dispatch;
+// §Fase 85.d — result-memoization cache core: content-addressed keys,
+// in-process LRU tier with single-flight + TTL jitter + size bound, the
+// `CacheBackend` trait (enterprise injects Redis), and policy resolution.
+pub mod cache_runtime;
 pub mod tool_validator;
 pub mod trace_export;
 pub mod trace_store;

@@ -1083,6 +1083,7 @@ fn d1_catalog_totality_pin_45_variants() {
             limit_expr: String::new(),
             aggregate: String::new(),
             group_by: String::new(),
+            cache: String::new(),
         }),
         IRFlowNode::Mutate(IRMutateStep {
             node_type: "mutate",

@@ -238,6 +238,10 @@ fn attach_trivia_to_decl(decl: &mut Declaration, leading: Vec<Trivia>, trailing:
             n.leading_trivia = leading;
             n.trailing_trivia = trailing;
         }
+        Declaration::Cache(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
         Declaration::Observable(n) => {
             n.leading_trivia = leading;
             n.trailing_trivia = trailing;
@@ -2063,6 +2067,9 @@ impl Parser {
             // ── §Fase 83.a — the named origin-policy declaration ─
             TokenType::Cors => self.parse_cors().map(Declaration::Cors),
 
+            // ── §Fase 85.a — the named result-memoization policy ─
+            TokenType::Cache => self.parse_cache().map(Declaration::Cache),
+
             // ── §Fase 51.c.2 — Pauli-sum observable ────────────
             TokenType::Observable => self.parse_observable().map(Declaration::Observable),
 
@@ -2378,6 +2385,7 @@ impl Parser {
             target: None,
             risk: None,
             argv: Vec::new(),
+            cache: String::new(),
             loc,
             leading_trivia: Vec::new(),
             trailing_trivia: Vec::new(),
@@ -2422,6 +2430,9 @@ impl Parser {
                 // (`argv: ["ping", "-c", "${count}", "${host}"]`). Reuses the
                 // CORS list helper (tolerant of `[]` and a trailing comma).
                 "argv" => node.argv = self.parse_bracketed_strings()?,
+                // §Fase 85.b — the tool's result-memoization policy reference
+                // (a declared `cache` name, or the `none` opt-out sentinel).
+                "cache" => node.cache = self.consume_any_ident_or_kw()?.value,
                 _ => {
                     unknown_fields.push((field_name, field_tok.line, field_tok.column));
                     self.skip_value();
@@ -4539,6 +4550,7 @@ impl Parser {
         let mut limit_expr = String::new();
         let mut aggregate = String::new();
         let mut group_by = String::new();
+        let mut cache = String::new();
         if self.check(TokenType::LBrace) {
             self.advance();
             while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
@@ -4580,6 +4592,12 @@ impl Parser {
                         "group_by" => {
                             group_by = self.consume(TokenType::StringLit)?.value.clone()
                         }
+                        // §Fase 85.b — `cache:` names a declared `cache`
+                        // policy. A retrieve reads a store (never `pure`), so
+                        // caching it always accepts staleness — the checker
+                        // requires a finite `ttl:` on the referenced cache
+                        // (axon-T865) and resolves the reference (axon-T864).
+                        "cache" => cache = self.consume_any_ident_or_kw()?.value.clone(),
                         _ => self.skip_value(),
                     }
                 }
@@ -4596,6 +4614,7 @@ impl Parser {
             limit_expr,
             aggregate,
             group_by,
+            cache,
             loc: Loc {
                 line: tok.line,
                 column: tok.column,
@@ -6873,6 +6892,45 @@ impl Parser {
                 other => return Err(self.error(&format!("unknown cors field `{other}`"))),
             }
             // Optional comma between fields.
+            if self.check(TokenType::Comma) {
+                self.consume(TokenType::Comma)?;
+            }
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(node)
+    }
+
+    /// §Fase 85.a — parse `cache Name { backend:, ttl:, key:, default:,
+    /// apply_to_effects:, invalidate_on: }`. Strict closed-catalog (unknown
+    /// field is a hard error, the §83 D83.7 discipline — a cache governs
+    /// correctness, so a typo can never silently mean "no policy"). All
+    /// cross-field laws (single default, non-pure-needs-ttl, reference
+    /// resolution, effect widening) are §85.c type-checker territory.
+    fn parse_cache(&mut self) -> Result<CacheDefinition, ParseError> {
+        let tok = self.consume(TokenType::Cache)?;
+        let name = self.consume(TokenType::Identifier)?.value;
+        let mut node = CacheDefinition {
+            name,
+            loc: Loc { line: tok.line, column: tok.column },
+            ..Default::default()
+        };
+        self.consume(TokenType::LBrace)?;
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            let key = self.consume_any_ident_or_kw()?.value;
+            self.consume(TokenType::Colon)?;
+            match key.as_str() {
+                "backend" => node.backend = self.consume_any_ident_or_kw()?.value,
+                "ttl" => node.ttl = Some(self.consume(TokenType::Duration)?.value),
+                "key" => node.key_params = self.parse_bracketed_identifiers()?,
+                "default" => {
+                    node.default_policy = self.consume_any_ident_or_kw()?.value == "true"
+                }
+                "apply_to_effects" => {
+                    node.apply_to_effects = self.parse_bracketed_identifiers()?
+                }
+                "invalidate_on" => node.invalidate_on = self.parse_bracketed_identifiers()?,
+                other => return Err(self.error(&format!("unknown cache field `{other}`"))),
+            }
             if self.check(TokenType::Comma) {
                 self.consume(TokenType::Comma)?;
             }

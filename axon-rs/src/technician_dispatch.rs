@@ -258,6 +258,7 @@ mod tests {
             target: Some("TechSafeWS".to_string()),
             risk: Some(risk.to_string()),
             argv: argv.iter().map(|s| s.to_string()).collect(),
+            cache: String::new(),
         }
     }
 

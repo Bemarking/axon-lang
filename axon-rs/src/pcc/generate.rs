@@ -21,8 +21,9 @@ use super::proof_term::{
     EffectBudgetedWitness,
     EffectRowSoundnessWitness, InterruptibleSessionSoundnessWitness, JsonShapeSoundnessWitness,
     ParkedResidualSoundnessWitness, ProofTerm, PropertyClass,
-    ResourceBoundsWitness, ShieldHaltGuaranteeWitness, TechnicianCommandSafetyWitness,
-    ToolCallSoundnessWitness, UpstreamProjectionSoundnessWitness, Witness,
+    CacheSoundnessWitness, ResourceBoundsWitness, ShieldHaltGuaranteeWitness,
+    TechnicianCommandSafetyWitness, ToolCallSoundnessWitness,
+    UpstreamProjectionSoundnessWitness, Witness,
     CALL_INTERRUPT_CAUSES, MAX_RETRIES, VALID_BREACH_POLICIES, VALID_BUDGET_PERIODS,
     VALID_ON_EXHAUSTED,
 };
@@ -1880,6 +1881,74 @@ pub fn generate_technician_command_safety_proofs(
     proofs
 }
 
+// ── §Fase 85.c — CacheSoundness ──────────────────────────────────────────────
+
+/// §85.c — re-derive the whole-program cache witness from `ir.caches` +
+/// `ir.tools` + `ir.channels`. "No contract → no proof": a program with no
+/// `cache` declaration and no `tool.cache:` reference returns `None`.
+pub fn derive_cache_soundness_witness(ir: &IRProgram) -> Option<CacheSoundnessWitness> {
+    let uses_cache = !ir.caches.is_empty()
+        || ir
+            .tools
+            .iter()
+            .any(|t| !t.cache.is_empty() && t.cache != "none");
+    if !uses_cache {
+        return None;
+    }
+
+    let cache_names: Vec<String> = ir.caches.iter().map(|c| c.name.clone()).collect();
+    let default_count = ir.caches.iter().filter(|c| c.default_policy).count();
+
+    let base = |e: &str| e.split_once(':').map(|(b, _)| b).unwrap_or(e).to_string();
+    let widened_without_ttl: Vec<String> = ir
+        .caches
+        .iter()
+        .filter(|c| {
+            let pure_only = c.apply_to_effects.iter().all(|e| base(e) == "pure");
+            !pure_only && c.ttl.is_none()
+        })
+        .map(|c| c.name.clone())
+        .collect();
+
+    let channel_names: std::collections::HashSet<&str> =
+        ir.channels.iter().map(|c| c.name.as_str()).collect();
+    let cache_name_set: std::collections::HashSet<&str> =
+        cache_names.iter().map(|s| s.as_str()).collect();
+    let mut unresolved_refs = Vec::new();
+    for c in &ir.caches {
+        for ch in &c.invalidate_on {
+            if !channel_names.contains(ch.as_str()) {
+                unresolved_refs.push(format!("cache '{}' invalidate_on '{}'", c.name, ch));
+            }
+        }
+    }
+    for t in &ir.tools {
+        if !t.cache.is_empty() && t.cache != "none" && !cache_name_set.contains(t.cache.as_str()) {
+            unresolved_refs.push(format!("tool '{}' cache '{}'", t.name, t.cache));
+        }
+    }
+
+    Some(CacheSoundnessWitness {
+        cache_names,
+        default_count,
+        widened_without_ttl,
+        unresolved_refs,
+    })
+}
+
+/// §85.c — generate the (at most one) CacheSoundness proof for `ir`.
+pub fn generate_cache_soundness_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm> {
+    match derive_cache_soundness_witness(ir) {
+        Some(witness) => vec![ProofTerm {
+            property: PropertyClass::CacheSoundness,
+            artifact_digest: artifact_digest(ir),
+            witness: Witness::CacheSoundness(witness),
+            axon_version: axon_version.to_string(),
+        }],
+        None => Vec::new(),
+    }
+}
+
 /// §51.f — generate proofs across ALL property classes for `ir`. The
 /// `axon pcc prove` entry point. Concatenates every per-class
 /// generator (compliance / effects / capability-gate / resources /
@@ -1905,5 +1974,6 @@ pub fn generate_all_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm>
     proofs.extend(generate_upstream_projection_soundness_proofs(ir, axon_version));
     proofs.extend(generate_cors_policy_consistency_proofs(ir, axon_version));
     proofs.extend(generate_technician_command_safety_proofs(ir, axon_version));
+    proofs.extend(generate_cache_soundness_proofs(ir, axon_version));
     proofs
 }

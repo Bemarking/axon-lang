@@ -538,6 +538,14 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         doc_status: DocStatus::Documented,
     },
     PrimitiveInfo {
+        name: "cache",
+        category: "operators",
+        top_level: true,
+        since: "Fase 85 (v2.40.0)",
+        summary: "A named, referenced result-memoization policy — cacheability derives from the type system's `effects: pure` proof; `tool.cache:` / `retrieve.cache:` opt in, a single `default: true` auto-covers every pure tool, and a non-pure cache must carry a finite `ttl:`.",
+        doc_status: DocStatus::Documented,
+    },
+    PrimitiveInfo {
         name: "mandate",
         category: "operators",
         top_level: true,
@@ -706,9 +714,11 @@ mod tests {
         // §Fase 80.g added `voice` (the inspectable voice-agent sugar) → 55→56.
         // §Fase 83 added `cors` (the named, referenced browser-origin
         // policy) → 56→57.
+        // §Fase 85 added `cache` (the named, referenced result-memoization
+        // policy) → 57→58.
         assert_eq!(
             PRIMITIVE_REGISTRY.len(),
-            57,
+            58,
             "PRIMITIVE_REGISTRY count drift — add/remove the primitive intentionally + update this assertion"
         );
     }
@@ -805,6 +815,8 @@ mod tests {
             "upstream", "voice",
             // §Fase 83 — the named, referenced browser-origin policy.
             "cors",
+            // §Fase 85 — the named, referenced result-memoization policy.
+            "cache",
         ]
         .into_iter()
         .collect();
@@ -825,13 +837,14 @@ mod tests {
         // (`channel` / `emit` / `publish` / `discover`).
         // §Fase 80.b: 54 → 55 with `upstream`; §80.g: 55 → 56 with `voice`.
         // §Fase 83: 56 → 57 with `cors`.
-        assert_eq!(s.total, 57);
+        // §Fase 85: 57 → 58 with `cache`.
+        assert_eq!(s.total, 58);
         assert_eq!(s.documented + s.pending, s.total);
         // §Fase 6.d achieves **100% coverage** — every entry in the
         // registry has a `.md` and a passing drift-gated canonical
         // program. Pending count is 0; any future drop is a
         // regression the gate catches.
-        assert_eq!(s.documented, 57);
+        assert_eq!(s.documented, 58);
         assert_eq!(s.pending, 0);
     }
 

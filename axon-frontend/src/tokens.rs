@@ -192,6 +192,12 @@ pub enum TokenType {
     // a multi-tenant deploy where different bundles need different origins
     // for a path with the same name.
     Cors,
+    // `cache` (§Fase 85.a) — a named, referenced result-memoization policy,
+    // resolved per `tool.cache:` / `retrieve.cache:` reference (mirrors
+    // `cors`'s shape). Cacheability derives from the type system's `pure`
+    // proof: a `pure` tool is safe to cache by construction. Distinct from
+    // `memory` (conversational recall state) — see cache.md §"What this is NOT".
+    Cache,
     // `quant` as a cognitive primitive (§Fase 51.a) — a flow-body block that
     // projects an MEK semantic tensor into a complex Hilbert space, evolves it
     // under a variational / kernel-feature map, and collapses back to classical
@@ -524,6 +530,8 @@ pub fn keyword_type(word: &str) -> TokenType {
         "voice" => TokenType::Voice,
         // `cors` (§Fase 83.a) — the named origin-policy declaration.
         "cors" => TokenType::Cors,
+        // `cache` (§Fase 85.a) — the named result-memoization policy.
+        "cache" => TokenType::Cache,
         // `quant` as a cognitive primitive (§Fase 51.a) — flow-body block.
         "quant" => TokenType::Quant,
         // `observable` (§Fase 51.c.2) — top-level Pauli-sum declaration.
@@ -622,6 +630,8 @@ pub fn is_declaration_keyword(tt: &TokenType) -> bool {
             | TokenType::Voice
             // §Fase 83.a — the named origin-policy declaration
             | TokenType::Cors
+            // §Fase 85.a — the named result-memoization policy declaration
+            | TokenType::Cache
             // §Fase 51.c.2 — Pauli-sum observable declaration
             | TokenType::Observable
             // §Fase 69.a — Advantage-Witness declaration

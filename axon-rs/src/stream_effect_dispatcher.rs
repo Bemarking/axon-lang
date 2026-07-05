@@ -389,6 +389,7 @@ mod tests {
             target: None,
             risk: None,
             argv: Vec::new(),
+            cache: String::new(),
             loc: loc(),
             leading_trivia: Vec::new(),
             trailing_trivia: Vec::new(),

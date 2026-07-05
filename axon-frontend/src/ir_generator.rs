@@ -298,6 +298,7 @@ impl IRGenerator {
             Declaration::Socket(n) => ir.sockets.push(self.visit_socket(n)),
             Declaration::Upstream(n) => ir.upstreams.push(self.visit_upstream(n)),
             Declaration::Cors(n) => ir.cors_policies.push(self.visit_cors(n)),
+            Declaration::Cache(n) => ir.caches.push(self.visit_cache(n)),
             // §Fase 80.g — `voice` never reaches the IR: the parser already
             // expanded it into ordinary ots/session/socket/upstream
             // declarations (in this same program), and THOSE are the
@@ -466,6 +467,8 @@ impl IRGenerator {
             target: n.target.clone(),
             risk: n.risk.clone(),
             argv: n.argv.clone(),
+            // §Fase 85.b — the cache-policy reference (elided when empty).
+            cache: n.cache.clone(),
         }
     }
 
@@ -998,6 +1001,8 @@ impl IRGenerator {
                 // §Fase 76.d — the aggregate surface (raw; elided when empty).
                 aggregate: s.aggregate.clone(),
                 group_by: s.group_by.clone(),
+                // §Fase 85.b — the cache-policy reference (elided when empty).
+                cache: s.cache.clone(),
             }),
             FlowStep::Mutate(s) => IRFlowNode::Mutate(IRMutateStep {
                 node_type: "mutate",
@@ -1932,6 +1937,23 @@ impl IRGenerator {
             allow_credentials: n.allow_credentials,
             max_age: n.max_age.clone(),
             expose_headers: n.expose_headers.clone(),
+        }
+    }
+
+    /// §Fase 85.b — lower a `cache` policy declaration (pure shape translation;
+    /// every law already ran in the §85.c checker).
+    fn visit_cache(&self, n: &crate::ast::CacheDefinition) -> crate::ir_nodes::IRCache {
+        crate::ir_nodes::IRCache {
+            node_type: "cache",
+            source_line: n.loc.line,
+            source_column: n.loc.column,
+            name: n.name.clone(),
+            backend: n.backend.clone(),
+            ttl: n.ttl.clone(),
+            key_params: n.key_params.clone(),
+            default_policy: n.default_policy,
+            apply_to_effects: n.apply_to_effects.clone(),
+            invalidate_on: n.invalidate_on.clone(),
         }
     }
 

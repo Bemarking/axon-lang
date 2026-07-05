@@ -495,6 +495,7 @@ fn retrieve_node() -> IRFlowNode {
         limit_expr: String::new(),
         aggregate: String::new(),
         group_by: String::new(),
+        cache: String::new(),
     })
 }
 

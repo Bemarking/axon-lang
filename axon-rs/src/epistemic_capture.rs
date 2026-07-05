@@ -293,6 +293,7 @@ mod tests {
             target: None,
             risk: None,
             argv: Vec::new(),
+            cache: String::new(),
         }
     }
 

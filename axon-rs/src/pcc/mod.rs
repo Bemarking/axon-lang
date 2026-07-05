@@ -432,6 +432,7 @@ mod tests {
             target: None,
             risk: None,
             argv: Vec::new(),
+            cache: String::new(),
         }
     }
 
@@ -1173,6 +1174,7 @@ mod tests {
             limit_expr: String::new(),
             aggregate: String::new(),
             group_by: String::new(),
+            cache: String::new(),
         })
     }
 
@@ -2571,6 +2573,82 @@ mod tests {
         match check_proof(del_proof, &ir) {
             CheckOutcome::Refuted { reason } => assert!(reason.contains("T860"), "{reason}"),
             other => panic!("expected Refuted (destructive w/o branch), got {other:?}"),
+        }
+    }
+
+    // ── §Fase 85.c — CacheSoundness ──────────────────────────────────────
+
+    const CACHE_PROGRAM: &str = concat!(
+        "flow Chat() -> Unit { step S { ask: \"hi\" } }\n",
+        "type WeatherEvent { city: String }\n",
+        "channel WeatherUpdated { message: WeatherEvent }\n",
+        "tool Fingerprint { provider: http effects: <pure> parameters: { input: String } }\n",
+        "tool Weather { provider: http effects: <network> parameters: { city: String } cache: WeatherCache }\n",
+        "cache DefaultPure { default: true }\n",
+        "cache WeatherCache { backend: redis ttl: 5m apply_to_effects: [pure, network] invalidate_on: [WeatherUpdated] }\n",
+    );
+
+    #[test]
+    fn cache_soundness_round_trips_and_verifies() {
+        let ir = ir_from_source(CACHE_PROGRAM);
+        let proofs = super::generate::generate_cache_soundness_proofs(&ir, "test");
+        assert_eq!(proofs.len(), 1, "one whole-program cache proof");
+        assert_eq!(proofs[0].property, PropertyClass::CacheSoundness);
+        if let Witness::CacheSoundness(ref w) = proofs[0].witness {
+            assert_eq!(w.default_count, 1);
+            assert!(w.widened_without_ttl.is_empty());
+            assert!(w.unresolved_refs.is_empty());
+        } else {
+            panic!("expected a CacheSoundness witness");
+        }
+        assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
+    }
+
+    #[test]
+    fn cache_less_program_carries_no_proof() {
+        let ir = ir_from_source("flow Chat() -> Unit { step S { ask: \"hi\" } }\n");
+        assert!(
+            super::generate::generate_cache_soundness_proofs(&ir, "test").is_empty(),
+            "no contract → no proof"
+        );
+    }
+
+    #[test]
+    fn cache_soundness_refutes_two_defaults() {
+        let mut ir = ir_from_source(CACHE_PROGRAM);
+        if let Some(wc) = ir.caches.iter_mut().find(|c| c.name == "WeatherCache") {
+            wc.default_policy = true;
+        }
+        let proofs = super::generate::generate_cache_soundness_proofs(&ir, "test");
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => assert!(reason.contains("T863"), "{reason}"),
+            other => panic!("expected Refuted (two defaults), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cache_soundness_refutes_widened_without_ttl() {
+        let mut ir = ir_from_source(CACHE_PROGRAM);
+        if let Some(wc) = ir.caches.iter_mut().find(|c| c.name == "WeatherCache") {
+            wc.ttl = None;
+        }
+        let proofs = super::generate::generate_cache_soundness_proofs(&ir, "test");
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => assert!(reason.contains("T865"), "{reason}"),
+            other => panic!("expected Refuted (widened w/o ttl), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cache_soundness_refutes_unresolved_reference() {
+        let mut ir = ir_from_source(CACHE_PROGRAM);
+        if let Some(t) = ir.tools.iter_mut().find(|t| t.name == "Weather") {
+            t.cache = "Ghost".to_string();
+        }
+        let proofs = super::generate::generate_cache_soundness_proofs(&ir, "test");
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => assert!(reason.contains("T864"), "{reason}"),
+            other => panic!("expected Refuted (unresolved ref), got {other:?}"),
         }
     }
 

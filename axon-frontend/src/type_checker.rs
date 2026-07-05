@@ -87,6 +87,10 @@ const VALID_EFFECTS: &[&str] = &[
     "ots",
 ];
 
+/// §Fase 85.c — the closed `cache.backend:` catalog. `in_process` is the OSS
+/// default single-replica tier; `redis` is the enterprise multi-replica tier.
+const VALID_CACHE_BACKENDS: &[&str] = &["in_process", "redis"];
+
 const VALID_EPISTEMIC_LEVELS: &[&str] = &["believe", "doubt", "know", "speculate"];
 
 const VALID_DERIVATIONS: &[&str] = &["aggregated", "derived", "inferred", "raw", "transformed"];
@@ -201,6 +205,27 @@ fn is_valid(value: &str, set: &[&str]) -> bool {
 
 fn valid_list(set: &[&str]) -> String {
     set.join(", ")
+}
+
+/// §Fase 85.c — is a cache's `apply_to_effects:` set provably-cacheable-forever,
+/// i.e. does it cover ONLY `pure`? An empty set means the implicit default
+/// `[pure]`. Anything with a non-`pure` member is a widening that accepts
+/// staleness and therefore requires a finite `ttl:` (`axon-T865`, D85.9).
+fn cache_effects_are_pure_only(apply_to_effects: &[String]) -> bool {
+    apply_to_effects.iter().all(|e| {
+        let base = e.split_once(':').map(|(b, _)| b).unwrap_or(e.as_str());
+        base == "pure"
+    })
+}
+
+/// §Fase 85.c — a tool's declared effect row is provably-`pure` (safe to cache
+/// by construction, D85.1) iff it is exactly `[pure]`. Empty / absent effects
+/// are NOT pure — an undeclared effect row is unknown, not proven deterministic.
+fn tool_is_pure(effects: &Option<crate::ast::EffectRow>) -> bool {
+    match effects {
+        Some(row) => row.effects.len() == 1 && row.effects[0] == "pure",
+        None => false,
+    }
 }
 
 /// §Fase 84.c (`axon-T860`) — does this session-step sequence contain a
@@ -932,6 +957,9 @@ impl<'a> TypeChecker<'a> {
         // §Fase 83.c — cross-declaration pass (needs every axonendpoint's
         // final `path`/`cors_ref`, so it runs after the per-declaration walk).
         self.check_cors_cross_method_consistency(&self.program.declarations);
+        // §Fase 85.c — cross-declaration cache laws (single default, effect
+        // widening), needs the full tool + cache set.
+        self.check_cache_module_laws(&self.program.declarations);
         self.errors
     }
 
@@ -952,6 +980,8 @@ impl<'a> TypeChecker<'a> {
         self.check_declarations(&self.program.declarations);
         // §Fase 83.c — see `check`.
         self.check_cors_cross_method_consistency(&self.program.declarations);
+        // §Fase 85.c — see `check`.
+        self.check_cache_module_laws(&self.program.declarations);
         (self.errors, self.warnings)
     }
 
@@ -1349,6 +1379,11 @@ impl<'a> TypeChecker<'a> {
                 Declaration::Cors(n) => {
                     registrations.push((n.name.clone(), "cors".into(), n.loc.line, n.loc.clone()));
                 }
+                // §Fase 85.a — register the named cache policy so a
+                // `tool.cache:` / `retrieve.cache:` reference resolves to it.
+                Declaration::Cache(n) => {
+                    registrations.push((n.name.clone(), "cache".into(), n.loc.line, n.loc.clone()));
+                }
                 // §Fase 51.c.2 — register the Pauli-sum observable so a
                 // `quant(observable: <Name>)` reference resolves to it.
                 Declaration::Observable(n) => {
@@ -1545,6 +1580,7 @@ impl<'a> TypeChecker<'a> {
                 Declaration::Upstream(n) => self.check_upstream(n),
                 Declaration::Voice(n) => self.check_voice(n),
                 Declaration::Cors(n) => self.check_cors(n),
+                Declaration::Cache(n) => self.check_cache(n),
                 Declaration::Observable(n) => self.check_observable(n),
                 Declaration::Witness(n) => self.check_witness(n),
                 Declaration::Immune(n) => self.check_immune(n),
@@ -1818,10 +1854,116 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// §Fase 85.c — resolve a `tool.cache:` reference and enforce the
+    /// non-pure-needs-ttl law at the use site:
+    /// - `axon-T864` — a non-`none`, non-empty `cache:` must name a declared
+    ///   `cache`.
+    /// - `axon-T865` — a NON-pure tool memoised by a cache with no finite
+    ///   `ttl:` is forbidden (caching a non-deterministic result forever,
+    ///   D85.9). A provably-`pure` tool may reference a ttl-less cache.
+    fn check_tool_cache_ref(&mut self, node: &ToolDefinition) {
+        if node.cache.is_empty() || node.cache == "none" {
+            return;
+        }
+        match self.symbols.lookup(&node.cache) {
+            None => {
+                self.emit(
+                    format!(
+                        "axon-T864 tool '{}' references undefined cache '{}' (use `cache: none` \
+                         to opt out of a default policy)",
+                        node.name, node.cache
+                    ),
+                    &node.loc,
+                );
+                return;
+            }
+            Some(sym) if sym.kind != "cache" => {
+                self.emit(
+                    format!(
+                        "axon-T864 '{}' is a {}, not a cache (referenced by tool '{}')",
+                        node.cache, sym.kind, node.name
+                    ),
+                    &node.loc,
+                );
+                return;
+            }
+            _ => {}
+        }
+        if !tool_is_pure(&node.effects) {
+            if let Some(cache_decl) = self.find_cache(&node.cache) {
+                if cache_decl.ttl.is_none() {
+                    let row = node
+                        .effects
+                        .as_ref()
+                        .map(|r| r.effects.join(", "))
+                        .unwrap_or_else(|| "<none declared>".to_string());
+                    self.emit(
+                        format!(
+                            "axon-T865 tool '{}' (effects <{}>, not proven `pure`) is memoised by \
+                             cache '{}' which declares no `ttl:` — a non-deterministic result may \
+                             not be cached forever; give '{}' a finite `ttl:`",
+                            node.name, row, node.cache, node.cache
+                        ),
+                        &node.loc,
+                    );
+                }
+            }
+        }
+    }
+
+    /// §Fase 85.c — resolve a `retrieve.cache:` reference. A retrieve is a
+    /// `storage` read (never `pure`), so the referenced cache is always used
+    /// for a possibly-stale result and MUST carry a finite `ttl:` (T865); the
+    /// reference itself must resolve to a declared `cache` (T864).
+    fn check_retrieve_cache_ref(&mut self, cache_ref: &str, flow_name: &str, loc: &Loc) {
+        if cache_ref.is_empty() {
+            return;
+        }
+        match self.symbols.lookup(cache_ref) {
+            None => {
+                self.emit(
+                    format!(
+                        "axon-T864 retrieve in flow '{}' references undefined cache '{}'",
+                        flow_name, cache_ref
+                    ),
+                    loc,
+                );
+                return;
+            }
+            Some(sym) if sym.kind != "cache" => {
+                self.emit(
+                    format!(
+                        "axon-T864 '{}' is a {}, not a cache (referenced by a retrieve in flow '{}')",
+                        cache_ref, sym.kind, flow_name
+                    ),
+                    loc,
+                );
+                return;
+            }
+            _ => {}
+        }
+        if let Some(cache_decl) = self.find_cache(cache_ref) {
+            if cache_decl.ttl.is_none() {
+                self.emit(
+                    format!(
+                        "axon-T865 retrieve in flow '{}' is memoised by cache '{}' which declares \
+                         no `ttl:` — a `retrieve` reads mutable store data, so a cached result may \
+                         not live forever; give '{}' a finite `ttl:` (and typically an \
+                         `invalidate_on:` channel)",
+                        flow_name, cache_ref, cache_ref
+                    ),
+                    loc,
+                );
+            }
+        }
+    }
+
     fn check_tool(&mut self, node: &ToolDefinition) {
         // §Fase 84.c — Remote Hands technician-command laws (T858–T862). Inert
         // for any tool that does not set `target:`/`risk:`/`argv:`.
         self.check_technician_tool(node);
+        // §Fase 85.c — cache-reference resolution + non-pure-needs-ttl.
+        self.check_tool_cache_ref(node);
         if let Some(v) = node.max_results {
             if v <= 0 {
                 self.emit(
@@ -3108,6 +3250,81 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// §Fase 85.c — validate one `cache { … }` declaration's own fields. The
+    /// cross-declaration laws (single default `axon-T863`, effect-widening
+    /// `axon-W013`) live in [`Self::check_cache_module_laws`]; the reference
+    /// checks on `tool.cache:` / `retrieve.cache:` live in [`Self::check_tool`]
+    /// and the flow-step walker.
+    fn check_cache(&mut self, node: &CacheDefinition) {
+        // axon-T866 — `backend:` is a closed catalog.
+        if !node.backend.is_empty() && !is_valid(&node.backend, VALID_CACHE_BACKENDS) {
+            self.emit(
+                format!(
+                    "axon-T866 unknown cache backend '{}' in cache '{}'. Valid: {}",
+                    node.backend,
+                    node.name,
+                    valid_list(VALID_CACHE_BACKENDS)
+                ),
+                &node.loc,
+            );
+        }
+
+        // axon-T867 — every `apply_to_effects:` member is a real effect
+        // (the closed `VALID_EFFECTS` catalog); a typo'd effect can never
+        // silently widen or narrow what the cache covers.
+        for eff in &node.apply_to_effects {
+            let base = eff.split_once(':').map(|(b, _)| b).unwrap_or(eff.as_str());
+            if !is_valid(base, VALID_EFFECTS) {
+                self.emit(
+                    format!(
+                        "axon-T867 unknown effect '{}' in cache '{}' `apply_to_effects:`. Valid: {}",
+                        eff,
+                        node.name,
+                        valid_list(VALID_EFFECTS)
+                    ),
+                    &node.loc,
+                );
+            }
+        }
+
+        // axon-T865 — a NON-PURE cache MUST carry a finite `ttl:` (D85.9). You
+        // may cache a provably-deterministic (`pure`) result forever; caching a
+        // non-deterministic one forever is the footgun the compiler forbids.
+        if !cache_effects_are_pure_only(&node.apply_to_effects) && node.ttl.is_none() {
+            self.emit(
+                format!(
+                    "axon-T865 cache '{}' widens `apply_to_effects:` beyond [pure] but declares no \
+                     `ttl:` — a non-deterministic result may not be cached forever; add a finite \
+                     `ttl:` (e.g. `ttl: 30s`) bounding how stale a served result may be",
+                    node.name
+                ),
+                &node.loc,
+            );
+        }
+
+        // axon-T864 — every `invalidate_on:` reference resolves to a declared
+        // `channel` (reusing the §13 pub/sub, not a second mechanism).
+        for ch in &node.invalidate_on {
+            match self.symbols.lookup(ch) {
+                None => self.emit(
+                    format!(
+                        "axon-T864 cache '{}' `invalidate_on:` references undefined channel '{}'",
+                        node.name, ch
+                    ),
+                    &node.loc,
+                ),
+                Some(sym) if sym.kind != "channel" => self.emit(
+                    format!(
+                        "axon-T864 '{}' is a {}, not a channel (in cache '{}' `invalidate_on:`)",
+                        ch, sym.kind, node.name
+                    ),
+                    &node.loc,
+                ),
+                _ => {}
+            }
+        }
+    }
+
     /// §Fase 83.c — validate one `cors { … }` declaration's own fields
     /// (cross-declaration checks — the undefined-reference check on
     /// `axonendpoint.cors:` and the cross-method path-consistency check —
@@ -3213,6 +3430,76 @@ impl<'a> TypeChecker<'a> {
                     );
                 }
                 Some(_) => {}
+            }
+        }
+    }
+
+    /// §Fase 85.c — the cross-declaration cache laws, run after the
+    /// per-declaration walk (needs the full tool + cache set):
+    /// - **axon-T863** — at most one `cache { default: true }` per module.
+    /// - **axon-W013** — a widened `default: true` cache (effects beyond
+    ///   `[pure]`) names EVERY non-pure tool it ends up auto-covering, so the
+    ///   author sees exactly what determinism they are trusting (D85.2, the
+    ///   §77.a W005 "compiler stops being polite" discipline).
+    fn check_cache_module_laws(&mut self, decls: &[Declaration]) {
+        let defaults: Vec<&CacheDefinition> = decls
+            .iter()
+            .filter_map(|d| match d {
+                Declaration::Cache(c) if c.default_policy => Some(c),
+                _ => None,
+            })
+            .collect();
+
+        // axon-T863 — competing defaults never silently "last one wins."
+        if defaults.len() > 1 {
+            for extra in &defaults[1..] {
+                self.emit(
+                    format!(
+                        "axon-T863 more than one `cache {{ default: true }}` in this module \
+                         ('{}' and '{}'); a module has at most one default cache policy — \
+                         remove `default: true` from all but one",
+                        defaults[0].name, extra.name
+                    ),
+                    &extra.loc,
+                );
+            }
+        }
+
+        // axon-W013 — a single WIDENED default names each non-pure tool it covers.
+        if defaults.len() == 1 && !cache_effects_are_pure_only(&defaults[0].apply_to_effects) {
+            let def = defaults[0];
+            let base = |e: &str| e.split_once(':').map(|(b, _)| b.to_string()).unwrap_or_else(|| e.to_string());
+            let apply_set: Vec<String> = if def.apply_to_effects.is_empty() {
+                vec!["pure".to_string()]
+            } else {
+                def.apply_to_effects.iter().map(|e| base(e)).collect()
+            };
+            for decl in decls {
+                let Declaration::Tool(t) = decl else { continue };
+                // An explicit `cache:` (a named ref OR the `none` opt-out) takes
+                // the tool out of the default's auto-coverage.
+                if !t.cache.is_empty() {
+                    continue;
+                }
+                let Some(row) = &t.effects else { continue };
+                let covered = row.effects.iter().all(|e| apply_set.contains(&base(e)));
+                let has_nonpure = row.effects.iter().any(|e| base(e) != "pure");
+                if covered && has_nonpure {
+                    self.warn(
+                        format!(
+                            "axon-W013 cache '{}' has `default: true` with `apply_to_effects:` \
+                             widened beyond [pure]; it auto-caches tool '{}' whose effect row \
+                             <{}> is NOT proven deterministic — a stale or incorrect result may \
+                             be served (bounded by `ttl:`). Confirm '{}' is safe to memoize, or \
+                             set `cache: none` on it to opt out",
+                            def.name,
+                            t.name,
+                            row.effects.join(", "),
+                            t.name
+                        ),
+                        &t.loc,
+                    );
+                }
             }
         }
     }
@@ -6581,6 +6868,14 @@ impl<'a> TypeChecker<'a> {
         })
     }
 
+    /// §Fase 85.c — Resolve a cache declaration by name.
+    fn find_cache(&self, name: &str) -> Option<&'a CacheDefinition> {
+        self.program.declarations.iter().find_map(|d| match d {
+            Declaration::Cache(c) if c.name == name => Some(c),
+            _ => None,
+        })
+    }
+
     // ── Flow-level reference checks ─────────────────────────────────
 
     fn check_flow_steps(&mut self, steps: &[FlowStep], flow_name: &str) {
@@ -6819,6 +7114,10 @@ impl<'a> TypeChecker<'a> {
                         &n.limit_expr,
                         &n.loc,
                     );
+                    // §Fase 85.c — a `retrieve` reads a store (never `pure`),
+                    // so a `cache:` on it always accepts staleness: resolve the
+                    // reference (T864) and require a finite `ttl:` (T865).
+                    self.check_retrieve_cache_ref(&n.cache, flow_name, &n.loc);
                 }
                 FlowStep::Mutate(n) => {
                     self.check_store_ref(&n.store_name, flow_name, &n.loc);
@@ -9861,10 +10160,12 @@ mod fase35j_capability_tests {
 
     #[test]
     fn ungated_store_needs_no_endpoint_grant() {
+        // §Fase 85 — renamed store `cache` → `kvstore` (`cache` is now a
+        // reserved keyword for the result-memoization primitive).
         let src = r#"
-            axonstore cache { backend: postgresql connection: "env:DB" }
+            axonstore kvstore { backend: postgresql connection: "env:DB" }
             flow Fetch() -> Unit {
-                retrieve cache { where: "k = 1" }
+                retrieve kvstore { where: "k = 1" }
             }
             axonendpoint Ep { method: GET path: "/c" execute: Fetch }
         "#;

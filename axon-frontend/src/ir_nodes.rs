@@ -120,6 +120,10 @@ pub struct IRProgram {
     /// drift — the standing §76.d discipline).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cors_policies: Vec<IRCors>,
+    /// §Fase 85.b — named, referenced result-memoization policies. Same
+    /// `skip_serializing_if = empty` IR-SHA discipline as `cors_policies`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub caches: Vec<IRCache>,
     /// §Fase 23 — algebraic effect declarations (compiled).
     /// Each declared effect persists into IR so axon-rs can build the
     /// per-effect operation table at startup. The CPS state graph for
@@ -190,6 +194,7 @@ impl IRProgram {
             witnesses: Vec::new(),
             upstreams: Vec::new(),
             cors_policies: Vec::new(),
+            caches: Vec::new(),
             effects: Vec::new(),
         }
     }
@@ -731,6 +736,11 @@ pub struct IRToolSpec {
     pub risk: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub argv: Vec<String>,
+    /// §Fase 85.b — the cache-policy reference (a declared `cache` name, or the
+    /// `none` opt-out sentinel). Empty ⇒ module-default-governed. Elided when
+    /// empty (IR-SHA stable for cache-less programs).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub cache: String,
 }
 
 // ── Memory ───────────────────────────────────────────────────────────────────
@@ -1413,6 +1423,10 @@ pub struct IRRetrieveStep {
     /// §Fase 76.d — `group_by:` clause (raw `"col, col2"`).
     #[serde(skip_serializing_if = "String::is_empty", default)]
     pub group_by: String,
+    /// §Fase 85.b — `cache:` reference (a declared `cache` name). Empty ⇒
+    /// uncached. Elided when empty (IR-SHA stable for cache-less retrieves).
+    #[serde(skip_serializing_if = "String::is_empty", default)]
+    pub cache: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2061,6 +2075,39 @@ pub struct IRCors {
     pub max_age: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub expose_headers: Vec<String>,
+}
+
+/// §Fase 85.b — compiled `cache` policy. The checker (§85.c) re-derives the
+/// same laws at the deploy gate (`CacheSoundness`), so an IR that reaches the
+/// runtime is already proven sound (one default max, non-pure ⇒ finite ttl,
+/// references resolve). Every optional field is `skip_serializing_if` so a
+/// bundle using `cache` only pays IR bytes for what it declares, and a bundle
+/// with no `cache` never emits a `caches` key (IR-SHA stable, §76.d).
+#[derive(Debug, Clone, Serialize)]
+pub struct IRCache {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub name: String,
+    /// `"redis"` | `"in_process"`; empty ⇒ runtime default (`in_process`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub backend: String,
+    /// Duration literal (`"10s"`) — same string-carries-the-unit convention as
+    /// `cors.max_age`. `None` ⇒ cache-forever (sound only for a `pure` cache).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl: Option<String>,
+    /// The parameter-name subset forming the key; empty ⇒ all bound params.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub key_params: Vec<String>,
+    /// `true` ⇒ auto-covers every eligible tool (at most one per module).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub default_policy: bool,
+    /// Effect classes this cache memoises; empty ⇒ `["pure"]`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub apply_to_effects: Vec<String>,
+    /// Channel names whose `emit` flushes this cache's namespace.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub invalidate_on: Vec<String>,
 }
 
 /// Compiled emit step — `c⟨v⟩.P` (Chan-Output / Chan-Mobility).

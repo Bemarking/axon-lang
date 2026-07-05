@@ -419,6 +419,7 @@ mod tests {
                 target: None,
                 risk: None,
                 argv: Vec::new(),
+                cache: String::new(),
             },
             IRToolSpec {
                 node_type: "ToolDefinition",
@@ -439,6 +440,7 @@ mod tests {
                 target: None,
                 risk: None,
                 argv: Vec::new(),
+                cache: String::new(),
             },
         ];
         reg.register_from_ir(&specs);
@@ -523,6 +525,7 @@ mod tests {
                 target: None,
                 risk: None,
                 argv: Vec::new(),
+                cache: String::new(),
             },
             IRToolSpec {
                 node_type: "ToolDefinition",
@@ -543,6 +546,7 @@ mod tests {
                 target: None,
                 risk: None,
                 argv: Vec::new(),
+                cache: String::new(),
             },
         ];
 

@@ -1242,7 +1242,8 @@ Body prose.
         // §Fase 80.b: 54 → 55 with `upstream` (the outbound vendor connection).
         // §Fase 80.g: 55 → 56 with `voice` (the inspectable voice-agent sugar).
         // §Fase 83: 56 → 57 with `cors` (the named browser-origin policy).
-        assert_eq!(s.total, 57);
+        // §Fase 85: 57 → 58 with `cache` (the result-memoization policy).
+        assert_eq!(s.total, 58);
     }
 
     /// §Phase 5 — every MCP prompt shipped under

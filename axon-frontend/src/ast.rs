@@ -145,6 +145,10 @@ pub enum Declaration {
     /// `shield`'s shape exactly), resolved per `axonendpoint.cors:`
     /// reference (docs/fase/fase_83_cors_first_class_endpoint_property.md).
     Cors(CorsDefinition),
+    /// §Fase 85.a — a named, referenced result-memoization policy (mirrors
+    /// `cors`'s shape), resolved per `tool.cache:` / `retrieve.cache:`
+    /// (docs/fase/fase_85_native_cache_primitive.md).
+    Cache(CacheDefinition),
     /// §Fase 51.c.2 — a Pauli-sum observable `M = Σ cₖ Pₖ` that a `quant`
     /// block measures against (paper §3.2; plan D5).
     Observable(ObservableDefinition),
@@ -582,6 +586,59 @@ pub struct CorsDefinition {
     /// JS may read beyond the CORS-safelisted set. Free-form strings, same
     /// rationale as `allow_headers`.
     pub expose_headers: Vec<String>,
+    pub loc: Loc,
+    /// Fase 14.b — leading comment trivia.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
+}
+
+/// `cache Name { backend:, ttl:, key:, default:, apply_to_effects:,
+/// invalidate_on: }` — §Fase 85.a, a named, referenced result-memoization
+/// policy resolved per `tool.cache:` / `retrieve.cache:` (mirrors
+/// `CorsDefinition`'s named-and-referenced shape).
+///
+/// The load-bearing idea (D85.1): cacheability derives from the type system's
+/// existing `effects: pure` proof — a `pure` tool is safe to cache by
+/// construction. A `default: true` cache auto-covers every `pure` tool with
+/// zero per-tool annotation; widening `apply_to_effects:` beyond `[pure]` is
+/// allowed but the compiler names every non-pure tool it covers (W013) AND
+/// forces a finite `ttl:` (T865 — you may cache a proven-deterministic result
+/// forever, never a non-deterministic one).
+///
+/// **Unknown fields are a hard parse error** (the §83 D83.7 discipline) — a
+/// cache governs correctness (serving a stale/foreign result is a real bug), so
+/// a typo'd field can never silently mean "no policy."
+#[derive(Debug, Default)]
+pub struct CacheDefinition {
+    pub name: String,
+    /// `redis` (multi-replica, enterprise tier) or `in_process` (the OSS
+    /// default single-replica tier). Empty ⇒ `in_process`. Validated against a
+    /// closed catalog at check time.
+    pub backend: String,
+    /// Time-to-live as a duration literal (`"10s"`, `"5m"`, `"1h"`), same lexer
+    /// convention as `cors.max_age`/`tool.timeout`. `None` ⇒ "cache forever" —
+    /// sound ONLY for a provably-`pure` cache; a non-pure cache with no `ttl:`
+    /// is `axon-T865` (D85.9).
+    pub ttl: Option<String>,
+    /// `key: [param, ...]` — the SUBSET of the covered tool's `parameters:`
+    /// whose bound values form the cache key. Empty ⇒ ALL bound parameters
+    /// (the automatic, zero-friction default). Used when one bound arg — e.g. a
+    /// `request_id` — must NOT affect the key.
+    pub key_params: Vec<String>,
+    /// `default: true` ⇒ this cache auto-covers every eligible tool in the
+    /// module without a per-tool `cache:` reference. At most one per module
+    /// (`axon-T863`). Default `false`.
+    pub default_policy: bool,
+    /// `apply_to_effects: [pure, ...]` — the effect classes this cache is
+    /// willing to memoise. Empty ⇒ `[pure]` (the only provably-safe default).
+    /// Any member beyond `pure` is a WIDENING (W013 names each covered tool)
+    /// and forces a finite `ttl:` (T865).
+    pub apply_to_effects: Vec<String>,
+    /// `invalidate_on: [Channel, ...]` — an `emit` on any listed channel
+    /// flushes this cache's namespace. Each must resolve to a declared
+    /// `channel` (`axon-T864`). Reuses the §13 pub/sub, not a second mechanism.
+    pub invalidate_on: Vec<String>,
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia.
     pub leading_trivia: Vec<crate::tokens::Trivia>,
@@ -1555,6 +1612,13 @@ pub struct ToolDefinition {
     /// is deliberately NOT offered. Empty for a non-technician tool; required
     /// (`axon-T858`) when `target:` is set on a `provider: bash` tool.
     pub argv: Vec<String>,
+    /// §Fase 85.b — the result-memoization policy for this tool. Names a
+    /// declared `cache` (`axon-T864`), or the reserved sentinel `none` to opt
+    /// OUT of an active `cache { default: true }` policy (the escape hatch for
+    /// a rare mislabeled-`pure` tool). Empty ⇒ governed by the module default
+    /// if one exists and this tool is eligible (`pure`, or covered by the
+    /// default's `apply_to_effects`). Distinct from `memory` (D85.6).
+    pub cache: String,
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia attached to this declaration
     /// (comments preceding the declaration's first token, since the
@@ -2369,6 +2433,13 @@ pub struct RetrieveStep {
     /// of column identifiers (same discipline as `order_by:` columns).
     /// Requires an `aggregate:`. Empty = no grouping.
     pub group_by: String,
+    /// §Fase 85.b — optional `cache:` reference. A `retrieve` reads a store
+    /// (a `storage` effect — never `pure`), so caching it is always a WIDENING
+    /// that accepts staleness: the named `cache` MUST carry a finite `ttl:`
+    /// (`axon-T865`) and typically an `invalidate_on:`. Names a declared
+    /// `cache` (`axon-T864`); empty = uncached. Never governed by a
+    /// `default: true` policy (defaults only auto-cover provably-`pure` tools).
+    pub cache: String,
     pub loc: Loc,
 }
 #[derive(Debug)]

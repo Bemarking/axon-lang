@@ -126,6 +126,9 @@ pub fn check_proof(proof: &ProofTerm, ir: &IRProgram) -> CheckOutcome {
         (PropertyClass::TechnicianCommandSafety, Witness::TechnicianCommandSafety(w)) => {
             check_technician_command_safety(w, ir)
         }
+        (PropertyClass::CacheSoundness, Witness::CacheSoundness(w)) => {
+            check_cache_soundness(w, ir)
+        }
         _ => CheckOutcome::UnknownProperty,
     }
 }
@@ -1054,6 +1057,57 @@ fn check_technician_command_safety(
                 "axon-T860 technician tool '{}' is `risk: destructive` but its bound session '{}' \
                  offers no reachable `branch{{ approved / denied }}` confirmation",
                 actual.tool_name, actual.session_name
+            ),
+        };
+    }
+    CheckOutcome::Verified
+}
+
+/// §85.c — independent checker for [`PropertyClass::CacheSoundness`]. Re-derives
+/// the whole-program cache witness and rejects on ANY of: a forged/stale
+/// witness, more than one `default: true` (T863), a widened cache without a
+/// finite ttl (T865), or an unresolved reference (T864).
+fn check_cache_soundness(
+    claimed: &super::proof_term::CacheSoundnessWitness,
+    ir: &IRProgram,
+) -> CheckOutcome {
+    let actual = match super::generate::derive_cache_soundness_witness(ir) {
+        Some(w) => w,
+        None => {
+            return CheckOutcome::Refuted {
+                reason: "no cache contract exists in this artifact (no `cache` declarations, no \
+                         `tool.cache:` references) — forged or stale proof"
+                    .to_string(),
+            }
+        }
+    };
+    if actual != *claimed {
+        return CheckOutcome::Refuted {
+            reason: "witness disagrees with artifact re-derivation (forged or stale proof)"
+                .to_string(),
+        };
+    }
+    if actual.default_count > 1 {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axon-T863 {} caches declare `default: true` (must be ≤ 1)",
+                actual.default_count
+            ),
+        };
+    }
+    if !actual.widened_without_ttl.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axon-T865 cache(s) widen `apply_to_effects:` beyond [pure] with no `ttl:`: {:?}",
+                actual.widened_without_ttl
+            ),
+        };
+    }
+    if !actual.unresolved_refs.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axon-T864 unresolved cache/channel reference(s): {:?}",
+                actual.unresolved_refs
             ),
         };
     }

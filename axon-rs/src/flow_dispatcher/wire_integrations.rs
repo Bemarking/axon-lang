@@ -1911,6 +1911,7 @@ mod tests {
             limit_expr: String::new(),
             aggregate: String::new(),
             group_by: String::new(),
+            cache: String::new(),
         };
         run_retrieve(&retrieve, &mut ctx).await.unwrap();
         assert_eq!(ctx.let_bindings.get("retrieved_id").unwrap(), "42");
@@ -2233,6 +2234,7 @@ mod tests {
             limit_expr: String::new(),
             aggregate: String::new(),
             group_by: String::new(),
+            cache: String::new(),
         };
         assert!(matches!(run_retrieve(&retrieve, &mut ctx).await, Err(DispatchError::UpstreamCancelled)));
 
@@ -2357,6 +2359,7 @@ mod tests {
             limit_expr: String::new(),
             aggregate: String::new(),
             group_by: String::new(),
+            cache: String::new(),
         };
         assert!(matches!(
             run_retrieve(&node, &mut ctx).await,
@@ -2461,6 +2464,7 @@ mod tests {
             limit_expr: String::new(),
             aggregate: String::new(),
             group_by: String::new(),
+            cache: String::new(),
         }
     }
 

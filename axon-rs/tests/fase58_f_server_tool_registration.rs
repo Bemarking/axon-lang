@@ -32,6 +32,7 @@ fn tool(name: &str, provider: &str, runtime: &str) -> IRToolSpec {
         target: None,
         risk: None,
         argv: Vec::new(),
+        cache: String::new(),
     }
 }
 

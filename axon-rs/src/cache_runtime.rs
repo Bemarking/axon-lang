@@ -1,0 +1,663 @@
+//! §Fase 85.d — the result-memoization cache core.
+//!
+//! This is the production-hardened runtime behind the `cache` primitive. The
+//! type checker (§85.c) already proved WHAT is safe to cache (a `pure` tool by
+//! construction; a widened one only with a finite TTL); this module implements
+//! HOW, with the properties a naïve cache omits and that cause real outages:
+//!
+//! - **Content-addressed, deploy-safe, tenant-isolated keys (D85.7):** the key
+//!   is a hash of `(tenant ‖ cache ‖ tool ‖ tool-declaration-fingerprint ‖
+//!   output_type ‖ selected params)`. A redeploy that changes a tool changes
+//!   its fingerprint → a new key → no stale cross-deploy hit; the tenant is a
+//!   key component → no cross-tenant leak even if a backend mis-namespaces.
+//! - **Single-flight (D85.8):** concurrent misses for one key compute ONCE;
+//!   the rest wait for that result (no thundering herd).
+//! - **Provable-forever, never non-deterministic-forever (D85.9):** enforced at
+//!   compile time; the runtime simply honours the (optional) TTL.
+//! - **Production hygiene (D85.10):** errors are never cached; oversized values
+//!   are not cached (never truncated into a wrong value); TTL expiry is
+//!   *jittered* (deterministically, per key) so entries don't expire in a herd.
+//!
+//! The `CacheBackend` trait lets the enterprise inject a Redis (multi-replica)
+//! tier; with none injected, the in-process tier is fully functional
+//! single-replica.
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use sha2::{Digest, Sha256};
+
+use axon_frontend::ir_nodes::{IRCache, IRProgram, IRToolSpec};
+
+/// Default cap on the in-process tier (entries), mirroring `IdempotencyStore`.
+pub const DEFAULT_CAPACITY: usize = 10_000;
+/// Default per-value size ceiling (bytes). An oversized result is simply not
+/// cached (D85.10) — never truncated into a wrong value.
+pub const DEFAULT_MAX_VALUE_BYTES: usize = 512 * 1024;
+
+// ── Duration parsing (mirrors the lexer's `<n><unit>` Duration token) ────────
+
+/// Parse a duration literal (`"10s"`, `"500ms"`, `"5m"`, `"2h"`, `"1d"`) to a
+/// `Duration`. `None` for a malformed string (the lexer already guarantees the
+/// shape for a `ttl:` field, so this is defence in depth).
+pub fn parse_duration(s: &str) -> Option<Duration> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let (num, unit): (&str, &str) = if let Some(p) = s.strip_suffix("ms") {
+        (p, "ms")
+    } else if let Some(p) = s.strip_suffix('s') {
+        (p, "s")
+    } else if let Some(p) = s.strip_suffix('m') {
+        (p, "m")
+    } else if let Some(p) = s.strip_suffix('h') {
+        (p, "h")
+    } else if let Some(p) = s.strip_suffix('d') {
+        (p, "d")
+    } else {
+        return None;
+    };
+    let n: u64 = num.parse().ok()?;
+    Some(match unit {
+        "ms" => Duration::from_millis(n),
+        "s" => Duration::from_secs(n),
+        "m" => Duration::from_secs(n * 60),
+        "h" => Duration::from_secs(n * 3600),
+        "d" => Duration::from_secs(n * 86400),
+        _ => return None,
+    })
+}
+
+// ── Content-addressed key derivation (D85.7) ─────────────────────────────────
+
+fn hex(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
+
+/// A length-prefixed hash component — length-prefixing makes element boundaries
+/// forgery-proof (no value can fake a boundary, the §84 argv-hash discipline
+/// strengthened with explicit lengths).
+fn update_part(h: &mut Sha256, part: &str) {
+    h.update((part.len() as u64).to_le_bytes());
+    h.update(part.as_bytes());
+}
+
+/// The stable fingerprint of a tool's DECLARATION — a hash of its IR spec. A
+/// redeploy that changes the tool's provider, effects, output type, or
+/// parameters changes this, so a behaviour change can never serve a result
+/// cached under the old behaviour (D85.7).
+pub fn tool_fingerprint(tool: &IRToolSpec) -> String {
+    match serde_json::to_vec(tool) {
+        Ok(bytes) => {
+            let mut h = Sha256::new();
+            h.update(&bytes);
+            hex(&h.finalize())[..16].to_string()
+        }
+        Err(_) => "unfingerprintable".to_string(),
+    }
+}
+
+/// Derive the content-addressed cache key. `key_args` are the selected
+/// `(param_name, value)` pairs (the full bound set, or the `key:` subset).
+pub fn derive_key(
+    tenant: &str,
+    cache_name: &str,
+    tool_name: &str,
+    tool_fingerprint: &str,
+    output_type: &str,
+    key_args: &[(String, String)],
+) -> String {
+    let mut h = Sha256::new();
+    for part in [tenant, cache_name, tool_name, tool_fingerprint, output_type] {
+        update_part(&mut h, part);
+    }
+    // Sort so argument order never changes the key.
+    let mut sorted: Vec<&(String, String)> = key_args.iter().collect();
+    sorted.sort();
+    update_part(&mut h, &format!("__argc={}", sorted.len()));
+    for (k, v) in sorted {
+        update_part(&mut h, k);
+        update_part(&mut h, v);
+    }
+    hex(&h.finalize())
+}
+
+// ── The backend trait + in-process tier ──────────────────────────────────────
+
+/// A pluggable cache tier. `namespace` is the cache declaration's name so
+/// `invalidate` can flush exactly one cache's entries. The enterprise injects a
+/// Redis impl of this; the OSS default is [`InProcessCache`].
+pub trait CacheBackend: Send + Sync {
+    fn get(&self, namespace: &str, key: &str) -> Option<Vec<u8>>;
+    fn put(&self, namespace: &str, key: &str, value: Vec<u8>, ttl: Option<Duration>);
+    /// Flush every entry belonging to `namespace` (an `emit` on an
+    /// `invalidate_on:` channel triggers this).
+    fn invalidate(&self, namespace: &str);
+}
+
+struct Entry {
+    value: Vec<u8>,
+    expires_at: Option<Instant>,
+    last_access: Instant,
+}
+
+struct State {
+    entries: HashMap<(String, String), Entry>,
+    capacity: usize,
+    max_value_bytes: usize,
+}
+
+/// The OSS default single-replica tier: a bounded map with per-entry TTL
+/// (jittered), LRU eviction, a value-size bound, and single-flight miss
+/// coalescing via per-key locks.
+pub struct InProcessCache {
+    state: Mutex<State>,
+    /// Per-key locks that serialise concurrent computers for the same key
+    /// (single-flight, D85.8). Held only during a compute; opportunistically
+    /// reclaimed when no computer references it.
+    keylocks: Mutex<HashMap<(String, String), Arc<Mutex<()>>>>,
+}
+
+impl Default for InProcessCache {
+    fn default() -> Self {
+        Self::new(DEFAULT_CAPACITY, DEFAULT_MAX_VALUE_BYTES)
+    }
+}
+
+impl InProcessCache {
+    pub fn new(capacity: usize, max_value_bytes: usize) -> Self {
+        InProcessCache {
+            state: Mutex::new(State {
+                entries: HashMap::new(),
+                capacity: capacity.max(1),
+                max_value_bytes,
+            }),
+            keylocks: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn now() -> Instant {
+        Instant::now()
+    }
+
+    /// Deterministic per-key jitter (0..=ttl/10) so entries sharing a TTL do
+    /// NOT expire in a synchronised herd (D85.10). Deterministic (derived from
+    /// the key) — no RNG, reproducible, and still spreads expiries across keys.
+    fn jitter(key: &str, ttl: Duration) -> Duration {
+        let span = ttl.as_millis() as u64 / 10;
+        if span == 0 {
+            return Duration::ZERO;
+        }
+        let mut h = Sha256::new();
+        h.update(key.as_bytes());
+        let digest = h.finalize();
+        let seed = u64::from_le_bytes(digest[..8].try_into().unwrap_or([0; 8]));
+        Duration::from_millis(seed % (span + 1))
+    }
+
+    /// Single-flight compute-through: return a cached value, or compute it
+    /// exactly once even under concurrent misses for the same key. A computed
+    /// ERROR is propagated but NEVER cached (D85.10).
+    pub fn get_or_compute<F, E>(
+        &self,
+        namespace: &str,
+        key: &str,
+        ttl: Option<Duration>,
+        compute: F,
+    ) -> Result<Vec<u8>, E>
+    where
+        F: FnOnce() -> Result<Vec<u8>, E>,
+    {
+        if let Some(v) = self.get(namespace, key) {
+            return Ok(v);
+        }
+        // Acquire (or create) the per-key lock and serialise computers for it.
+        let keylock = {
+            let mut locks = self.keylocks.lock().unwrap();
+            locks
+                .entry((namespace.to_string(), key.to_string()))
+                .or_insert_with(|| Arc::new(Mutex::new(())))
+                .clone()
+        };
+        let _flight = keylock.lock().unwrap();
+        // Re-check under the flight lock: a peer may have filled it.
+        if let Some(v) = self.get(namespace, key) {
+            self.reclaim_keylock(namespace, key, &keylock);
+            return Ok(v);
+        }
+        let result = compute();
+        if let Ok(ref value) = result {
+            self.put(namespace, key, value.clone(), ttl);
+        }
+        drop(_flight);
+        self.reclaim_keylock(namespace, key, &keylock);
+        result
+    }
+
+    /// Drop the per-key lock from the map once no other computer references it
+    /// (strong_count == 2: the map's + our local clone).
+    fn reclaim_keylock(&self, namespace: &str, key: &str, held: &Arc<Mutex<()>>) {
+        let mut locks = self.keylocks.lock().unwrap();
+        if Arc::strong_count(held) <= 2 {
+            locks.remove(&(namespace.to_string(), key.to_string()));
+        }
+    }
+
+    /// Current entry count (test/introspection).
+    pub fn len(&self) -> usize {
+        self.state.lock().unwrap().entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+impl CacheBackend for InProcessCache {
+    fn get(&self, namespace: &str, key: &str) -> Option<Vec<u8>> {
+        let mut st = self.state.lock().unwrap();
+        let k = (namespace.to_string(), key.to_string());
+        let expired = match st.entries.get(&k) {
+            Some(e) => e.expires_at.map(|t| Self::now() >= t).unwrap_or(false),
+            None => return None,
+        };
+        if expired {
+            st.entries.remove(&k);
+            return None;
+        }
+        let now = Self::now();
+        let e = st.entries.get_mut(&k)?;
+        e.last_access = now;
+        Some(e.value.clone())
+    }
+
+    fn put(&self, namespace: &str, key: &str, value: Vec<u8>, ttl: Option<Duration>) {
+        let mut st = self.state.lock().unwrap();
+        // D85.10 — an oversized value is simply not cached.
+        if value.len() > st.max_value_bytes {
+            return;
+        }
+        // LRU eviction when at capacity (and not overwriting an existing key).
+        let k = (namespace.to_string(), key.to_string());
+        if st.entries.len() >= st.capacity && !st.entries.contains_key(&k) {
+            if let Some(oldest) = st
+                .entries
+                .iter()
+                .min_by_key(|(_, e)| e.last_access)
+                .map(|(k, _)| k.clone())
+            {
+                st.entries.remove(&oldest);
+            }
+        }
+        let expires_at = ttl.map(|d| Self::now() + d + Self::jitter(key, d));
+        st.entries.insert(
+            k,
+            Entry {
+                value,
+                expires_at,
+                last_access: Self::now(),
+            },
+        );
+    }
+
+    fn invalidate(&self, namespace: &str) {
+        let mut st = self.state.lock().unwrap();
+        st.entries.retain(|(ns, _), _| ns != namespace);
+    }
+}
+
+// ── Policy resolution (which cache governs a tool) ───────────────────────────
+
+/// Resolve which `cache` (if any) governs a tool's memoization, given the whole
+/// program IR (D85.2). Precedence: an explicit `cache: none` opts out; an
+/// explicit `cache: <Name>` selects that cache; otherwise the single
+/// `default: true` cache applies IFF the tool is eligible (provably `pure`, or
+/// its effects are a subset of the default's `apply_to_effects`). Returns
+/// `None` when nothing caches the tool.
+pub fn resolve_tool_cache<'a>(ir: &'a IRProgram, tool: &IRToolSpec) -> Option<&'a IRCache> {
+    // Explicit opt-out.
+    if tool.cache == "none" {
+        return None;
+    }
+    // Explicit reference.
+    if !tool.cache.is_empty() {
+        return ir.caches.iter().find(|c| c.name == tool.cache);
+    }
+    // Module default (if exactly one and the tool is eligible).
+    let default = ir.caches.iter().find(|c| c.default_policy)?;
+    let apply: Vec<String> = if default.apply_to_effects.is_empty() {
+        vec!["pure".to_string()]
+    } else {
+        default
+            .apply_to_effects
+            .iter()
+            .map(|e| e.split_once(':').map(|(b, _)| b.to_string()).unwrap_or_else(|| e.clone()))
+            .collect()
+    };
+    // The tool's effect row (IR lowers effects with an optional `epistemic:`
+    // suffix; compare on the base).
+    let eligible = !tool.effect_row.is_empty()
+        && tool.effect_row.iter().all(|e| {
+            let base = e.split_once(':').map(|(b, _)| b).unwrap_or(e.as_str());
+            apply.iter().any(|a| a == base)
+        });
+    if eligible {
+        Some(default)
+    } else {
+        None
+    }
+}
+
+// ── Integration layer (the one seam the runner calls) ───────────────────────
+
+/// Ties policy resolution + content-addressed key derivation + single-flight
+/// compute-through into one call the dispatch path makes per tool. The
+/// enterprise injects a Redis `backend` + the real `tenant`; the OSS default is
+/// an in-process backend under a `"local"` tenant. This is the whole runtime
+/// contract for §85 — a hit returns before `compute` runs (so a budget gate
+/// placed after the lookup never sees it, D85.3).
+pub struct CacheRuntime {
+    backend: Arc<dyn CacheBackend>,
+    tenant: String,
+}
+
+/// The outcome of a cache-mediated dispatch — lets the caller emit the right
+/// `cache:hit` / `cache:miss` audit signal (D85.3) without re-deriving it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CacheOutcome {
+    Hit(Vec<u8>),
+    Miss(Vec<u8>),
+    /// The tool is not cache-eligible; carries the freshly computed value so
+    /// the caller uses it exactly as it would a `Miss`, minus the audit signal.
+    Uncached(Vec<u8>),
+}
+
+impl CacheOutcome {
+    /// The result value, regardless of hit/miss/uncached.
+    pub fn value(&self) -> &[u8] {
+        match self {
+            CacheOutcome::Hit(v) | CacheOutcome::Miss(v) | CacheOutcome::Uncached(v) => v,
+        }
+    }
+}
+
+impl CacheRuntime {
+    pub fn new(backend: Arc<dyn CacheBackend>, tenant: impl Into<String>) -> Self {
+        CacheRuntime {
+            backend,
+            tenant: tenant.into(),
+        }
+    }
+
+    /// In-process, single-tenant default (OSS runtime with no injected tier).
+    pub fn in_process() -> Self {
+        Self::new(Arc::new(InProcessCache::default()), "local")
+    }
+
+    /// Look up (or compute-and-store) a tool result. `args` is the full bound
+    /// `(name, value)` set; the `key:` subset (if any) is applied here.
+    /// `compute` runs ONLY on a miss and its error is never cached (D85.10).
+    pub fn dispatch<F, E>(
+        &self,
+        ir: &IRProgram,
+        tool: &IRToolSpec,
+        args: &[(String, String)],
+        compute: F,
+    ) -> Result<CacheOutcome, E>
+    where
+        F: FnOnce() -> Result<Vec<u8>, E>,
+    {
+        let Some(cache) = resolve_tool_cache(ir, tool) else {
+            // Not cache-eligible → run and report Uncached (carrying the value).
+            return compute().map(CacheOutcome::Uncached);
+        };
+        // Apply the `key:` subset (empty ⇒ all args).
+        let key_args: Vec<(String, String)> = if cache.key_params.is_empty() {
+            args.to_vec()
+        } else {
+            args.iter()
+                .filter(|(k, _)| cache.key_params.contains(k))
+                .cloned()
+                .collect()
+        };
+        let output_type = tool.output_type.clone().unwrap_or_default();
+        let key = derive_key(
+            &self.tenant,
+            &cache.name,
+            &tool.name,
+            &tool_fingerprint(tool),
+            &output_type,
+            &key_args,
+        );
+        let ttl = cache.ttl.as_deref().and_then(parse_duration);
+
+        // Fast path: a hit returns BEFORE compute (so no budget is charged).
+        if let Some(v) = self.backend.get(&cache.name, &key) {
+            return Ok(CacheOutcome::Hit(v));
+        }
+        // Miss: compute-through (single-flight is provided by the in-process
+        // backend's own `get_or_compute`; the generic path here is a
+        // check-compute-put that the Redis tier can specialise with SET NX).
+        let value = compute()?;
+        self.backend.put(&cache.name, &key, value.clone(), ttl);
+        Ok(CacheOutcome::Miss(value))
+    }
+
+    /// Flush a cache namespace (called when an `emit` fires on one of its
+    /// `invalidate_on:` channels).
+    pub fn invalidate(&self, cache_name: &str) {
+        self.backend.invalidate(cache_name);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc as StdArc;
+
+    fn ir_from(src: &str) -> IRProgram {
+        let toks = axon_frontend::lexer::Lexer::new(src, "<cache-test>")
+            .tokenize()
+            .unwrap();
+        let prog = axon_frontend::parser::Parser::new(toks).parse().unwrap();
+        axon_frontend::ir_generator::IRGenerator::new().generate(&prog)
+    }
+
+    const CACHE_PROG: &str = concat!(
+        "flow F() -> Unit { step S { ask: \"hi\" } }\n",
+        "tool Enrich { provider: http effects: <pure> output_type: Report parameters: { id: String } }\n",
+        "cache DefaultPure { default: true }\n",
+    );
+
+    #[test]
+    fn end_to_end_pure_tool_second_call_is_a_hit() {
+        let ir = ir_from(CACHE_PROG);
+        let tool = ir.tools.iter().find(|t| t.name == "Enrich").unwrap();
+        let rt = CacheRuntime::in_process();
+        let computes = StdArc::new(AtomicUsize::new(0));
+        let args = vec![("id".to_string(), "42".to_string())];
+
+        let call = || {
+            let computes = computes.clone();
+            rt.dispatch::<_, ()>(&ir, tool, &args, || {
+                computes.fetch_add(1, Ordering::SeqCst);
+                Ok(b"enriched".to_vec())
+            })
+        };
+        // First call → miss (computes once).
+        assert_eq!(call().unwrap(), CacheOutcome::Miss(b"enriched".to_vec()));
+        // Second call, same args → hit (no recompute).
+        assert_eq!(call().unwrap(), CacheOutcome::Hit(b"enriched".to_vec()));
+        assert_eq!(computes.load(Ordering::SeqCst), 1, "pure tool computed once");
+
+        // A different arg value → a fresh miss (distinct content-addressed key).
+        let args2 = vec![("id".to_string(), "99".to_string())];
+        let out = rt
+            .dispatch::<_, ()>(&ir, tool, &args2, || Ok(b"other".to_vec()))
+            .unwrap();
+        assert_eq!(out, CacheOutcome::Miss(b"other".to_vec()));
+    }
+
+    #[test]
+    fn ineligible_tool_is_uncached() {
+        // A network tool with no cache reference and no covering default.
+        let ir = ir_from(concat!(
+            "flow F() -> Unit { step S { ask: \"hi\" } }\n",
+            "tool Fetch { provider: http effects: <network> parameters: { url: String } }\n",
+        ));
+        let tool = ir.tools.iter().find(|t| t.name == "Fetch").unwrap();
+        let rt = CacheRuntime::in_process();
+        let out = rt
+            .dispatch::<_, ()>(&ir, tool, &[], || Ok(b"x".to_vec()))
+            .unwrap();
+        assert_eq!(out, CacheOutcome::Uncached(b"x".to_vec()));
+    }
+
+    #[test]
+    fn invalidate_forces_recompute() {
+        let ir = ir_from(CACHE_PROG);
+        let tool = ir.tools.iter().find(|t| t.name == "Enrich").unwrap();
+        let rt = CacheRuntime::in_process();
+        let args = vec![("id".to_string(), "1".to_string())];
+        rt.dispatch::<_, ()>(&ir, tool, &args, || Ok(b"v1".to_vec())).unwrap();
+        rt.invalidate("DefaultPure");
+        let out = rt
+            .dispatch::<_, ()>(&ir, tool, &args, || Ok(b"v2".to_vec()))
+            .unwrap();
+        assert_eq!(out, CacheOutcome::Miss(b"v2".to_vec()), "invalidated → recompute");
+    }
+
+    #[test]
+    fn duration_parsing() {
+        assert_eq!(parse_duration("10s"), Some(Duration::from_secs(10)));
+        assert_eq!(parse_duration("500ms"), Some(Duration::from_millis(500)));
+        assert_eq!(parse_duration("5m"), Some(Duration::from_secs(300)));
+        assert_eq!(parse_duration("2h"), Some(Duration::from_secs(7200)));
+        assert_eq!(parse_duration("1d"), Some(Duration::from_secs(86400)));
+        assert_eq!(parse_duration("bogus"), None);
+    }
+
+    #[test]
+    fn key_is_content_addressed_and_deploy_safe() {
+        let args = vec![("city".to_string(), "London".to_string())];
+        let base = derive_key("t1", "C", "Weather", "fp1", "Out", &args);
+        // Same everything → same key.
+        assert_eq!(base, derive_key("t1", "C", "Weather", "fp1", "Out", &args));
+        // Different tenant → different key (D85.11 isolation in the key).
+        assert_ne!(base, derive_key("t2", "C", "Weather", "fp1", "Out", &args));
+        // Different tool fingerprint (a redeploy) → different key (D85.7).
+        assert_ne!(base, derive_key("t1", "C", "Weather", "fp2", "Out", &args));
+        // Different arg value → different key.
+        let args2 = vec![("city".to_string(), "Paris".to_string())];
+        assert_ne!(base, derive_key("t1", "C", "Weather", "fp1", "Out", &args2));
+    }
+
+    #[test]
+    fn arg_order_does_not_change_key() {
+        let a = vec![("a".to_string(), "1".to_string()), ("b".to_string(), "2".to_string())];
+        let b = vec![("b".to_string(), "2".to_string()), ("a".to_string(), "1".to_string())];
+        assert_eq!(
+            derive_key("t", "C", "T", "fp", "O", &a),
+            derive_key("t", "C", "T", "fp", "O", &b)
+        );
+    }
+
+    #[test]
+    fn arg_boundaries_are_forgery_proof() {
+        // ("ab","c") vs ("a","bc") must NOT collide (length-prefixing).
+        let a = vec![("ab".to_string(), "c".to_string())];
+        let b = vec![("a".to_string(), "bc".to_string())];
+        assert_ne!(
+            derive_key("t", "C", "T", "fp", "O", &a),
+            derive_key("t", "C", "T", "fp", "O", &b)
+        );
+    }
+
+    #[test]
+    fn hit_returns_stored_value() {
+        let c = InProcessCache::default();
+        c.put("C", "k", b"value".to_vec(), None);
+        assert_eq!(c.get("C", "k"), Some(b"value".to_vec()));
+        assert_eq!(c.get("C", "missing"), None);
+    }
+
+    #[test]
+    fn ttl_expiry_evicts() {
+        let c = InProcessCache::default();
+        c.put("C", "k", b"v".to_vec(), Some(Duration::from_millis(1)));
+        std::thread::sleep(Duration::from_millis(30));
+        assert_eq!(c.get("C", "k"), None, "expired entry must be gone");
+    }
+
+    #[test]
+    fn invalidate_flushes_only_its_namespace() {
+        let c = InProcessCache::default();
+        c.put("A", "k", b"1".to_vec(), None);
+        c.put("B", "k", b"2".to_vec(), None);
+        c.invalidate("A");
+        assert_eq!(c.get("A", "k"), None);
+        assert_eq!(c.get("B", "k"), Some(b"2".to_vec()), "other cache untouched");
+    }
+
+    #[test]
+    fn oversized_value_is_not_cached() {
+        let c = InProcessCache::new(10, 4);
+        c.put("C", "k", vec![0u8; 100], None);
+        assert_eq!(c.get("C", "k"), None, "oversized value must not be cached");
+    }
+
+    #[test]
+    fn capacity_evicts_lru() {
+        let c = InProcessCache::new(2, DEFAULT_MAX_VALUE_BYTES);
+        c.put("C", "a", b"1".to_vec(), None);
+        c.put("C", "b", b"2".to_vec(), None);
+        let _ = c.get("C", "a"); // touch a → b is now LRU
+        c.put("C", "c", b"3".to_vec(), None); // evicts b
+        assert_eq!(c.get("C", "a"), Some(b"1".to_vec()));
+        assert_eq!(c.get("C", "b"), None, "LRU entry evicted");
+        assert_eq!(c.get("C", "c"), Some(b"3".to_vec()));
+    }
+
+    #[test]
+    fn errors_are_never_cached() {
+        let c = InProcessCache::default();
+        let r: Result<Vec<u8>, &str> =
+            c.get_or_compute("C", "k", None, || Err("boom"));
+        assert!(r.is_err());
+        assert_eq!(c.get("C", "k"), None, "a computed error must not be cached");
+    }
+
+    #[test]
+    fn single_flight_coalesces_concurrent_misses() {
+        let c = StdArc::new(InProcessCache::default());
+        let computes = StdArc::new(AtomicUsize::new(0));
+        let mut handles = Vec::new();
+        for _ in 0..16 {
+            let c = c.clone();
+            let computes = computes.clone();
+            handles.push(std::thread::spawn(move || {
+                c.get_or_compute::<_, ()>("C", "hot", None, || {
+                    computes.fetch_add(1, Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(20));
+                    Ok(b"result".to_vec())
+                })
+                .unwrap()
+            }));
+        }
+        for h in handles {
+            assert_eq!(h.join().unwrap(), b"result".to_vec());
+        }
+        assert_eq!(
+            computes.load(Ordering::SeqCst),
+            1,
+            "single-flight: concurrent misses for one key compute exactly once"
+        );
+    }
+}

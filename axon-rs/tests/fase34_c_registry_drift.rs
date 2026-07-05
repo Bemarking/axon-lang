@@ -60,6 +60,7 @@ fn spec(name: &str, effect_row: &[&str]) -> IRToolSpec {
         target: None,
         risk: None,
         argv: Vec::new(),
+        cache: String::new(),
     }
 }
 

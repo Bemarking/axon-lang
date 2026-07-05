@@ -2767,6 +2767,7 @@ fn tool_registry_from_ir_specs() {
             target: None,
             risk: None,
             argv: Vec::new(),
+            cache: String::new(),
         },
     ]);
 

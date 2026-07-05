@@ -234,6 +234,15 @@ pub enum PropertyClass {
     /// deployment reaching a real machine — the highest-stakes surface, so it
     /// gets a deploy-time re-derivation like everything else).
     TechnicianCommandSafety,
+    /// §85.c — re-derives the program-wide cache laws the §85.c type-checker
+    /// proved: at most one `cache { default: true }` (T863); every cache that
+    /// widens `apply_to_effects:` beyond `[pure]` carries a finite `ttl:`
+    /// (T865, the "never cache a non-deterministic result forever" invariant);
+    /// and every `invalidate_on:` / `tool.cache:` reference resolves (T864).
+    /// Belt-and-suspenders against a stored IR whose compile-time proof has
+    /// gone stale — a mis-cached result is a correctness bug (serving a foreign
+    /// or stale value), so it gets a deploy-time re-derivation.
+    CacheSoundness,
 }
 
 /// §72.f — the closed period catalog for `budget` quotas. The checker's own
@@ -280,6 +289,7 @@ impl PropertyClass {
             PropertyClass::UpstreamProjectionSoundness => "upstream_projection_soundness",
             PropertyClass::CorsPolicyConsistency => "cors_policy_consistency",
             PropertyClass::TechnicianCommandSafety => "technician_command_safety",
+            PropertyClass::CacheSoundness => "cache_soundness",
         }
     }
 }
@@ -791,6 +801,24 @@ pub struct TechnicianCommandSafetyWitness {
     pub confirm_branch_reachable: bool,
 }
 
+/// §85.c — witness for [`PropertyClass::CacheSoundness`], one per program (the
+/// laws are inherently whole-module). The checker RE-DERIVES every field from
+/// `ir.caches` + `ir.tools` + `ir.channels` and rejects on disagreement. A
+/// verifying proof has `default_count <= 1` and both violation lists empty.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CacheSoundnessWitness {
+    /// Every declared `cache` name, source order.
+    pub cache_names: Vec<String>,
+    /// How many caches declare `default: true` (`axon-T863`: must be ≤ 1).
+    pub default_count: usize,
+    /// Caches that widen `apply_to_effects:` beyond `[pure]` yet declare no
+    /// `ttl:` (`axon-T865`). Empty for a verifying proof.
+    pub widened_without_ttl: Vec<String>,
+    /// Unresolved references: an `invalidate_on:` channel or a `tool.cache:`
+    /// that names no declared symbol (`axon-T864`). Empty for a verifying proof.
+    pub unresolved_refs: Vec<String>,
+}
+
 /// The property-specific witness. Tagged so the JSON is self-describing
 /// + a future class adds a variant without ambiguity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -813,6 +841,7 @@ pub enum Witness {
     UpstreamProjectionSoundness(UpstreamProjectionSoundnessWitness),
     CorsPolicyConsistency(CorsPolicyConsistencyWitness),
     TechnicianCommandSafety(TechnicianCommandSafetyWitness),
+    CacheSoundness(CacheSoundnessWitness),
 }
 
 impl Witness {
@@ -845,6 +874,8 @@ impl Witness {
             // §83.c — program-wide property, no single named subject.
             Witness::CorsPolicyConsistency(_) => "<program>",
             Witness::TechnicianCommandSafety(w) => &w.tool_name,
+            // §85.c — program-wide property, no single named subject.
+            Witness::CacheSoundness(_) => "<program>",
         }
     }
 }
