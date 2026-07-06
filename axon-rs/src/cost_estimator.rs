@@ -551,6 +551,7 @@ mod tests {
             cors_policies: vec![],
             caches: vec![],
             savants: vec![],
+            synths: vec![],
             effects: vec![],
         };
 
@@ -625,6 +626,7 @@ mod tests {
             cors_policies: vec![],
             caches: vec![],
             savants: vec![],
+            synths: vec![],
             effects: vec![],
         };
 
@@ -701,6 +703,7 @@ mod tests {
             cors_policies: vec![],
             caches: vec![],
             savants: vec![],
+            synths: vec![],
             effects: vec![],
         };
 

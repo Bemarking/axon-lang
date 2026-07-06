@@ -124,6 +124,8 @@ pub enum TokenType {
     BudgetPerEvent,
     // §Fase 87 — the long-horizon autonomous research primitive (governed orchestrator).
     Savant,
+    // §Fase 87.d — dynamic tool-synthesis policy (Coder/Reviewer → WASM).
+    Synth,
     // Compute
     Compute,
     Logic,
@@ -536,6 +538,8 @@ pub fn keyword_type(word: &str) -> TokenType {
         "cache" => TokenType::Cache,
         // `savant` (§Fase 87.a) — long-horizon autonomous research primitive.
         "savant" => TokenType::Savant,
+        // `synth` (§Fase 87.d) — dynamic tool-synthesis policy.
+        "synth" => TokenType::Synth,
         // `quant` as a cognitive primitive (§Fase 51.a) — flow-body block.
         "quant" => TokenType::Quant,
         // `observable` (§Fase 51.c.2) — top-level Pauli-sum declaration.
@@ -638,6 +642,8 @@ pub fn is_declaration_keyword(tt: &TokenType) -> bool {
             | TokenType::Cache
             // §Fase 87.a — the long-horizon autonomous research primitive
             | TokenType::Savant
+            // §Fase 87.d — dynamic tool-synthesis policy
+            | TokenType::Synth
             // §Fase 51.c.2 — Pauli-sum observable declaration
             | TokenType::Observable
             // §Fase 69.a — Advantage-Witness declaration

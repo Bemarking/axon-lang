@@ -102,6 +102,18 @@ const VALID_SAVANT_DEPTHS: &[&str] = &["standard", "deep", "hyper"];
 /// exploiting known structure when minimising Expected Free Energy.
 const VALID_SAVANT_DIVERGENCES: &[&str] = &["low", "med", "high"];
 
+/// §Fase 87.d — the closed `synth.risk:` catalog. The risk class a synthesis
+/// policy admits; `high`/`critical` force Coder/Reviewer consensus (T883).
+const VALID_SYNTH_RISKS: &[&str] = &["low", "medium", "high", "critical"];
+
+/// §Fase 87.d — the closed `synth.language:` catalog. All compiled to
+/// `wasm32-wasi` before execution in the enterprise Extism sandbox (§87.j).
+const VALID_SYNTH_LANGUAGES: &[&str] = &["rust", "c", "python"];
+
+/// §Fase 87.d — the closed `synth.review:` catalog: `required` (a Reviewer
+/// sub-agent must ratify before a synthesised tool runs) | `none`.
+const VALID_SYNTH_REVIEWS: &[&str] = &["required", "none"];
+
 /// §Fase 86.c — the closed `forge.mode:` catalog: Margaret Boden's three
 /// creativity types (*The Creative Mind*, 1990). Each maps to a distinct
 /// sampling-parameter profile at runtime (D86.3).
@@ -1411,6 +1423,16 @@ impl<'a> TypeChecker<'a> {
                         n.loc.clone(),
                     ));
                 }
+                // §Fase 87.d — register the synth policy so a savant can
+                // reference it (and duplicate-name detection works).
+                Declaration::Synth(n) => {
+                    registrations.push((
+                        n.name.clone(),
+                        "synth".into(),
+                        n.loc.line,
+                        n.loc.clone(),
+                    ));
+                }
                 // §Fase 51.c.2 — register the Pauli-sum observable so a
                 // `quant(observable: <Name>)` reference resolves to it.
                 Declaration::Observable(n) => {
@@ -1612,6 +1634,8 @@ impl<'a> TypeChecker<'a> {
                 // catalogs). Ref resolution (memory backend) + §72 budget binding
                 // + §79 interruptibility land in §87.c.
                 Declaration::Savant(n) => self.check_savant(n),
+                // §Fase 87.d — dynamic tool-synthesis policy discipline.
+                Declaration::Synth(n) => self.check_synth(n),
                 Declaration::Observable(n) => self.check_observable(n),
                 Declaration::Witness(n) => self.check_witness(n),
                 Declaration::Immune(n) => self.check_immune(n),
@@ -3764,6 +3788,107 @@ impl<'a> TypeChecker<'a> {
                     );
                 }
             }
+        }
+    }
+
+    /// §Fase 87.d — validate one `synth { … }` dynamic tool-synthesis policy.
+    /// Every diagnostic is a HARD error: a synth policy governs arbitrary-code
+    /// execution — the highest-stakes surface in the language — so an
+    /// under-specified or unsafe one must never compile. The deny-by-default
+    /// core is T882: synthesised code may only run in a WASM zero-trust sandbox.
+    fn check_synth(&mut self, node: &SynthDefinition) {
+        // axon-T879 — the policy must state what it synthesises for.
+        if node.target.trim().is_empty() {
+            self.emit(
+                format!(
+                    "axon-T879 synth '{}' declares no `target:` — state the capability scope the \
+                     synthesised tools serve (e.g. `target: \"parse geospatial datasets\"`)",
+                    node.name
+                ),
+                &node.loc,
+            );
+        }
+
+        // axon-T880 — `risk:` is required + a closed catalog. It sets how strict
+        // the review + isolation must be; it can never be left unstated.
+        if node.risk.is_empty() {
+            self.emit(
+                format!(
+                    "axon-T880 synth '{}' declares no `risk:` — classify the synthesis risk. \
+                     Valid: {}",
+                    node.name,
+                    valid_list(VALID_SYNTH_RISKS)
+                ),
+                &node.loc,
+            );
+        } else if !is_valid(&node.risk, VALID_SYNTH_RISKS) {
+            self.emit(
+                format!(
+                    "axon-T880 unknown synth risk '{}' in synth '{}'. Valid: {}",
+                    node.risk,
+                    node.name,
+                    valid_list(VALID_SYNTH_RISKS)
+                ),
+                &node.loc,
+            );
+        }
+
+        // axon-T881 — `language:` (when set) is a closed catalog (all → wasm32-wasi).
+        if !node.language.is_empty() && !is_valid(&node.language, VALID_SYNTH_LANGUAGES) {
+            self.emit(
+                format!(
+                    "axon-T881 unknown synth language '{}' in synth '{}'. Valid: {}",
+                    node.language,
+                    node.name,
+                    valid_list(VALID_SYNTH_LANGUAGES)
+                ),
+                &node.loc,
+            );
+        }
+
+        // axon-T882 — DENY-BY-DEFAULT: `sandbox:` MUST be `wasm`. Executing
+        // synthesised code outside a zero-trust WASM sandbox is forbidden; an
+        // empty or non-`wasm` sandbox can never compile (paper §6.2, §8.3). The
+        // OSS `SynthBackend` reference refuses execution regardless — this gate
+        // stops an adopter from *declaring* an unsandboxed policy at all.
+        if node.sandbox != "wasm" {
+            let got = if node.sandbox.is_empty() {
+                "no sandbox".to_string()
+            } else {
+                format!("`{}`", node.sandbox)
+            };
+            self.emit(
+                format!(
+                    "axon-T882 synth '{}' must declare `sandbox: wasm` (got {}) — synthesised code \
+                     may only run in a zero-trust WASM sandbox; there is no unsandboxed mode",
+                    node.name, got
+                ),
+                &node.loc,
+            );
+        }
+
+        // axon-T883 — `review:` (when set) is a closed catalog, AND high/critical
+        // risk MUST be reviewed: a Coder/Reviewer consensus (`par`) is mandatory
+        // for dangerous synthesis. `review: none` at high/critical is refused.
+        if !node.review.is_empty() && !is_valid(&node.review, VALID_SYNTH_REVIEWS) {
+            self.emit(
+                format!(
+                    "axon-T883 unknown synth review '{}' in synth '{}'. Valid: {}",
+                    node.review,
+                    node.name,
+                    valid_list(VALID_SYNTH_REVIEWS)
+                ),
+                &node.loc,
+            );
+        } else if node.review == "none" && (node.risk == "high" || node.risk == "critical") {
+            self.emit(
+                format!(
+                    "axon-T883 synth '{}' is `risk: {}` but `review: none` — high/critical-risk \
+                     synthesis MUST carry Coder/Reviewer consensus; remove `review: none`",
+                    node.name, node.risk
+                ),
+                &node.loc,
+            );
         }
     }
 

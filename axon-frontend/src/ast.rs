@@ -158,6 +158,15 @@ pub enum Declaration {
     /// keyword + type discipline + ports live in OSS
     /// (docs/fase/fase_87_savant.md).
     Savant(SavantDefinition),
+    /// §Fase 87.d — a dynamic tool-synthesis policy: the closed set of
+    /// conditions (risk ceiling, source language, mandatory WASM zero-trust
+    /// sandbox, Coder/Reviewer consensus) under which a `savant` may
+    /// synthesise + execute a tool at runtime. The paper's "OTS = Ontological
+    /// Tool Synthesis" grounded to a real keyword (`ots` already means
+    /// one-shot media transform — paper §9.1). OSS declares + statically
+    /// disciplines the policy and ships a DENY-BY-DEFAULT reference; the real
+    /// Extism/WASM executor is enterprise (§87.j).
+    Synth(SynthDefinition),
     /// §Fase 51.c.2 — a Pauli-sum observable `M = Σ cₖ Pₖ` that a `quant`
     /// block measures against (paper §3.2; plan D5).
     Observable(ObservableDefinition),
@@ -760,6 +769,55 @@ pub struct SavantMandate {
     /// (resolved to a declared `type` in §87.b). Required.
     pub output_type: String,
     pub loc: Loc,
+}
+
+/// §Fase 87.d — `synth <Name> { target:, risk:, language:, sandbox:, review:,
+/// max_lines: }` — a dynamic tool-synthesis policy.
+///
+/// A `savant` that hits an epistemic gap it has no tool for can, under such a
+/// policy, deduce + write a tool (a Coder sub-agent, a Reviewer sub-agent — a
+/// `par` with an agreement condition), compile it to `wasm32-wasi`, and run it
+/// in an Extism zero-trust sandbox, feeding stdout back as empirical evidence
+/// (paper §6). The policy declares the SAFETY ENVELOPE; the runtime enforces it.
+///
+/// **Deny-by-default (D87.d):** OSS parses + statically disciplines this policy
+/// but ships a `SynthBackend` reference that REFUSES to execute — running
+/// untrusted synthesised code needs the enterprise Extism/gVisor isolation
+/// (§87.j). The checker therefore requires `sandbox: wasm` (T882): a synth
+/// policy that would run code outside a sandbox can never compile.
+///
+/// **Unknown fields are a hard parse error** (D83.7): a synth policy governs
+/// arbitrary-code execution — the highest-stakes surface in the language.
+#[derive(Debug, Default)]
+pub struct SynthDefinition {
+    pub name: String,
+    /// `target: "…"` — what the synthesised tools are for (the capability scope).
+    /// Required (§87.d `axon-T879`).
+    pub target: String,
+    /// `risk: low | medium | high | critical` — the ceiling risk class the
+    /// policy admits; governs review + isolation strictness. Required
+    /// (§87.d `axon-T880`).
+    pub risk: String,
+    /// `language: rust | c | python` — the allowed synthesis source language
+    /// (all compiled to `wasm32-wasi`). Empty ⇒ any admitted language
+    /// (§87.d `axon-T881` validates when present).
+    pub language: String,
+    /// `sandbox: wasm` — the isolation tier. MUST be `wasm` (§87.d `axon-T882`
+    /// deny-by-default): synthesised code may only run in a zero-trust WASM
+    /// sandbox. Empty ⇒ error (never a silent "no sandbox").
+    pub sandbox: String,
+    /// `review: required | none` — the Coder/Reviewer consensus requirement.
+    /// Empty ⇒ `required` (the safe default). `none` is FORBIDDEN for
+    /// `high`/`critical` risk (§87.d `axon-T883`).
+    pub review: String,
+    /// `max_lines: <int>` — an optional hard cap on synthesised source length
+    /// (a smaller attack + review surface). `None` ⇒ engine default.
+    pub max_lines: Option<i64>,
+    pub loc: Loc,
+    /// Fase 14.b — leading comment trivia.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 /// `reconnect: { backoff_ms: 500, max_attempts: 5, on_exhausted: fail }` —

@@ -131,6 +131,10 @@ pub struct IRProgram {
     /// (a savant-less program's IR JSON stays byte-identical — zero drift).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub savants: Vec<IRSavant>,
+    /// §Fase 87.d — dynamic tool-synthesis policies (compiled). Same
+    /// `skip_serializing_if = empty` IR-SHA discipline as `savants`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub synths: Vec<IRSynth>,
     /// §Fase 23 — algebraic effect declarations (compiled).
     /// Each declared effect persists into IR so axon-rs can build the
     /// per-effect operation table at startup. The CPS state graph for
@@ -203,6 +207,7 @@ impl IRProgram {
             cors_policies: Vec::new(),
             caches: Vec::new(),
             savants: Vec::new(),
+            synths: Vec::new(),
             effects: Vec::new(),
         }
     }
@@ -1882,6 +1887,26 @@ pub struct IRSavantMandate {
     pub name: String,
     pub objective: String,
     pub output_type: String,
+}
+
+/// §Fase 87.d — a compiled `synth` dynamic tool-synthesis policy. The IR carries
+/// the safety envelope so the enterprise Extism/WASM executor (§87.j) enforces
+/// it; OSS ships a deny-by-default `SynthBackend` that refuses execution.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRSynth {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub name: String,
+    pub target: String,
+    pub risk: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub language: String,
+    pub sandbox: String,
+    /// `required | none`; an omitted policy lowers to `required` (fail-closed).
+    pub review: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_lines: Option<i64>,
 }
 
 // ── §Fase 53 — Closed-catalog extension mechanism ────────────────────────────

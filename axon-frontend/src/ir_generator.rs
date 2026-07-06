@@ -301,6 +301,8 @@ impl IRGenerator {
             Declaration::Cache(n) => ir.caches.push(self.visit_cache(n)),
             // §Fase 87.a — lower the `savant` orchestrator into the IR.
             Declaration::Savant(n) => ir.savants.push(self.visit_savant(n)),
+            // §Fase 87.d — lower the `synth` tool-synthesis policy into the IR.
+            Declaration::Synth(n) => ir.synths.push(self.visit_synth(n)),
             // §Fase 80.g — `voice` never reaches the IR: the parser already
             // expanded it into ordinary ots/session/socket/upstream
             // declarations (in this same program), and THOSE are the
@@ -1460,6 +1462,27 @@ impl IRGenerator {
             name: n.name.clone(),
             objective: n.objective.clone(),
             output_type: n.output_type.clone(),
+        }
+    }
+
+    /// §Fase 87.d — lower a `synth` policy. `review` lowers to the fail-closed
+    /// default `required` when omitted (never a silent "no review").
+    fn visit_synth(&self, n: &SynthDefinition) -> IRSynth {
+        IRSynth {
+            node_type: "synth",
+            source_line: n.loc.line,
+            source_column: n.loc.column,
+            name: n.name.clone(),
+            target: n.target.clone(),
+            risk: n.risk.clone(),
+            language: n.language.clone(),
+            sandbox: n.sandbox.clone(),
+            review: if n.review.is_empty() {
+                "required".to_string()
+            } else {
+                n.review.clone()
+            },
+            max_lines: n.max_lines,
         }
     }
 

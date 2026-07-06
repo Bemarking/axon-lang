@@ -246,6 +246,10 @@ fn attach_trivia_to_decl(decl: &mut Declaration, leading: Vec<Trivia>, trailing:
             n.leading_trivia = leading;
             n.trailing_trivia = trailing;
         }
+        Declaration::Synth(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
         Declaration::Observable(n) => {
             n.leading_trivia = leading;
             n.trailing_trivia = trailing;
@@ -489,8 +493,9 @@ const fn is_top_level_decl_kw_for_recovery(tt: &TokenType) -> bool {
             | TokenType::Mandate
             | TokenType::Compute
             | TokenType::Daemon
-            // §Fase 87.a — the long-horizon autonomous research primitive.
+            // §Fase 87.a/d — the autonomous research primitive + synth policy.
             | TokenType::Savant
+            | TokenType::Synth
             | TokenType::AxonStore
             | TokenType::AxonEndpoint
             | TokenType::Resource
@@ -2078,6 +2083,9 @@ impl Parser {
 
             // ── §Fase 87.a — the long-horizon autonomous research primitive ─
             TokenType::Savant => self.parse_savant().map(Declaration::Savant),
+
+            // ── §Fase 87.d — the dynamic tool-synthesis policy ──────────────
+            TokenType::Synth => self.parse_synth().map(Declaration::Synth),
 
             // ── §Fase 51.c.2 — Pauli-sum observable ────────────
             TokenType::Observable => self.parse_observable().map(Declaration::Observable),
@@ -7196,6 +7204,48 @@ impl Parser {
             }
             if self.check(TokenType::Comma) {
                 self.advance();
+            }
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(node)
+    }
+
+    /// §Fase 87.d — parse `synth <Name> { target:, risk:, language:, sandbox:,
+    /// review:, max_lines: }`. Flat key:value block (the `cache` shape). Catalog
+    /// + deny-by-default validation is §87.d `check_synth`. Unknown fields are a
+    /// hard error (D83.7): a synth policy governs arbitrary-code execution.
+    fn parse_synth(&mut self) -> Result<SynthDefinition, ParseError> {
+        let tok = self.consume(TokenType::Synth)?;
+        let name = self.consume(TokenType::Identifier)?.value;
+        let mut node = SynthDefinition {
+            name,
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+            ..Default::default()
+        };
+        self.consume(TokenType::LBrace)?;
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            let key = self.consume_any_ident_or_kw()?.value;
+            self.consume(TokenType::Colon)?;
+            match key.as_str() {
+                "target" => node.target = self.consume(TokenType::StringLit)?.value,
+                "risk" => node.risk = self.consume_any_ident_or_kw()?.value,
+                "language" => node.language = self.consume_any_ident_or_kw()?.value,
+                "sandbox" => node.sandbox = self.consume_any_ident_or_kw()?.value,
+                "review" => node.review = self.consume_any_ident_or_kw()?.value,
+                "max_lines" => node.max_lines = self.parse_optional_int(),
+                other => {
+                    return Err(self.error(&format!(
+                        "unknown synth field `{other}` in synth `{}` — expected `target` / `risk` \
+                         / `language` / `sandbox` / `review` / `max_lines`",
+                        node.name
+                    )))
+                }
+            }
+            if self.check(TokenType::Comma) {
+                self.consume(TokenType::Comma)?;
             }
         }
         self.consume(TokenType::RBrace)?;
