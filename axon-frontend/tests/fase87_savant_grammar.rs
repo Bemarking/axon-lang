@@ -248,17 +248,90 @@ fn minimal_savant_parses() {
 
 // ── Property 7: §87.a is check-clean (semantics deferred) ────────────────────
 
+/// The declarations FULL references — a real `memory` store and the report
+/// `type` — so a well-formed savant program resolves cleanly under §87.c.
+const DECLS: &str = "memory ResearchStore { store: vector }\n\
+                     type FormalReport { summary: String }\n";
+
 #[test]
 fn well_formed_savant_is_check_clean() {
-    // FULL has a domain, a mandate (objective + output), and valid cognition
-    // (depth/divergence catalog + entropic_threshold > 0). The unresolved
-    // `memory` backend is §87.c territory, so §87.b reports nothing here.
-    let src = format!("{FULL}{FLOW}");
+    // FULL + its referenced declarations: domain, a typed mandate, valid
+    // cognition, a bounded budget, and a resolvable memory backend → no §87
+    // diagnostic at all.
+    let src = format!("{DECLS}{FULL}{FLOW}");
     let errs = check_errors(&src);
     assert!(
         errs.iter().all(|e| !e.contains("axon-T87")),
         "well-formed savant must raise no §87 diagnostic: {errs:?}"
     );
+}
+
+// ── §87.c — composition binding (memory ref, budget, output type) ────────────
+
+/// A minimal well-formed savant WITH a budget, for isolating §87.c checks.
+fn savant_with(body: &str) -> String {
+    format!(
+        "savant S {{ domain: \"d\" {body} budget {{ max_iterations: 100 }} \
+         mandate m {{ objective: \"o\", output: T }} }}\n"
+    )
+}
+
+#[test]
+fn t875_undefined_memory_backend() {
+    let src = savant_with("memory { backend: Nope }");
+    let errs = check_errors(&src);
+    assert!(has_code(&errs, "axon-T875"), "{errs:?}");
+}
+
+#[test]
+fn t875_memory_backend_wrong_kind() {
+    // `Chat` is a flow, not a memory/corpus.
+    let src = format!("{FLOW}{}", savant_with("memory { backend: Chat }"));
+    let errs = check_errors(&src);
+    assert!(has_code(&errs, "axon-T875"), "{errs:?}");
+}
+
+#[test]
+fn t875_memory_resolves_to_declared_store() {
+    let src = format!(
+        "corpus Papers {{ documents: [a, b] }}\n{}",
+        savant_with("memory { backend: Papers }")
+    );
+    let errs = check_errors(&src);
+    assert!(!has_code(&errs, "axon-T875"), "corpus backend resolves: {errs:?}");
+}
+
+#[test]
+fn t877_no_budget_is_rejected() {
+    let src = "savant S { domain: \"d\" mandate m { objective: \"o\", output: T } }\n";
+    let errs = check_errors(src);
+    assert!(has_code(&errs, "axon-T877"), "{errs:?}");
+}
+
+#[test]
+fn t877_nonpositive_max_iterations() {
+    let src = "savant S { domain: \"d\" budget { max_iterations: 0 } \
+               mandate m { objective: \"o\", output: T } }\n";
+    let errs = check_errors(src);
+    assert!(has_code(&errs, "axon-T877"), "{errs:?}");
+}
+
+#[test]
+fn t878_output_is_a_non_type_is_rejected() {
+    // `Chat` is a declared flow, not a type — a report can't inhabit it.
+    let src = "flow Chat() -> Unit { step S { ask: \"hi\" } }\n\
+               savant S { domain: \"d\" budget { max_iterations: 5 } \
+               mandate m { objective: \"o\", output: Chat } }\n";
+    let errs = check_errors(src);
+    assert!(has_code(&errs, "axon-T878"), "{errs:?}");
+}
+
+#[test]
+fn t878_unknown_output_type_is_accepted_soft() {
+    // An undeclared `output:` name may be a builtin or imported type — soft.
+    let src = savant_with("");
+    let errs = check_errors(&src);
+    assert!(!has_code(&errs, "axon-T878"), "unknown type is soft-accepted: {errs:?}");
 }
 
 // ── §87.b — check_savant (own-field validation) ──────────────────────────────

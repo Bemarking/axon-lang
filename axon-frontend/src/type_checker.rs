@@ -3679,6 +3679,92 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
+
+        // ── §87.c — composition binding ──────────────────────────────────────
+
+        // axon-T875 — a declared `memory.backend:` MUST resolve to a `memory` or
+        // `corpus` primitive (the retention layer the savant composes; mirrors
+        // the cache `invalidate_on:` → `channel` resolution, T864). A dangling
+        // reference would silently give the savant no durable memory — fatal for
+        // a weeks-long loop whose whole point is not to forget.
+        if let Some(mem) = &node.memory {
+            if !mem.backend.is_empty() {
+                match self.symbols.lookup(&mem.backend) {
+                    None => self.emit(
+                        format!(
+                            "axon-T875 savant '{}' `memory.backend: {}` references an undefined \
+                             store — declare a `memory` or `corpus` primitive with that name",
+                            node.name, mem.backend
+                        ),
+                        &mem.loc,
+                    ),
+                    Some(sym) if sym.kind != "memory" && sym.kind != "corpus" => self.emit(
+                        format!(
+                            "axon-T875 savant '{}' `memory.backend: {}` resolves to a {}, not a \
+                             `memory`/`corpus` store",
+                            node.name, mem.backend, sym.kind
+                        ),
+                        &mem.loc,
+                    ),
+                    Some(_) => {}
+                }
+            }
+        }
+
+        // axon-T877 — a savant MUST declare a compute `budget { max_iterations: N }`
+        // with N > 0. This is the §72 linear-budget discipline (paper §9.2): an
+        // autonomous loop that can run for weeks, write code and self-execute it
+        // with NO enforced ceiling is uninsurable. §87.k binds this to a real
+        // `RateLease`; §87.c makes the ceiling non-optional at the type level.
+        match &node.budget {
+            None => self.emit(
+                format!(
+                    "axon-T877 savant '{}' declares no `budget {{ max_iterations: N }}` — a \
+                     long-horizon autonomous agent MUST carry an enforced compute ceiling \
+                     (the §72 linear-budget discipline); an unbounded loop is fail-open",
+                    node.name
+                ),
+                &node.loc,
+            ),
+            Some(b) => match b.max_iterations {
+                None => self.emit(
+                    format!(
+                        "axon-T877 savant '{}' `budget` declares no `max_iterations:` — the \
+                         FEP-loop iteration ceiling is mandatory",
+                        node.name
+                    ),
+                    &b.loc,
+                ),
+                Some(n) if n <= 0 => self.emit(
+                    format!(
+                        "axon-T877 savant '{}' `budget.max_iterations: {}` must be > 0",
+                        node.name, n
+                    ),
+                    &b.loc,
+                ),
+                Some(_) => {}
+            },
+        }
+
+        // axon-T878 — if a mandate's `output:` type resolves to a DECLARED symbol,
+        // it must be a `type` (a report cannot inhabit a flow/memory). Unknown
+        // names are accepted silently — they may be builtins (`Text`, `Json`) or
+        // imported types (the house "soft type" discipline, type_checker.rs
+        // §8368/§8659). A clearly-wrong declared reference is still caught.
+        for m in &node.mandates {
+            if let Some(sym) = self.symbols.lookup(&m.output_type) {
+                if sym.kind != "type" {
+                    self.emit(
+                        format!(
+                            "axon-T878 mandate '{}' in savant '{}' has `output: {}` which is a {}, \
+                             not a type — the final report must inhabit a declared `type`",
+                            m.name, node.name, m.output_type, sym.kind
+                        ),
+                        &m.loc,
+                    );
+                }
+            }
+        }
     }
 
     /// §Fase 85.c — the cross-declaration cache laws, run after the
