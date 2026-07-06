@@ -8161,6 +8161,9 @@ impl Parser {
             implicit_transport: String::new(),
             // §Fase 32.g (D8) — auth scope; empty list ≡ no auth gate.
             requires_capabilities: Vec::new(),
+            // §Fase 89.a — explicit authorization-coverage opt-out. Default
+            // false; the §89.b rule requires coverage OR `public: true`.
+            public: false,
             // §Fase 32.h — Replay-token binding (D9 plan-vivo).
             // Parser defaults: not explicit; effective value resolved
             // at deploy time using the method-default heuristic.
@@ -8480,6 +8483,15 @@ impl Parser {
                         let value_tok = self.consume(TokenType::Bool)?;
                         node.replay = value_tok.value.eq_ignore_ascii_case("true");
                         node.replay_explicit = true;
+                    }
+                    // §Fase 89.a — `public: true | false`, the explicit
+                    // authorization-coverage opt-out (doctrine
+                    // `every_boundary_is_guarded`). Mirrors `replay:`'s bool
+                    // parse. Default false; the §89.b rule (`axon-T890`)
+                    // requires a covering discipline OR `public: true`.
+                    "public" => {
+                        let value_tok = self.consume(TokenType::Bool)?;
+                        node.public = value_tok.value.eq_ignore_ascii_case("true");
                     }
                     "requires" => {
                         // §Fase 32.g (D8) — Auth scope per axonendpoint.

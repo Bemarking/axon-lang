@@ -2110,6 +2110,14 @@ pub struct IRAxonEndpoint {
     /// to pre-§83 (zero IR-SHA drift — the standing §76.d discipline).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub cors_ref: String,
+    /// §Fase 89.a — the explicit authorization-coverage opt-out lowered into
+    /// the IR so the enterprise runtime (§89.d) and the PCC
+    /// `AuthorizationCoverage` witness (§89.c) can read it. `false` (the
+    /// default + the common case) elides from JSON via `is_false` so a
+    /// pre-§89 IR-JSON snapshot stays byte-identical (zero IR-SHA drift —
+    /// the standing §76.d discipline).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub public: bool,
 }
 
 // ── §λ-L-E Fase 13 — Mobile Typed Channels IR ───────────────────────────────

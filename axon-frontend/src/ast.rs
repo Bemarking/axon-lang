@@ -1535,6 +1535,17 @@ pub struct AxonEndpointDefinition {
     /// declared_requires ⊆ token_capabilities (AND semantics — every
     /// declared capability must be present in the bearer's claims).
     pub requires_capabilities: Vec<String>,
+    /// §Fase 89.a — `public: true` is the EXPLICIT authorization-coverage
+    /// opt-out (doctrine `every_boundary_is_guarded`). An `axonendpoint`
+    /// compiles iff it is covered by ≥1 discipline (`requires:` / `shield:` /
+    /// `compliance:`) OR declares `public: true`. Omitting BOTH is a hard
+    /// error (`axon-T890`, §89.b) — this is what closes Modo 1 (a guard
+    /// bypassable by silent omission). `public: true` does NOT bypass HTTP
+    /// authentication (the enterprise `require_auth` middleware is a
+    /// SEPARATE concern); it declares — deliberately + auditably — that the
+    /// endpoint carries no capability/shield/compliance coverage. Default
+    /// `false` (parser + programmatic construction); the §89.b rule reads it.
+    pub public: bool,
     /// §Fase 32.h — Replay-token binding (D9 plan-vivo).
     /// `replay_explicit` is `true` when the source declared `replay:`
     /// explicitly. `false` when the field was omitted, in which case

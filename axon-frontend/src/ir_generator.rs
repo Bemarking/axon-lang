@@ -1597,6 +1597,9 @@ impl IRGenerator {
             // §Fase 83.a — the `cors: <Name>` reference. Direct clone;
             // IR JSON omits the field when empty (D83.5 / zero IR-SHA drift).
             cors_ref: n.cors_ref.clone(),
+            // §Fase 89.a — the explicit authorization-coverage opt-out.
+            // Direct clone; IR JSON omits it when false (zero IR-SHA drift).
+            public: n.public,
         }
     }
 

@@ -103,6 +103,7 @@ mod tests {
             path_params: Vec::new(),
             query_params: Vec::new(),
             requires_capabilities: Vec::new(),
+            public: false,
         }
     }
 
