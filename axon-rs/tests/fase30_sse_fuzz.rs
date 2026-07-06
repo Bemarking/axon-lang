@@ -243,28 +243,28 @@ async fn sse_wire_invariants_hold_under_keepalive_variants() {
         (
             "keepalive_5s",
             "flow F() { step S { ask: \"hi\" } }\n\
-             axonendpoint E { method: POST path: \"/f\" execute: F \
+             axonendpoint E { public: true method: POST path: \"/f\" execute: F \
              transport: sse keepalive: 5s }"
                 .to_string(),
         ),
         (
             "keepalive_15s",
             "flow F() { step S { ask: \"hi\" } }\n\
-             axonendpoint E { method: POST path: \"/f\" execute: F \
+             axonendpoint E { public: true method: POST path: \"/f\" execute: F \
              transport: sse keepalive: 15s }"
                 .to_string(),
         ),
         (
             "keepalive_30s",
             "flow F() { step S { ask: \"hi\" } }\n\
-             axonendpoint E { method: POST path: \"/f\" execute: F \
+             axonendpoint E { public: true method: POST path: \"/f\" execute: F \
              transport: sse keepalive: 30s }"
                 .to_string(),
         ),
         (
             "keepalive_60s",
             "flow F() { step S { ask: \"hi\" } }\n\
-             axonendpoint E { method: POST path: \"/f\" execute: F \
+             axonendpoint E { public: true method: POST path: \"/f\" execute: F \
              transport: sse keepalive: 60s }"
                 .to_string(),
         ),
@@ -303,7 +303,7 @@ async fn sse_wire_invariants_hold_under_keepalive_variants() {
 async fn negotiation_never_panics_under_accept_header_fuzz() {
     let app = build_app_and_deploy(
         "flow F() { step S { ask: \"hi\" } }\n\
-         axonendpoint E { method: POST path: \"/f\" execute: F \
+         axonendpoint E { public: true method: POST path: \"/f\" execute: F \
          transport: sse keepalive: 15s }",
     )
     .await;
@@ -362,7 +362,7 @@ async fn negotiation_never_panics_under_accept_header_fuzz() {
 #[test]
 fn resolve_keepalive_never_panics_under_source_byte_fuzz() {
     let base = "flow F() { step S { ask: \"hi\" } }\n\
-                axonendpoint E { method: POST path: \"/f\" execute: F \
+                axonendpoint E { public: true method: POST path: \"/f\" execute: F \
                 transport: sse keepalive: 15s }";
     let safe_alphabet: &[u8] =
         b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 \

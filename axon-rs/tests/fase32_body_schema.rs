@@ -425,7 +425,7 @@ fn loan_program() -> &'static str {
     "type Money { amount: Float currency: String }\n\
      type LoanApplication { amount: Money applicant: String }\n\
      flow ApproveOrDeny() -> String { let result = \"approved\" return result }\n\
-     axonendpoint LoanDecision { method: POST path: \"/loan/decision\" \
+     axonendpoint LoanDecision { public: true method: POST path: \"/loan/decision\" \
         body: LoanApplication execute: ApproveOrDeny }"
 }
 
@@ -509,7 +509,7 @@ async fn invalid_json_body_returns_400() {
 async fn d9_empty_body_declaration_accepts_free_form_post_body() {
     let app = build_router(server_cfg());
     let src = "flow Ping() -> String { let result = \"pong\" return result }\n\
-               axonendpoint PingEndpoint { method: POST path: \"/ping\" execute: Ping }";
+               axonendpoint PingEndpoint { public: true method: POST path: \"/ping\" execute: Ping }";
     deploy(app.clone(), src).await;
 
     // Adopter without `body:` declaration can POST any free-form JSON.

@@ -102,18 +102,18 @@ async fn execute(
 
 const STREAM_FLOW_NO_DECL: &str = "tool t { description: \"t\" effects: <stream:drop_oldest> }\n\
                                    flow F() -> Unit { step S { ask: \"x\" apply: t } }\n\
-                                   axonendpoint E { method: POST path: \"/f\" execute: F }";
+                                   axonendpoint E { public: true method: POST path: \"/f\" execute: F }";
 
 const STREAM_FLOW_DECL_SSE: &str = "tool t { description: \"t\" effects: <stream:drop_oldest> }\n\
                                     flow F() -> Unit { step S { ask: \"x\" apply: t } }\n\
-                                    axonendpoint E { method: POST path: \"/f\" execute: F transport: sse }";
+                                    axonendpoint E { public: true method: POST path: \"/f\" execute: F transport: sse }";
 
 const STREAM_FLOW_DECL_JSON: &str = "tool t { description: \"t\" effects: <stream:drop_oldest> }\n\
                                      flow F() -> Unit { step S { ask: \"x\" apply: t } }\n\
-                                     axonendpoint E { method: POST path: \"/f\" execute: F transport: json }";
+                                     axonendpoint E { public: true method: POST path: \"/f\" execute: F transport: json }";
 
 const NON_STREAM_FLOW_NO_DECL: &str = "flow F() -> Int { step S { ask: \"x\" output: Int } }\n\
-                                       axonendpoint E { method: POST path: \"/f\" execute: F }";
+                                       axonendpoint E { public: true method: POST path: \"/f\" execute: F }";
 
 // ═══════════════════════════════════════════════════════════════════
 //  §1 — Header FIRES on legacy mode + stream effect + no decl
@@ -337,8 +337,8 @@ async fn header_flow_name_isolates_per_endpoint() {
     let src = "tool t { description: \"t\" effects: <stream:drop_oldest> }\n\
                flow Alpha() -> Unit { step S { ask: \"a\" apply: t } }\n\
                flow Beta() -> Unit { step S { ask: \"b\" apply: t } }\n\
-               axonendpoint AlphaE { method: POST path: \"/alpha\" execute: Alpha }\n\
-               axonendpoint BetaE { method: POST path: \"/beta\" execute: Beta }";
+               axonendpoint AlphaE { public: true method: POST path: \"/alpha\" execute: Alpha }\n\
+               axonendpoint BetaE { public: true method: POST path: \"/beta\" execute: Beta }";
     let app = build_router(server_cfg(false));
     deploy(app.clone(), src).await;
     let (_, _, alpha_header) = execute(app.clone(), "Alpha", false).await;

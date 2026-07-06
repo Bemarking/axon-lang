@@ -14,5 +14,5 @@ axonendpoint LoanEndpoint {
     method: POST
     path: "/loan/decision"
     execute: LoanDecision
-    transport: sse
+    transport: sse public: true
 }

@@ -738,7 +738,7 @@ mod tests {
         let src = "flow Chat() -> Unit {\n\
                        step Generate { ask: \"hi\" output: Stream<Token> }\n\
                    }\n\
-                   axonendpoint E { method: POST path: \"/c\" execute: Chat transport: sse }";
+                   axonendpoint E { method: POST path: \"/c\" execute: Chat transport: sse public: true }";
         let (tx, mut rx) = mpsc::unbounded_channel();
         let cancel = CancellationFlag::new();
         let enforcement = std::sync::Arc::new(tokio::sync::Mutex::new(
@@ -856,7 +856,7 @@ mod tests {
         let src = "flow Chat() -> Unit {\n\
                        step Generate { ask: \"hi\" output: Stream<Token> }\n\
                    }\n\
-                   axonendpoint E { method: POST path: \"/c\" execute: Chat transport: sse }";
+                   axonendpoint E { method: POST path: \"/c\" execute: Chat transport: sse public: true }";
         let (tx, mut rx) = mpsc::unbounded_channel();
         let cancel = CancellationFlag::new();
         let enforcement = std::sync::Arc::new(tokio::sync::Mutex::new(
@@ -900,7 +900,7 @@ mod tests {
         let src = "flow Chat() -> Unit {\n\
                        step Generate { ask: \"hi\" output: Stream<Token> }\n\
                    }\n\
-                   axonendpoint E { method: POST path: \"/c\" execute: Chat transport: sse }";
+                   axonendpoint E { method: POST path: \"/c\" execute: Chat transport: sse public: true }";
         let (tx, mut rx) = mpsc::unbounded_channel();
         let cancel = CancellationFlag::new();
         cancel.cancel(); // pre-cancel

@@ -74,20 +74,20 @@ async fn deploy(app: axum::Router, src: &str) {
 
 const POST_FLOW: &str =
     "flow Touch() -> String { let result = \"ok\" return result }\n\
-     axonendpoint TouchEndpoint { method: POST path: \"/touch\" execute: Touch }";
+     axonendpoint TouchEndpoint { public: true method: POST path: \"/touch\" execute: Touch }";
 
 const POST_OPT_OUT: &str =
     "flow Touch() -> String { let result = \"ok\" return result }\n\
-     axonendpoint TouchEndpoint { method: POST path: \"/no-replay\" \
+     axonendpoint TouchEndpoint { public: true method: POST path: \"/no-replay\" \
         execute: Touch replay: false }";
 
 const GET_FLOW: &str =
     "flow Ping() -> String { let result = \"pong\" return result }\n\
-     axonendpoint PingEndpoint { method: GET path: \"/ping\" execute: Ping }";
+     axonendpoint PingEndpoint { public: true method: GET path: \"/ping\" execute: Ping }";
 
 const GET_REPLAY_ON: &str =
     "flow Ping() -> String { let result = \"pong\" return result }\n\
-     axonendpoint PingEndpoint { method: GET path: \"/ping-replay\" \
+     axonendpoint PingEndpoint { public: true method: GET path: \"/ping-replay\" \
         execute: Ping replay: true }";
 
 fn post(path: &str, body: &serde_json::Value) -> Request<Body> {
@@ -432,7 +432,7 @@ async fn replay_request_body_hash_matches_sha256_of_actual_body() {
 #[tokio::test]
 async fn put_writes_replay_binding_by_default() {
     let src = "flow Upsert() -> String { let result = \"upserted\" return result }\n\
-               axonendpoint UpsertEndpoint { method: PUT path: \"/upsert\" execute: Upsert }";
+               axonendpoint UpsertEndpoint { public: true method: PUT path: \"/upsert\" execute: Upsert }";
     let app = build_router(server_cfg());
     deploy(app.clone(), src).await;
 
@@ -547,7 +547,7 @@ async fn v1_execute_legacy_path_does_not_write_replay_entries() {
 async fn sse_response_records_replay_with_step_audit_post_33_x_f() {
     let src = "tool t { description: \"t\" effects: <stream:drop_oldest> }\n\
                flow Chat() -> Unit { step S { ask: \"x\" apply: t } }\n\
-               axonendpoint ChatSse { method: POST path: \"/chat-sse\" \
+               axonendpoint ChatSse { public: true method: POST path: \"/chat-sse\" \
                   execute: Chat transport: sse }";
     let app = build_router(server_cfg());
     deploy(app.clone(), src).await;

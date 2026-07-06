@@ -102,7 +102,7 @@ async fn s1_full_chain_deploy_resolve_route_execute_observe() {
     deploy(
         &app,
         "flow Chat() -> Unit { step S { ask: \"hi\" } }\n\
-         axonendpoint E { method: POST path: \"/chat\" execute: Chat backend: stub }",
+         axonendpoint E { public: true method: POST path: \"/chat\" execute: Chat backend: stub }",
     )
     .await;
 
@@ -170,7 +170,7 @@ async fn s2_endpoint_executes_a_step_against_a_mock_llm_server() {
         "tool MockLLM {{ provider: http runtime: \"{mock_url}\" \
          effects: <stream:drop_oldest> }}\n\
          flow Chat() -> Unit {{ step S {{ ask: \"hi\" apply: MockLLM }} }}\n\
-         axonendpoint E {{ method: POST path: \"/llm\" execute: Chat \
+         axonendpoint E {{ public: true method: POST path: \"/llm\" execute: Chat \
          backend: stub transport: sse }}"
     );
     deploy(&app, &src).await;
@@ -210,7 +210,7 @@ async fn s3_unresolvable_endpoint_fails_honestly_end_to_end() {
     deploy(
         &app,
         "flow Chat() -> Unit { step S { ask: \"hi\" } }\n\
-         axonendpoint E { method: POST path: \"/chat\" execute: Chat }",
+         axonendpoint E { public: true method: POST path: \"/chat\" execute: Chat }",
     )
     .await;
 

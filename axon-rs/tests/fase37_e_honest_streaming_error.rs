@@ -99,7 +99,7 @@ fn dead_store_error_program(endpoint: &str, path: &str, dialect: &str) -> String
              retrieve bad {{ where: \"1 = 1\" as: r }}\n\
              step Reply {{ ask: \"x\" apply: Echo }}\n\
          }}\n\
-         axonendpoint {endpoint} {{ method: POST path: \"{path}\" \
+         axonendpoint {endpoint} {{ public: true method: POST path: \"{path}\" \
              execute: ErrFlow backend: stub transport: sse({dialect}) }}"
     )
 }
@@ -186,7 +186,7 @@ async fn s4_the_failing_node_is_named_in_the_diagnostic() {
              retrieve pg {{ where: \"1 = 1\" as: r }}\n\
              step Reply {{ ask: \"x\" apply: Echo }}\n\
          }}\n\
-         axonendpoint NodeErrE {{ method: POST path: \"/nodeerr\" \
+         axonendpoint NodeErrE {{ public: true method: POST path: \"/nodeerr\" \
              execute: NodeErrFlow backend: stub transport: sse(openai) }}"
     );
     deploy(&app, &src).await;
@@ -209,7 +209,7 @@ async fn s5_d5_successful_flow_wire_has_no_error_field() {
     let src = "flow OkFlow() -> Unit {\n\
             step Reply { ask: \"hello\" output: Stream<Token> }\n\
         }\n\
-        axonendpoint OkE { method: POST path: \"/ok\" \
+        axonendpoint OkE { public: true method: POST path: \"/ok\" \
             execute: OkFlow backend: stub transport: sse(openai) }";
     deploy(&app, src).await;
 

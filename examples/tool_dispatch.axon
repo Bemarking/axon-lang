@@ -46,5 +46,5 @@ axonendpoint ResearchApi {
   execute: ResearchQuery
   // v2.0.0 wire contract: a JSON-transport response is the ψ-vector
   // envelope `FlowEnvelope<T>`, never a bare result type (axon-E039).
-  output: FlowEnvelope<SearchReport>
+  output: FlowEnvelope<SearchReport> public: true
 }

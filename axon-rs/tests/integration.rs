@@ -28846,7 +28846,7 @@ fn fase4_nodes_prelude() -> &'static str {
             }
         }
         resource Db { kind: postgres }
-        axonendpoint Api { method: GET path: "/x" execute: Noop output: FlowEnvelope<Data> }
+        axonendpoint Api { public: true method: GET path: "/x" execute: Noop output: FlowEnvelope<Data> }
     "#
 }
 

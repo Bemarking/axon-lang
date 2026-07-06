@@ -182,7 +182,7 @@ const CANONICAL_STEP_FLOW: &str =
     "flow Chat() -> Unit {\n\
         step Generate { ask: \"hi\" output: Stream<Token> }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/c\" execute: Chat transport: sse }";
+     axonendpoint ChatEndpoint { public: true method: POST path: \"/c\" execute: Chat transport: sse }";
 
 const CONDITIONAL_FLOW: &str =
     "flow Chat() -> Unit {\n\
@@ -190,7 +190,7 @@ const CONDITIONAL_FLOW: &str =
           step Generate { ask: \"hi\" output: Stream<Token> }\n\
         }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/c\" execute: Chat transport: sse }";
+     axonendpoint ChatEndpoint { public: true method: POST path: \"/c\" execute: Chat transport: sse }";
 
 const FOR_IN_FLOW: &str =
     "flow Chat() -> Unit {\n\
@@ -199,7 +199,7 @@ const FOR_IN_FLOW: &str =
           step Generate { ask: \"hi\" output: Stream<Token> }\n\
         }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/c\" execute: Chat transport: sse }";
+     axonendpoint ChatEndpoint { public: true method: POST path: \"/c\" execute: Chat transport: sse }";
 
 const PAR_FLOW: &str =
     "flow Chat() -> Unit {\n\
@@ -208,7 +208,7 @@ const PAR_FLOW: &str =
           step B { ask: \"b\" output: Stream<Token> }\n\
         }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/c\" execute: Chat transport: sse }";
+     axonendpoint ChatEndpoint { public: true method: POST path: \"/c\" execute: Chat transport: sse }";
 
 const REMEMBER_FLOW: &str =
     "flow Chat() -> Unit {\n\
@@ -216,7 +216,7 @@ const REMEMBER_FLOW: &str =
         remember region in session_memory\n\
         step Generate { ask: \"hi\" output: Stream<Token> }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/c\" execute: Chat transport: sse }";
+     axonendpoint ChatEndpoint { public: true method: POST path: \"/c\" execute: Chat transport: sse }";
 
 const SHIELD_APPLY_FLOW: &str =
     "shield PHIShield {\n\
@@ -229,7 +229,7 @@ const SHIELD_APPLY_FLOW: &str =
         step Generate { ask: \"hi\" output: Stream<Token> }\n\
         shield PHIShield on response -> SanitizedResponse\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/c\" execute: Chat transport: sse }";
+     axonendpoint ChatEndpoint { public: true method: POST path: \"/c\" execute: Chat transport: sse }";
 
 const EMIT_FLOW: &str =
     "channel OrdersCreated { message: String }\n\
@@ -238,14 +238,14 @@ const EMIT_FLOW: &str =
         emit OrdersCreated(payload)\n\
         step Generate { ask: \"hi\" output: Stream<Token> }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/c\" execute: Chat transport: sse }";
+     axonendpoint ChatEndpoint { public: true method: POST path: \"/c\" execute: Chat transport: sse }";
 
 const HIBERNATE_FLOW: &str =
     "flow Chat() -> Unit {\n\
         hibernate user_response 30s\n\
         step Generate { ask: \"hi\" output: Stream<Token> }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/c\" execute: Chat transport: sse }";
+     axonendpoint ChatEndpoint { public: true method: POST path: \"/c\" execute: Chat transport: sse }";
 
 const LAMBDA_DATA_APPLY_FLOW: &str =
     "lambda doubler {\n\
@@ -257,7 +257,7 @@ const LAMBDA_DATA_APPLY_FLOW: &str =
         lambda doubler on x -> LambdaResult\n\
         step Generate { ask: \"hi\" output: Stream<Token> }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/c\" execute: Chat transport: sse }";
+     axonendpoint ChatEndpoint { public: true method: POST path: \"/c\" execute: Chat transport: sse }";
 
 async fn assert_default_on_no_w002(label: &str, src: &str) {
     // Defensive flag-state assertion — the test depends on the
@@ -377,7 +377,7 @@ async fn stub_backend_never_emits_tool_call_event() {
                flow Chat() -> Unit {\n\
                    step Generate { ask: \"hi\" apply: example_tool }\n\
                }\n\
-               axonendpoint E { method: POST path: \"/tool\" execute: Chat transport: sse }";
+               axonendpoint E { public: true method: POST path: \"/tool\" execute: Chat transport: sse }";
 
     let app = build_router(server_cfg());
     let dep = deploy(app.clone(), src).await;
@@ -462,7 +462,7 @@ const BANKING_DECISION_FLOW: &str =
         }\n\
         step Adjudicate { ask: \"Final decision\" output: Stream<Token> }\n\
      }\n\
-     axonendpoint Decision { method: POST path: \"/loan\" execute: LoanDecision transport: sse(axon) }";
+     axonendpoint Decision { public: true method: POST path: \"/loan\" execute: LoanDecision transport: sse(axon) }";
 
 const HEALTHCARE_CDS_FLOW: &str =
     // §Fase 36.x.c — `clinical_reasoning` is applied at TOP LEVEL by
@@ -487,7 +487,7 @@ const HEALTHCARE_CDS_FLOW: &str =
         step Differential { ask: \"diagnosis\" apply: clinical_reasoning }\n\
         shield PHIShield on response -> SanitizedResponse\n\
      }\n\
-     axonendpoint CDS { method: POST path: \"/cds\" execute: CDSAssessment transport: sse(axon) }";
+     axonendpoint CDS { public: true method: POST path: \"/cds\" execute: CDSAssessment transport: sse(axon) }";
 
 const LEGAL_PRIVILEGE_FLOW: &str =
     "shield PrivilegeShield {\n\
@@ -503,7 +503,7 @@ const LEGAL_PRIVILEGE_FLOW: &str =
         }\n\
         shield PrivilegeShield on response -> SanitizedResponse\n\
      }\n\
-     axonendpoint Privilege { method: POST path: \"/privilege\" execute: PrivilegeAssessment transport: sse }";
+     axonendpoint Privilege { public: true method: POST path: \"/privilege\" execute: PrivilegeAssessment transport: sse }";
 
 const FINTECH_AML_FLOW: &str =
     "tool aml_investigator {\n\
@@ -517,7 +517,7 @@ const FINTECH_AML_FLOW: &str =
         }\n\
         step Decide { ask: \"final report\" output: Stream<Token> }\n\
      }\n\
-     axonendpoint Aml { method: POST path: \"/aml\" execute: AmlInvestigation transport: sse(axon) }";
+     axonendpoint Aml { public: true method: POST path: \"/aml\" execute: AmlInvestigation transport: sse(axon) }";
 
 async fn assert_vertical_pattern(label: &str, src: &str, path: &str) {
 

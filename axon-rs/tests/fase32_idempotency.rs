@@ -77,17 +77,17 @@ async fn deploy(app: axum::Router, src: &str) {
 
 const POST_FLOW: &str =
     "flow Charge() -> String { let result = \"ok\" return result }\n\
-     axonendpoint ChargeEndpoint { method: POST path: \"/charge\" execute: Charge }";
+     axonendpoint ChargeEndpoint { public: true method: POST path: \"/charge\" execute: Charge }";
 
 const GET_FLOW: &str =
     "flow Ping() -> String { let result = \"pong\" return result }\n\
-     axonendpoint PingEndpoint { method: GET path: \"/ping\" execute: Ping }";
+     axonendpoint PingEndpoint { public: true method: GET path: \"/ping\" execute: Ping }";
 
 const SECOND_PATH_FLOW: &str =
     "flow Charge() -> String { let result = \"ok\" return result }\n\
      flow Refund() -> String { let result = \"refunded\" return result }\n\
-     axonendpoint ChargeEndpoint { method: POST path: \"/charge\" execute: Charge }\n\
-     axonendpoint RefundEndpoint { method: POST path: \"/refund\" execute: Refund }";
+     axonendpoint ChargeEndpoint { public: true method: POST path: \"/charge\" execute: Charge }\n\
+     axonendpoint RefundEndpoint { public: true method: POST path: \"/refund\" execute: Refund }";
 
 fn post_with(
     path: &str,
@@ -344,7 +344,7 @@ async fn multiple_replays_all_return_same_body() {
 #[tokio::test]
 async fn put_method_also_caches() {
     let src = "flow Upsert() -> String { let result = \"upserted\" return result }\n\
-               axonendpoint UpsertEndpoint { method: PUT path: \"/upsert\" execute: Upsert }";
+               axonendpoint UpsertEndpoint { public: true method: PUT path: \"/upsert\" execute: Upsert }";
     let app = build_router(server_cfg());
     deploy(app.clone(), src).await;
 
@@ -424,7 +424,7 @@ async fn body_schema_violation_fires_before_idempotency_caching() {
     // same key, it should EXECUTE (not replay the cached error).
     let src = "type Req { amount: Integer }\n\
                flow Charge() -> String { let result = \"ok\" return result }\n\
-               axonendpoint ChargeEndpoint { method: POST path: \"/charge2\" body: Req execute: Charge }";
+               axonendpoint ChargeEndpoint { public: true method: POST path: \"/charge2\" body: Req execute: Charge }";
     let app = build_router(server_cfg());
     deploy(app.clone(), src).await;
 

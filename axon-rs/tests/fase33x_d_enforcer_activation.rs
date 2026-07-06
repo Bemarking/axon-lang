@@ -129,7 +129,7 @@ fn stream_source_with_policy(policy: &str) -> String {
          flow Chat() -> Unit {{\n\
             step Generate {{ ask: \"hi\" apply: tk }}\n\
          }}\n\
-         axonendpoint E {{ method: POST path: \"/c\" execute: Chat transport: sse(axon) }}"
+         axonendpoint E {{ public: true method: POST path: \"/c\" execute: Chat transport: sse(axon) }}"
     )
 }
 
@@ -221,7 +221,7 @@ async fn d4_flow_without_declared_effect_omits_enforcement_summary() {
     let src = "flow Chat() -> Unit {\n\
                   step Generate { ask: \"hi\" output: Stream<Token> }\n\
                }\n\
-               axonendpoint E { method: POST path: \"/c\" execute: Chat transport: sse }";
+               axonendpoint E { public: true method: POST path: \"/c\" execute: Chat transport: sse }";
     let app = build_router(server_cfg());
     deploy(app.clone(), src).await;
     let body = fetch_sse_body(app, "/c", "{}").await;
@@ -251,7 +251,7 @@ async fn multi_step_summary_keyed_per_declared_step_only() {
                    step Plain { ask: \"plain\" output: Stream<Token> }\n\
                    step Effecting { ask: \"hi\" apply: tk }\n\
                }\n\
-               axonendpoint E { method: POST path: \"/c\" execute: Chat transport: sse(axon) }";
+               axonendpoint E { public: true method: POST path: \"/c\" execute: Chat transport: sse(axon) }";
     let app = build_router(server_cfg());
     deploy(app.clone(), src).await;
     let body = fetch_sse_body(app, "/c", "{}").await;

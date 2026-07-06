@@ -10,5 +10,5 @@ axonendpoint RegulatoryReviewReasonEndpoint {
     method: POST
     path: "/government/regulatory-review-reason"
     execute: RegulatoryReviewReason
-    transport: sse
+    transport: sse public: true
 }

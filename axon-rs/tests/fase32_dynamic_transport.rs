@@ -6,7 +6,7 @@
 //! registered routes from Fase 32.b. The Kivi case is closed at the
 //! wire layer: when an adopter writes
 //!
-//!     axonendpoint Chat {
+//!     axonendpoint Chat { public: true
 //!         method: POST
 //!         path:   "/chat"
 //!         execute: ChatFlow
@@ -189,19 +189,19 @@ fn assert_json(ct: &str, ctx: &str) {
 
 const STREAM_FLOW_NO_DECL: &str =
     "flow F() -> Unit { step S { ask: \"x\" output: Stream<Token> } }\n\
-     axonendpoint E { method: POST path: \"/dyn-stream\" execute: F }";
+     axonendpoint E { public: true method: POST path: \"/dyn-stream\" execute: F }";
 
 const STREAM_FLOW_DECL_SSE: &str =
     "flow F() -> Unit { step S { ask: \"x\" output: Stream<Token> } }\n\
-     axonendpoint E { method: POST path: \"/dyn-sse\" execute: F transport: sse }";
+     axonendpoint E { public: true method: POST path: \"/dyn-sse\" execute: F transport: sse }";
 
 const STREAM_FLOW_DECL_JSON: &str =
     "flow F() -> Unit { step S { ask: \"x\" output: Stream<Token> } }\n\
-     axonendpoint E { method: POST path: \"/dyn-json\" execute: F transport: json }";
+     axonendpoint E { public: true method: POST path: \"/dyn-json\" execute: F transport: json }";
 
 const NON_STREAM_FLOW_NO_DECL: &str =
     "flow F() -> Int { step S { ask: \"x\" output: Int } }\n\
-     axonendpoint E { method: POST path: \"/dyn-plain\" execute: F }";
+     axonendpoint E { public: true method: POST path: \"/dyn-plain\" execute: F }";
 
 // ═══════════════════════════════════════════════════════════════════
 //   8-cell matrix replay on dynamic routes
@@ -348,7 +348,7 @@ fn stream_with_keepalive(ka: &str, path: &str) -> String {
     format!(
         "tool t {{ description: \"t\" effects: <stream:drop_oldest> }}\n\
          flow F() -> Unit {{ step S {{ ask: \"x\" apply: t }} }}\n\
-         axonendpoint E {{ method: POST path: \"{path}\" execute: F \
+         axonendpoint E {{ public: true method: POST path: \"{path}\" execute: F \
             transport: sse keepalive: {ka} }}"
     )
 }
@@ -411,7 +411,7 @@ async fn keepalive_default_15s_when_omitted_on_sse_dynamic_route() {
     // default (15s) per Fase 30.f D6.
     let src = "tool t { description: \"t\" effects: <stream:drop_oldest> }\n\
                flow F() -> Unit { step S { ask: \"x\" apply: t } }\n\
-               axonendpoint E { method: POST path: \"/dyn-no-ka\" \
+               axonendpoint E { public: true method: POST path: \"/dyn-no-ka\" \
                   execute: F transport: sse }";
     let dur = resolve_keepalive_for_flow(src, "F");
     assert_eq!(dur, parse_keepalive_duration(""));
@@ -507,8 +507,8 @@ async fn multiple_dynamic_routes_each_honor_their_own_declaration() {
     // negotiation is PER-ROUTE, not per-flow.
     let src = "tool t { description: \"t\" effects: <stream:drop_oldest> }\n\
                flow F() -> Unit { step S { ask: \"x\" apply: t } }\n\
-               axonendpoint Sse { method: POST path: \"/multi-sse\" execute: F transport: sse }\n\
-               axonendpoint Json { method: POST path: \"/multi-json\" execute: F transport: json }";
+               axonendpoint Sse { public: true method: POST path: \"/multi-sse\" execute: F transport: sse }\n\
+               axonendpoint Json { public: true method: POST path: \"/multi-json\" execute: F transport: json }";
     let app = build_router(server_cfg(false));
     deploy(app.clone(), src).await;
 

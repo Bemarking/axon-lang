@@ -138,7 +138,7 @@ fn s1_d1_path_param_extraction_at_parse_time() {
          flow WriteSecret(tenant_id: Text, secret_name: Text, value: String) -> Unit {{\n\
              step S {{ ask: \"t=${{tenant_id}}|n=${{secret_name}}|v=${{value}}\" apply: Echo }}\n\
          }}\n\
-         axonendpoint WriteSecretE {{ method: POST \
+         axonendpoint WriteSecretE {{ public: true method: POST \
              path: \"/api/tenants/{{tenant_id}}/secrets/{{secret_name}}\" \
              body: SecretWriteRequest execute: WriteSecret \
              backend: stub transport: sse }}"
@@ -179,7 +179,7 @@ fn s2_d3_path_only_param_coverage_satisfies_totality() {
          flow WriteSecret(tenant_id: Text, value: String) -> Unit {{\n\
              step S {{ ask: \"t=${{tenant_id}}|v=${{value}}\" apply: Echo }}\n\
          }}\n\
-         axonendpoint WriteSecretE {{ method: POST \
+         axonendpoint WriteSecretE {{ public: true method: POST \
              path: \"/api/tenants/{{tenant_id}}/secrets\" \
              body: SecretBody execute: WriteSecret \
              backend: stub transport: sse }}"
@@ -217,7 +217,7 @@ fn s3_d3_query_only_param_coverage_satisfies_totality() {
          flow ListSecrets(status: Text) -> Unit {{\n\
              step S {{ ask: \"s=${{status}}\" apply: Echo }}\n\
          }}\n\
-         axonendpoint ListSecretsE {{ method: GET \
+         axonendpoint ListSecretsE {{ public: true method: GET \
              path: \"/api/secrets\" \
              query: {{ status: Text }} \
              execute: ListSecrets \
@@ -256,7 +256,7 @@ async fn s4_d3_mixed_coverage_path_query_body_end_to_end() {
          flow WriteSecret(tenant_id: Text, dry_run: Text, value: String) -> Unit {{\n\
              step S {{ ask: \"t=${{tenant_id}}|d=${{dry_run}}|v=${{value}}\" apply: Echo }}\n\
          }}\n\
-         axonendpoint WriteSecretE {{ method: POST \
+         axonendpoint WriteSecretE {{ public: true method: POST \
              path: \"/api/tenants/{{tenant_id}}/secrets\" \
              query: {{ dry_run: Text }} \
              body: WriteBody execute: WriteSecret \
@@ -309,7 +309,7 @@ fn s5_d4_path_and_body_collision_emits_axon_t901() {
          flow WriteSecret(tenant_id: Text, value: String) -> Unit {{\n\
              step S {{ ask: \"t=${{tenant_id}}|v=${{value}}\" apply: Echo }}\n\
          }}\n\
-         axonendpoint WriteSecretE {{ method: POST \
+         axonendpoint WriteSecretE {{ public: true method: POST \
              path: \"/api/tenants/{{tenant_id}}/secrets\" \
              body: ClashBody execute: WriteSecret \
              backend: stub transport: sse }}"
@@ -351,7 +351,7 @@ async fn s6_d5_body_only_backwards_compat_is_intact() {
          flow LegacyFlow(payload: String) -> Unit {{\n\
              step S {{ ask: \"p=${{payload}}\" apply: Echo }}\n\
          }}\n\
-         axonendpoint LegacyE {{ method: POST path: \"/legacy\" \
+         axonendpoint LegacyE {{ public: true method: POST path: \"/legacy\" \
              body: LegacyBody execute: LegacyFlow \
              backend: stub transport: sse }}"
     );
@@ -393,7 +393,7 @@ async fn s7_runtime_binder_merges_sources_in_declaration_order() {
          ) -> Unit {{\n\
              step S {{ ask: \"t=${{tenant_id}}|s=${{secret_name}}|d=${{dry_run}}|o=${{overwrite}}|v=${{value}}\" apply: Echo }}\n\
          }}\n\
-         axonendpoint WriteSecretE {{ method: POST \
+         axonendpoint WriteSecretE {{ public: true method: POST \
              path: \"/api/tenants/{{tenant_id}}/secrets/{{secret_name}}\" \
              query: {{ dry_run: Text, overwrite: Text }} \
              body: WriteBody execute: WriteSecret \

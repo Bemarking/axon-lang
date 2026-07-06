@@ -103,7 +103,7 @@ async fn s2_agent_flow_runs_against_an_in_memory_store_no_infra() {
             retrieve mem { where: \"kind = 'user'\" as: history }\n\
             step Deliberate { ask: \"answer\" output: Stream<Token> }\n\
         }\n\
-        axonendpoint AgentE { method: POST path: \"/agent\" \
+        axonendpoint AgentE { public: true method: POST path: \"/agent\" \
         execute: AgentFlow backend: stub transport: sse }";
     let (dstatus, dbody) = deploy(&app, src).await;
     assert_eq!(

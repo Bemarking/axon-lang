@@ -14,5 +14,5 @@ axonendpoint WitnessPrepEmitEndpoint {
     method: POST
     path: "/legal/witness-prep-emit"
     execute: WitnessPrepEmit
-    transport: sse
+    transport: sse public: true
 }

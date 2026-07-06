@@ -15,5 +15,5 @@ axonendpoint MortgageAdjudicationEndpoint {
     method: POST
     path: "/banking/mortgage-adjudication"
     execute: MortgageAdjudication
-    transport: sse
+    transport: sse public: true
 }

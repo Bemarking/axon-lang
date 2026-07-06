@@ -117,7 +117,7 @@ const MULTI_CAP_FLOW: &str =
 
 const PUBLIC_FLOW: &str =
     "flow Touch() -> String { let result = \"ok\" return result }\n\
-     axonendpoint Pub { method: POST path: \"/pub\" execute: Touch }";
+     axonendpoint Pub { public: true method: POST path: \"/pub\" execute: Touch }";
 
 // ─── D9 backwards-compat: no `requires:` declared ────────────────────
 

@@ -190,7 +190,7 @@ async fn s4_agent_flow_with_interpolation_streams_clean() {
             step Generate { ask: \"given ${history} answer\" output: Stream<Token> }\n\
             persist into mem { kind: \"reply\" content: \"${Generate}\" }\n\
         }\n\
-        axonendpoint ChatE { method: POST path: \"/chat\" execute: ChatFlow \
+        axonendpoint ChatE { public: true method: POST path: \"/chat\" execute: ChatFlow \
         backend: stub transport: sse }";
     let dep = Request::builder()
         .method("POST")

@@ -10,5 +10,5 @@ axonendpoint DepositionPrepHibernateEndpoint {
     method: POST
     path: "/legal/deposition-prep-hibernate"
     execute: DepositionPrepHibernate
-    transport: sse
+    transport: sse public: true
 }

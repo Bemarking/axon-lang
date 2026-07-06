@@ -15,5 +15,5 @@ axonendpoint BenefitEligibilityBranchesEndpoint {
     method: POST
     path: "/government/benefit-eligibility-branches"
     execute: BenefitEligibilityBranches
-    transport: sse
+    transport: sse public: true
 }

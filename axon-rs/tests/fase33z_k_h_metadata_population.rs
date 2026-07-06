@@ -681,7 +681,7 @@ mod e2e {
             flow Chat() -> Unit {\n\
                 step Generate { ask: \"hi\" apply: chat_token_stream output: Stream<Token> }\n\
             }\n\
-            axonendpoint ChatEndpoint { method: POST path: \"/oai\" execute: Chat }";
+            axonendpoint ChatEndpoint { public: true method: POST path: \"/oai\" execute: Chat }";
         let app = build_router(server_cfg());
         assert_eq!(deploy(app.clone(), src).await, StatusCode::OK);
         let (status, _ct, body) = post_no_accept(app, "/oai").await;
@@ -743,7 +743,7 @@ mod e2e {
             flow Chat() -> Unit {\n\
                 step Generate { ask: \"hi\" apply: chat_token_stream output: Stream<Token> }\n\
             }\n\
-            axonendpoint ChatEndpoint { method: POST path: \"/anth\" \
+            axonendpoint ChatEndpoint { public: true method: POST path: \"/anth\" \
                                         execute: Chat transport: sse(anthropic) }";
         let app = build_router(server_cfg());
         assert_eq!(deploy(app.clone(), src).await, StatusCode::OK);
@@ -782,13 +782,13 @@ mod e2e {
             flow Chat() -> Unit {\n\
                 step Generate { ask: \"hi\" apply: chat_token_stream output: Stream<Token> }\n\
             }\n\
-            axonendpoint ChatEndpoint { method: POST path: \"/p\" execute: Chat }";
+            axonendpoint ChatEndpoint { public: true method: POST path: \"/p\" execute: Chat }";
         let src_anthropic = "tool chat_token_stream { description: \"S\" \
                              effects: <stream:drop_oldest> }\n\
             flow Chat() -> Unit {\n\
                 step Generate { ask: \"hi\" apply: chat_token_stream output: Stream<Token> }\n\
             }\n\
-            axonendpoint ChatEndpoint { method: POST path: \"/p\" \
+            axonendpoint ChatEndpoint { public: true method: POST path: \"/p\" \
                                         execute: Chat transport: sse(anthropic) }";
         let app_openai = build_router(server_cfg());
         assert_eq!(deploy(app_openai.clone(), src_openai).await, StatusCode::OK);

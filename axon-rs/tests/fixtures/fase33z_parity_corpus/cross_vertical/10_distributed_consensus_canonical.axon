@@ -10,5 +10,5 @@ axonendpoint DistributedConsensusCanonicalEndpoint {
     method: POST
     path: "/cross/distributed-consensus-canonical"
     execute: DistributedConsensusCanonical
-    transport: sse
+    transport: sse public: true
 }

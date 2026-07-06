@@ -10,5 +10,5 @@ axonendpoint PrescriptionAuditCanonicalEndpoint {
     method: POST
     path: "/medicine/prescription-audit-canonical"
     execute: PrescriptionAuditCanonical
-    transport: sse
+    transport: sse public: true
 }

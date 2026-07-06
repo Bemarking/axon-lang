@@ -13,5 +13,5 @@ axonendpoint ClinicalReasoningBranchEndpoint {
     method: POST
     path: "/medicine/clinical-reasoning-branch"
     execute: ClinicalReasoningBranch
-    transport: sse
+    transport: sse public: true
 }

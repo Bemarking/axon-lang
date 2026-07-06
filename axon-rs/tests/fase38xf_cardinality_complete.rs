@@ -42,7 +42,7 @@ fn s1_d1_for_tail_with_singular_output_emits_t9xx() {
         type TenantRow { id: Text }
         type TenantList { rows: List<TenantRow> }
         axonstore tenants { backend: in_memory }
-        axonendpoint list_summary {
+        axonendpoint list_summary { public: true
             method: GET
             path: "/api/summary"
             output: FlowEnvelope<TenantRow>
@@ -74,7 +74,7 @@ fn s2_d1_if_else_disagree_emits_w003() {
     let src = r#"
         type Report { ok: Bool }
         axonstore data { backend: in_memory }
-        axonendpoint evaluate {
+        axonendpoint evaluate { public: true
             method: GET
             path: "/api/evaluate"
             output: FlowEnvelope<Report>
@@ -106,7 +106,7 @@ fn s2_d1_if_else_disagree_emits_w003() {
 fn s3_d1_if_else_agree_singular_passes() {
     let src = r#"
         type Report { ok: Bool }
-        axonendpoint decide {
+        axonendpoint decide { public: true
             method: GET
             path: "/api/decide"
             output: Report
@@ -144,7 +144,7 @@ fn s4_d1_if_else_agree_plural_passes() {
         type Item { id: Text }
         axonstore catalog_a { backend: in_memory }
         axonstore catalog_b { backend: in_memory }
-        axonendpoint list_items {
+        axonendpoint list_items { public: true
             method: GET
             path: "/api/items"
             output: List<Item>
@@ -180,7 +180,7 @@ fn s4_d1_if_else_agree_plural_passes() {
 fn s5_d3_singular_tail_with_list_output_emits_t9xx() {
     let src = r#"
         type Item { id: Text }
-        axonendpoint create_item {
+        axonendpoint create_item { public: true
             method: POST
             path: "/api/items"
             output: FlowEnvelope<List<Item>>
@@ -212,7 +212,7 @@ fn s6_d5_stream_output_with_retrieve_tail_emits_t9yy() {
     let src = r#"
         type Token { text: Text }
         axonstore tokens { backend: in_memory }
-        axonendpoint stream_tokens {
+        axonendpoint stream_tokens { public: true
             method: POST
             path: "/api/stream"
             output: Stream<Token>
@@ -242,7 +242,7 @@ fn s6_d5_stream_output_with_retrieve_tail_emits_t9yy() {
 fn s7_d5_stream_output_with_stream_step_passes() {
     let src = r#"
         type Token { text: Text }
-        axonendpoint stream_chat {
+        axonendpoint stream_chat { public: true
             method: POST
             path: "/api/chat-stream"
             output: Stream<Token>
@@ -271,7 +271,7 @@ fn s7_d5_stream_output_with_stream_step_passes() {
 fn s8_d5_singular_output_with_stream_tail_emits_t9yy() {
     let src = r#"
         type Token { text: Text }
-        axonendpoint wrong_chat {
+        axonendpoint wrong_chat { public: true
             method: POST
             path: "/api/wrong-chat"
             output: FlowEnvelope<Token>
@@ -300,7 +300,7 @@ fn s9_d6_any_output_accepts_disagreed_branches() {
     let src = r#"
         type Item { id: Text }
         axonstore data { backend: in_memory }
-        axonendpoint flexible {
+        axonendpoint flexible { public: true
             method: GET
             path: "/api/flex"
             output: Any

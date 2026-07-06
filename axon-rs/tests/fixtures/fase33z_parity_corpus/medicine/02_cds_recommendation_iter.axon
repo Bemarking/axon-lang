@@ -13,5 +13,5 @@ axonendpoint CdsRecommendationIterEndpoint {
     method: POST
     path: "/medicine/cds-recommendation-iter"
     execute: CdsRecommendationIter
-    transport: sse
+    transport: sse public: true
 }

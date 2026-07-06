@@ -13,5 +13,5 @@ axonendpoint TrialMatchingMemoryEndpoint {
     method: POST
     path: "/medicine/trial-matching-memory"
     execute: TrialMatchingMemory
-    transport: sse
+    transport: sse public: true
 }

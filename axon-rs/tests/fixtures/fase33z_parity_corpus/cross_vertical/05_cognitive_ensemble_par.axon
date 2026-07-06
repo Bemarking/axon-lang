@@ -14,5 +14,5 @@ axonendpoint CognitiveEnsembleParEndpoint {
     method: POST
     path: "/cross/cognitive-ensemble-par"
     execute: CognitiveEnsemblePar
-    transport: sse
+    transport: sse public: true
 }

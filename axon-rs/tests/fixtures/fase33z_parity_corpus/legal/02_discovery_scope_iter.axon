@@ -13,5 +13,5 @@ axonendpoint DiscoveryScopeIterEndpoint {
     method: POST
     path: "/legal/discovery-scope-iter"
     execute: DiscoveryScopeIter
-    transport: sse
+    transport: sse public: true
 }

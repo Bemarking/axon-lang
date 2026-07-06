@@ -16,5 +16,5 @@ axonendpoint AmlTransactionScreeningEndpoint {
     method: POST
     path: "/banking/aml-transaction-screening"
     execute: AmlTransactionScreening
-    transport: sse
+    transport: sse public: true
 }

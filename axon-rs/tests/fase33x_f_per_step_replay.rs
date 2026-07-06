@@ -131,7 +131,7 @@ fn single_step_with_replay_true() -> String {
     "flow Chat() -> Unit {\n\
         step Generate { ask: \"hi\" output: Stream<Token> }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat transport: sse replay: true }"
+     axonendpoint ChatEndpoint { public: true method: POST path: \"/chat\" execute: Chat transport: sse replay: true }"
         .to_string()
 }
 
@@ -140,7 +140,7 @@ fn single_step_with_drop_oldest_effect() -> String {
      flow Chat() -> Unit {\n\
         step Generate { ask: \"hi\" apply: tk }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat transport: sse replay: true }"
+     axonendpoint ChatEndpoint { public: true method: POST path: \"/chat\" execute: Chat transport: sse replay: true }"
         .to_string()
 }
 
@@ -150,7 +150,7 @@ fn multi_step_with_replay_true() -> String {
         step Second { ask: \"two\" output: Stream<Token> }\n\
         step Third { ask: \"three\" output: Stream<Token> }\n\
      }\n\
-     axonendpoint ChainEndpoint { method: POST path: \"/chain\" execute: Chain transport: sse replay: true }"
+     axonendpoint ChainEndpoint { public: true method: POST path: \"/chain\" execute: Chain transport: sse replay: true }"
         .to_string()
 }
 
@@ -158,7 +158,7 @@ fn single_step_with_replay_false() -> String {
     "flow Chat() -> Unit {\n\
         step Generate { ask: \"hi\" output: Stream<Token> }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat transport: sse replay: false }"
+     axonendpoint ChatEndpoint { public: true method: POST path: \"/chat\" execute: Chat transport: sse replay: false }"
         .to_string()
 }
 
@@ -167,7 +167,7 @@ fn single_step_post_default_replay() -> String {
     "flow Chat() -> Unit {\n\
         step Generate { ask: \"hi\" output: Stream<Token> }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat transport: sse }"
+     axonendpoint ChatEndpoint { public: true method: POST path: \"/chat\" execute: Chat transport: sse }"
         .to_string()
 }
 

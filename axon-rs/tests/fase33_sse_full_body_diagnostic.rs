@@ -78,7 +78,7 @@ const ADOPTER_DISJUNCT_A: &str =
     "flow Chat() -> Unit {\n\
         step Generate { ask: \"hi\" output: Stream<Token> }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat }";
+     axonendpoint ChatEndpoint { public: true method: POST path: \"/chat\" execute: Chat }";
 
 /// Adopter-canonical disjunct (b) shape — tool with `effects:
 /// <stream:...>` referenced via `step S { apply: <tool> }`. Closed
@@ -94,7 +94,7 @@ const ADOPTER_DISJUNCT_B: &str =
      flow Chat() -> Unit {\n\
         step Generate { ask: \"hi\" apply: chat_token_stream }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat transport: sse(axon) }";
+     axonendpoint ChatEndpoint { public: true method: POST path: \"/chat\" execute: Chat transport: sse(axon) }";
 
 /// Explicit `transport: sse` shape — D5 path. Always SSE regardless
 /// of mode / Accept.
@@ -102,7 +102,7 @@ const ADOPTER_EXPLICIT_SSE: &str =
     "flow Chat() -> Unit {\n\
         step Generate { ask: \"hi\" output: Stream<Token> }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat transport: sse }";
+     axonendpoint ChatEndpoint { public: true method: POST path: \"/chat\" execute: Chat transport: sse }";
 
 #[derive(Debug, Default, Clone)]
 struct SseEventCount {

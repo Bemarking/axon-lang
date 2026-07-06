@@ -103,7 +103,7 @@ fn s5_agent_flow_with_in_memory_store_compiles_clean() {
             persist into mem { kind: \"reply\" content: \"done\" }\n\
         }\n\
         axonendpoint AgentE { method: POST path: \"/agent\" \
-        execute: AgentFlow backend: stub transport: sse }";
+        execute: AgentFlow backend: stub transport: sse public: true }";
     let errs = errors(src);
     assert!(
         errs.is_empty(),

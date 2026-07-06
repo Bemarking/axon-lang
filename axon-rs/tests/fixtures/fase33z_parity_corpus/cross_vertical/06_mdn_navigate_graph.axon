@@ -38,5 +38,5 @@ axonendpoint NavigateGraphEndpoint {
     method: POST
     path: "/cross/navigate-graph"
     execute: NavigateGraph
-    transport: sse
+    transport: sse public: true
 }

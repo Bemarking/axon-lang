@@ -94,7 +94,7 @@ async fn s1_streaming_tool_step_runs_the_tool_not_the_llm() {
         &app,
         "tool MyStream { provider: stub_stream effects: <stream:drop_oldest> }\n\
          flow Chat() -> Unit { step S { ask: \"hi\" apply: MyStream } }\n\
-         axonendpoint E { method: POST path: \"/t\" execute: Chat \
+         axonendpoint E { public: true method: POST path: \"/t\" execute: Chat \
          backend: stub transport: sse }",
     )
     .await;
@@ -122,7 +122,7 @@ async fn s2_step_ask_is_the_tool_argument() {
         &app,
         "tool MyStream { provider: stub_stream effects: <stream:drop_oldest> }\n\
          flow Chat() -> Unit { step S { ask: \"axon-marker-42\" apply: MyStream } }\n\
-         axonendpoint E { method: POST path: \"/t\" execute: Chat \
+         axonendpoint E { public: true method: POST path: \"/t\" execute: Chat \
          backend: stub transport: sse }",
     )
     .await;
@@ -149,7 +149,7 @@ async fn s3_non_streaming_tool_keeps_the_legacy_path() {
         &app,
         "tool PlainTool { description: \"a non-streaming tool\" }\n\
          flow Chat() -> Unit { step S { ask: \"hi\" apply: PlainTool } }\n\
-         axonendpoint E { method: POST path: \"/t\" execute: Chat \
+         axonendpoint E { public: true method: POST path: \"/t\" execute: Chat \
          backend: stub transport: sse }",
     )
     .await;

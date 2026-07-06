@@ -115,7 +115,7 @@ flow HibernateSession(tenant_id: String, summary_id: String) -> String {
     return Summarize.output
 }
 
-axonendpoint HibernateEndpoint {
+axonendpoint HibernateEndpoint { public: true
     method: POST
     path: "/api/memory/hibernate"
     execute: HibernateSession

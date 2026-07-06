@@ -11,5 +11,5 @@ axonendpoint CitationCheckValidateEndpoint {
     method: POST
     path: "/legal/citation-check-validate"
     execute: CitationCheckValidate
-    transport: sse
+    transport: sse public: true
 }

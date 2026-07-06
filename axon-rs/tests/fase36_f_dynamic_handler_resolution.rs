@@ -42,9 +42,9 @@ fn one_route(src: &str) -> DynamicEndpointRoute {
 }
 
 const DECLARED: &str = "flow F() -> Unit { step S { ask: \"x\" } }\n\
-    axonendpoint E { method: POST path: \"/chat\" execute: F backend: gemini }";
+    axonendpoint E { public: true method: POST path: \"/chat\" execute: F backend: gemini }";
 const UNDECLARED: &str = "flow F() -> Unit { step S { ask: \"x\" } }\n\
-    axonendpoint E { method: POST path: \"/chat\" execute: F }";
+    axonendpoint E { public: true method: POST path: \"/chat\" execute: F }";
 
 // ─── §1 — resolve_route_backend projects onto the ladder ───────────
 
@@ -208,7 +208,7 @@ async fn s2_json_branch_runs_the_declared_backend_outranking_registry() {
     deploy(
         &app,
         "flow Chat() -> Unit { step S { ask: \"hi\" } }\n\
-         axonendpoint E { method: POST path: \"/chat\" execute: Chat backend: stub }",
+         axonendpoint E { public: true method: POST path: \"/chat\" execute: Chat backend: stub }",
     )
     .await;
 
@@ -239,7 +239,7 @@ async fn s3_sse_branch_runs_the_declared_backend() {
     deploy(
         &app,
         "flow Stream() -> Unit { step S { ask: \"hi\" output: Stream<Token> } }\n\
-         axonendpoint E { method: POST path: \"/stream\" execute: Stream \
+         axonendpoint E { public: true method: POST path: \"/stream\" execute: Stream \
          backend: stub transport: sse }",
     )
     .await;
@@ -270,7 +270,7 @@ async fn s4_undeclared_route_still_dispatches() {
     deploy(
         &app,
         "flow Chat() -> Unit { step S { ask: \"hi\" } }\n\
-         axonendpoint E { method: POST path: \"/plain\" execute: Chat backend: stub }",
+         axonendpoint E { public: true method: POST path: \"/plain\" execute: Chat backend: stub }",
     )
     .await;
     let (status, _ct, body) = hit(&app, "POST", "/plain", false).await;

@@ -6759,6 +6759,41 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        // §Fase 89.b (`axon-T890`) — AuthorizationCoverage: the doctrine
+        // `every_boundary_is_guarded` made a compile-time law. An
+        // `axonendpoint` is a trust boundary; the boundary-coverage audit
+        // found Modo 1 — an endpoint with no `requires:`/`shield:`/
+        // `compliance:` silently dispatches to any authenticated same-tenant
+        // caller ("empty vec ≡ no auth gate — back-compat"). §89 closes that:
+        // an endpoint that DISPATCHES a flow must declare a covering
+        // authorization discipline OR the EXPLICIT, auditable opt-out
+        // `public: true`. Gated on a non-empty `execute:` — an endpoint that
+        // dispatches nothing crosses no boundary (and is already flagged by
+        // the execute/flow checks above), so it needs no coverage.
+        if !node.execute_flow.is_empty() {
+            let covered = !node.requires_capabilities.is_empty()
+                || !node.shield_ref.is_empty()
+                || !node.compliance.is_empty();
+            if !covered && !node.public {
+                self.emit(
+                    format!(
+                        "axon-T890 axonendpoint '{}' declares no authorization \
+                         coverage (no `requires:`, no `shield:`, no `compliance:`) \
+                         and is not marked `public: true`. Every endpoint is a \
+                         trust boundary — doctrine `every_boundary_is_guarded`: \
+                         either declare a covering discipline (e.g. \
+                         `requires: [flow.execute]`, `shield: <Name>`, or \
+                         `compliance: [...]`) or, if the endpoint is intentionally \
+                         uncovered, declare `public: true` so the opt-out is \
+                         explicit and auditable. Run `axon fix` to auto-insert \
+                         `public: true` on every currently-uncovered endpoint.",
+                        node.name
+                    ),
+                    &node.loc,
+                );
+            }
+        }
+
         // §Fase 39.e (D12 α RATIFIED) — Wire-shape mandate gate
         // (`axon-E039`). On `transport: json` endpoints, every
         // declared `output: T` MUST be `FlowEnvelope<T>` (or `Any` /

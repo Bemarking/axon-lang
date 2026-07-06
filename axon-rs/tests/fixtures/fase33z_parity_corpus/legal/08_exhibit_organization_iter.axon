@@ -13,5 +13,5 @@ axonendpoint ExhibitOrganizationIterEndpoint {
     method: POST
     path: "/legal/exhibit-organization-iter"
     execute: ExhibitOrganizationIter
-    transport: sse
+    transport: sse public: true
 }

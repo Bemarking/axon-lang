@@ -13,5 +13,5 @@ axonendpoint PrivilegeAssessmentBranchEndpoint {
     method: POST
     path: "/legal/privilege-assessment-branch"
     execute: PrivilegeAssessmentBranch
-    transport: sse
+    transport: sse public: true
 }

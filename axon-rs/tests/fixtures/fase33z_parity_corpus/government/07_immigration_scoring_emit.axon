@@ -14,5 +14,5 @@ axonendpoint ImmigrationScoringEmitEndpoint {
     method: POST
     path: "/government/immigration-scoring-emit"
     execute: ImmigrationScoringEmit
-    transport: sse
+    transport: sse public: true
 }

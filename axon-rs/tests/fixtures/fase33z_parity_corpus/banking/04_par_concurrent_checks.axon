@@ -25,5 +25,5 @@ axonendpoint OnboardEndpoint {
     method: POST
     path: "/onboard"
     execute: Onboarding
-    transport: sse
+    transport: sse public: true
 }

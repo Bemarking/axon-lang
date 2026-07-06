@@ -51,7 +51,7 @@ flow HibernateSession() -> String {
     return Summarize.output
 }
 
-axonendpoint HibernateEndpoint {
+axonendpoint HibernateEndpoint { public: true
     method: POST
     path: "/api/memory/hibernate"
     execute: HibernateSession
@@ -138,7 +138,7 @@ flow Greet() -> String {
     return Hello.output
 }
 
-axonendpoint GreetEndpoint {
+axonendpoint GreetEndpoint { public: true
     method: POST
     path: "/greet"
     execute: Greet

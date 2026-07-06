@@ -10,5 +10,5 @@ axonendpoint DiagnosisDifferentialReasonEndpoint {
     method: POST
     path: "/medicine/diagnosis-differential-reason"
     execute: DiagnosisDifferentialReason
-    transport: sse
+    transport: sse public: true
 }

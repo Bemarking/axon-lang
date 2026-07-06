@@ -70,7 +70,7 @@ fn s2_covered_required_parameter_type_checks_clean() {
     let src = "type Body2 { message: String }\n\
         flow Flow2(message: String) -> Unit { step S { ask: \"x\" output: String } }\n\
         axonendpoint E2 { method: POST path: \"/e2\" \
-            body: Body2 execute: Flow2 backend: stub }";
+            body: Body2 execute: Flow2 backend: stub public: true }";
     assert!(
         errors(src).is_empty(),
         "§37.c D2 — a required parameter covered by a same-named, \
@@ -141,7 +141,7 @@ fn s6_multi_parameter_agent_shape_fully_covered_is_clean() {
             step Deliberate { ask: \"x\" output: String }\n\
         }\n\
         axonendpoint ChatE { method: POST path: \"/chat\" \
-            body: ChatBody execute: ChatFlow backend: stub }";
+            body: ChatBody execute: ChatFlow backend: stub public: true }";
     assert!(
         errors(src).is_empty(),
         "§37.c D2 — the canonical multi-parameter agent endpoint, \

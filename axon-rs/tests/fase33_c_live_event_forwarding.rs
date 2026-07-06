@@ -72,7 +72,7 @@ const SINGLE_STEP_SOURCE: &str =
     "flow Chat() -> Unit {\n\
         step Generate { ask: \"hi\" output: Stream<Token> }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat transport: sse }";
+     axonendpoint ChatEndpoint { public: true method: POST path: \"/chat\" execute: Chat transport: sse }";
 
 const MULTI_STEP_SOURCE: &str =
     "flow Pipeline() -> Unit {\n\
@@ -80,7 +80,7 @@ const MULTI_STEP_SOURCE: &str =
         step Execute { ask: \"do\" output: Stream<Token> }\n\
         step Audit { ask: \"verify\" output: Stream<Token> }\n\
      }\n\
-     axonendpoint PipelineEndpoint { method: POST path: \"/pipe\" execute: Pipeline transport: sse }";
+     axonendpoint PipelineEndpoint { public: true method: POST path: \"/pipe\" execute: Pipeline transport: sse }";
 
 // Helper: parse the entire SSE wire body into (event_type, id, data_json)
 // triples. Sentinel events without `event:` (the `retry:` directive

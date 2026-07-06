@@ -18,5 +18,5 @@ axonendpoint AmlEndpoint {
     method: POST
     path: "/aml/screen"
     execute: AmlScreen
-    transport: sse
+    transport: sse public: true
 }

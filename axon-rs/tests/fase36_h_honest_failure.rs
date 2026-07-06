@@ -46,7 +46,7 @@ fn one_route(src: &str) -> DynamicEndpointRoute {
 }
 
 const ROUTE_SRC: &str = "flow Chat() -> Unit { step S { ask: \"hi\" } }\n\
-    axonendpoint E { method: POST path: \"/chat\" execute: Chat }";
+    axonendpoint E { public: true method: POST path: \"/chat\" execute: Chat }";
 
 // ─── §1 — JSON honest failure is a structured 503 ──────────────────
 
@@ -200,7 +200,7 @@ async fn s3_undeclared_route_with_nothing_fails_honestly() {
     deploy(
         &app,
         "flow Chat() -> Unit { step S { ask: \"hi\" } }\n\
-         axonendpoint E { method: POST path: \"/chat\" execute: Chat }",
+         axonendpoint E { public: true method: POST path: \"/chat\" execute: Chat }",
     )
     .await;
 
@@ -238,7 +238,7 @@ async fn s4_explicit_stub_is_a_legal_optin_never_honest_failure() {
     deploy(
         &app,
         "flow Chat() -> Unit { step S { ask: \"hi\" } }\n\
-         axonendpoint E { method: POST path: \"/chat\" execute: Chat backend: stub }",
+         axonendpoint E { public: true method: POST path: \"/chat\" execute: Chat backend: stub }",
     )
     .await;
 

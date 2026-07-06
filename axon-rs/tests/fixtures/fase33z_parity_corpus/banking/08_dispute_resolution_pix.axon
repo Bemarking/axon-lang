@@ -12,5 +12,5 @@ axonendpoint DisputeResolutionPixEndpoint {
     method: POST
     path: "/banking/dispute-resolution-pix"
     execute: DisputeResolutionPix
-    transport: sse
+    transport: sse public: true
 }

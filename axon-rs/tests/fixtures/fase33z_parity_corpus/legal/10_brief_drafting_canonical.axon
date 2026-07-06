@@ -10,5 +10,5 @@ axonendpoint BriefDraftingCanonicalEndpoint {
     method: POST
     path: "/legal/brief-drafting-canonical"
     execute: BriefDraftingCanonical
-    transport: sse
+    transport: sse public: true
 }

@@ -110,7 +110,7 @@ async fn bare_sse_type_annotation_only_resolves_to_axon_dialect() {
     let src = "flow Chat() -> Unit {\n\
             step Generate { ask: \"hi\" output: Stream<Token> }\n\
         }\n\
-        axonendpoint ChatEndpoint { method: POST path: \"/bare\" execute: Chat transport: sse }";
+        axonendpoint ChatEndpoint { public: true method: POST path: \"/bare\" execute: Chat transport: sse }";
     let app = build_router(server_cfg());
     assert_eq!(deploy(app.clone(), src).await, StatusCode::OK);
     let (status, ct, body) = post_no_accept(app, "/bare").await;
@@ -141,11 +141,11 @@ async fn bare_sse_and_explicit_sse_axon_emit_byte_identical_wire() {
     let bare_src = "flow Chat() -> Unit {\n\
             step Generate { ask: \"hi\" output: Stream<Token> }\n\
         }\n\
-        axonendpoint ChatEndpoint { method: POST path: \"/a\" execute: Chat transport: sse }";
+        axonendpoint ChatEndpoint { public: true method: POST path: \"/a\" execute: Chat transport: sse }";
     let explicit_src = "flow Chat() -> Unit {\n\
             step Generate { ask: \"hi\" output: Stream<Token> }\n\
         }\n\
-        axonendpoint ChatEndpoint { method: POST path: \"/b\" execute: Chat transport: sse(axon) }";
+        axonendpoint ChatEndpoint { public: true method: POST path: \"/b\" execute: Chat transport: sse(axon) }";
     let app_bare = build_router(server_cfg());
     assert_eq!(deploy(app_bare.clone(), bare_src).await, StatusCode::OK);
     let (_, _, body_bare) = post_no_accept(app_bare, "/a").await;
@@ -175,7 +175,7 @@ async fn algebraic_effect_with_explicit_sse_axon_overrides_openai_default() {
         flow Chat() -> Unit {\n\
             step Generate { ask: \"hi\" apply: chat_token_stream output: Stream<Token> }\n\
         }\n\
-        axonendpoint ChatEndpoint { method: POST path: \"/override\" execute: Chat transport: sse(axon) }";
+        axonendpoint ChatEndpoint { public: true method: POST path: \"/override\" execute: Chat transport: sse(axon) }";
     let app = build_router(server_cfg());
     assert_eq!(deploy(app.clone(), src).await, StatusCode::OK);
     let (status, ct, body) = post_no_accept(app, "/override").await;

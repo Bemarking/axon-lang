@@ -14,5 +14,5 @@ axonendpoint ImagingReviewEmitEndpoint {
     method: POST
     path: "/medicine/imaging-review-emit"
     execute: ImagingReviewEmit
-    transport: sse
+    transport: sse public: true
 }

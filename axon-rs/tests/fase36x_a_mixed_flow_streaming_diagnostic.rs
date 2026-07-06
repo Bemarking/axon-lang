@@ -136,7 +136,7 @@ async fn s2_streaming_error_path_emits_exactly_one_terminator_post_36xc() {
             retrieve mem { where: \"kind = 'history'\" as: history }\n\
             step Generate { ask: \"deliberate\" output: Stream<Token> }\n\
         }\n\
-        axonendpoint ChatE { method: POST path: \"/chat\" execute: ChatFlow \
+        axonendpoint ChatE { public: true method: POST path: \"/chat\" execute: ChatFlow \
         backend: stub transport: sse(axon) }";
     let (dstatus, dbody) = deploy(&app, src).await;
     assert_eq!(

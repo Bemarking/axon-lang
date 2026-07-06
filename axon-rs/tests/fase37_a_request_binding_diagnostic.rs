@@ -111,7 +111,7 @@ async fn s1_request_body_value_reaches_the_flow() {
         flow EchoFlow(message: String) -> Unit {\n\
             step Reply { ask: \"BODYVAL=${message}\" apply: Echo }\n\
         }\n\
-        axonendpoint EchoE { method: POST path: \"/echo\" \
+        axonendpoint EchoE { public: true method: POST path: \"/echo\" \
             body: EchoBody execute: EchoFlow backend: stub transport: sse }";
     deploy(&app, src).await;
 
@@ -155,7 +155,7 @@ async fn s2_control_let_binding_does_interpolate() {
             let greeting = \"HARNESS_OK_37A\"\n\
             step Reply { ask: \"V=${greeting}\" apply: Echo }\n\
         }\n\
-        axonendpoint CtrlE { method: POST path: \"/ctrl\" \
+        axonendpoint CtrlE { public: true method: POST path: \"/ctrl\" \
             execute: CtrlFlow backend: stub transport: sse }";
     deploy(&app, src).await;
 
@@ -201,7 +201,7 @@ async fn s3_errored_streaming_flow_names_why_it_failed() {
             retrieve bad { where: \"1 = 1\" as: r }\n\
             step Reply { ask: \"x\" apply: Echo }\n\
         }\n\
-        axonendpoint ErrE { method: POST path: \"/err\" \
+        axonendpoint ErrE { public: true method: POST path: \"/err\" \
             execute: ErrFlow backend: stub transport: sse(openai) }";
     deploy(&app, src).await;
 

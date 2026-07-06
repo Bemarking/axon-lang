@@ -247,9 +247,9 @@ fn method_enum_constant_matches_parser_set() {
 #[test]
 fn cross_deploy_collision_different_endpoint_rejected() {
     let src1 = "flow F() -> Unit { step S { ask: \"x\" } }\n\
-                axonendpoint Alpha { method: POST path: \"/chat\" execute: F }";
+                axonendpoint Alpha { public: true method: POST path: \"/chat\" execute: F }";
     let src2 = "flow G() -> Unit { step T { ask: \"y\" } }\n\
-                axonendpoint Beta { method: POST path: \"/chat\" execute: G }";
+                axonendpoint Beta { public: true method: POST path: \"/chat\" execute: G }";
 
     let collect = |src: &str, file: &str| {
         let tokens = axon::lexer::Lexer::new(src, file).tokenize().unwrap();
@@ -271,10 +271,10 @@ fn cross_deploy_collision_different_endpoint_rejected() {
 #[test]
 fn same_endpoint_redeploy_updates_in_place() {
     let src1 = "flow F() -> Unit { step S { ask: \"x\" } }\n\
-                axonendpoint E { method: POST path: \"/chat\" execute: F }";
+                axonendpoint E { public: true method: POST path: \"/chat\" execute: F }";
     let src2 = "tool t { description: \"t\" effects: <stream:drop_oldest> }\n\
                 flow F() -> Unit { step S { ask: \"x\" apply: t } }\n\
-                axonendpoint E { method: POST path: \"/chat\" execute: F transport: sse }";
+                axonendpoint E { public: true method: POST path: \"/chat\" execute: F transport: sse }";
 
     let collect = |src: &str, file: &str| {
         let tokens = axon::lexer::Lexer::new(src, file).tokenize().unwrap();
@@ -296,10 +296,10 @@ fn same_endpoint_redeploy_updates_in_place() {
 #[test]
 fn merge_is_atomic_on_collision_failure() {
     let src_pre = "flow F() -> Unit { step S { ask: \"x\" } }\n\
-                   axonendpoint Existing { method: POST path: \"/chat\" execute: F }";
+                   axonendpoint Existing { public: true method: POST path: \"/chat\" execute: F }";
     let src_new = "flow G() -> Unit { step T { ask: \"y\" } }\n\
-                   axonendpoint Fresh    { method: POST path: \"/new\" execute: G }\n\
-                   axonendpoint Conflict { method: POST path: \"/chat\" execute: G }";
+                   axonendpoint Fresh    { public: true method: POST path: \"/new\" execute: G }\n\
+                   axonendpoint Conflict { public: true method: POST path: \"/chat\" execute: G }";
 
     let collect = |src: &str, file: &str| {
         let tokens = axon::lexer::Lexer::new(src, file).tokenize().unwrap();
@@ -372,7 +372,7 @@ async fn declared_path_serves_the_flow_kivi_case() {
     let app = build_router(server_cfg());
     let src = "tool chat_token_stream { description: \"stream\" effects: <stream:drop_oldest> }\n\
                flow Chat() -> Unit { step Generate { ask: \"hi\" apply: chat_token_stream } }\n\
-               axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat transport: sse }";
+               axonendpoint ChatEndpoint { public: true method: POST path: \"/chat\" execute: Chat transport: sse }";
     deploy(app.clone(), src).await;
 
     let req = Request::builder()
@@ -400,7 +400,7 @@ async fn declared_path_serves_the_flow_kivi_case() {
 async fn unknown_path_returns_404_with_registered_routes_list() {
     let app = build_router(server_cfg());
     let src = "flow F() -> Unit { step S { ask: \"x\" } }\n\
-               axonendpoint E { method: POST path: \"/chat\" execute: F }";
+               axonendpoint E { public: true method: POST path: \"/chat\" execute: F }";
     deploy(app.clone(), src).await;
 
     let req = Request::builder()
@@ -428,7 +428,7 @@ async fn v1_execute_legacy_preserved_alongside_dynamic_routes_d10() {
     // flow at a different path.
     let app = build_router(server_cfg());
     let src = "flow F() -> Unit { step S { ask: \"x\" } }\n\
-               axonendpoint E { method: POST path: \"/chat\" execute: F }";
+               axonendpoint E { public: true method: POST path: \"/chat\" execute: F }";
     deploy(app.clone(), src).await;
 
     // Legacy /v1/execute path with body `{"flow": "F"}` must still
@@ -451,8 +451,8 @@ async fn deploy_with_path_collision_returns_409_style_error_at_deploy() {
     let app = build_router(server_cfg());
     let src = "flow F() -> Unit { step S { ask: \"x\" } }\n\
                flow G() -> Unit { step T { ask: \"y\" } }\n\
-               axonendpoint Alpha { method: POST path: \"/chat\" execute: F }\n\
-               axonendpoint Beta  { method: POST path: \"/chat\" execute: G }";
+               axonendpoint Alpha { public: true method: POST path: \"/chat\" execute: F }\n\
+               axonendpoint Beta  { public: true method: POST path: \"/chat\" execute: G }";
     let body = serde_json::json!({
         "source": src,
         "source_file": "collide.axon",
@@ -479,11 +479,11 @@ async fn five_method_enum_all_register_correctly() {
     // D3 — every adopter-declarable method produces a valid route.
     let app = build_router(server_cfg());
     let src = "flow F() -> Unit { step S { ask: \"x\" } }\n\
-               axonendpoint G  { method: GET    path: \"/g\"  execute: F }\n\
-               axonendpoint P  { method: POST   path: \"/p\"  execute: F }\n\
-               axonendpoint Pu { method: PUT    path: \"/pu\" execute: F }\n\
-               axonendpoint De { method: DELETE path: \"/d\"  execute: F }\n\
-               axonendpoint Pa { method: PATCH  path: \"/pa\" execute: F }";
+               axonendpoint G  { public: true method: GET    path: \"/g\"  execute: F }\n\
+               axonendpoint P  { public: true method: POST   path: \"/p\"  execute: F }\n\
+               axonendpoint Pu { public: true method: PUT    path: \"/pu\" execute: F }\n\
+               axonendpoint De { public: true method: DELETE path: \"/d\"  execute: F }\n\
+               axonendpoint Pa { public: true method: PATCH  path: \"/pa\" execute: F }";
     deploy(app.clone(), src).await;
 
     // Each of the five methods should route to the flow (200) rather

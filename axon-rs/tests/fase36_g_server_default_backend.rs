@@ -135,7 +135,7 @@ async fn s4_server_default_feeds_rung_3_over_the_registry() {
     deploy(
         &app,
         "flow Chat() -> Unit { step S { ask: \"hi\" } }\n\
-         axonendpoint E { method: POST path: \"/chat\" execute: Chat }",
+         axonendpoint E { public: true method: POST path: \"/chat\" execute: Chat }",
     )
     .await;
 
@@ -161,7 +161,7 @@ async fn s5_route_declaration_outranks_server_default() {
     deploy(
         &app,
         "flow Chat() -> Unit { step S { ask: \"hi\" } }\n\
-         axonendpoint E { method: POST path: \"/chat\" execute: Chat backend: stub }",
+         axonendpoint E { public: true method: POST path: \"/chat\" execute: Chat backend: stub }",
     )
     .await;
 
@@ -184,7 +184,7 @@ async fn s6_no_server_default_undeclared_route_still_dispatches() {
     deploy(
         &app,
         "flow Chat() -> Unit { step S { ask: \"hi\" } }\n\
-         axonendpoint E { method: POST path: \"/plain\" execute: Chat backend: stub }",
+         axonendpoint E { public: true method: POST path: \"/plain\" execute: Chat backend: stub }",
     )
     .await;
     let json = hit_json(&app, "/plain").await;

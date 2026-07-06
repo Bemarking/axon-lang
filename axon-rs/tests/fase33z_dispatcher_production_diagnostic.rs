@@ -310,7 +310,7 @@ const CANONICAL_STEP_FLOW: &str =
     "flow Chat() -> Unit {\n\
         step Generate { ask: \"hi\" output: Stream<Token> }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/canon\" execute: Chat transport: sse }";
+     axonendpoint ChatEndpoint { public: true method: POST path: \"/canon\" execute: Chat transport: sse }";
 
 /// **(orchestration)** `Conditional` — `if region == "us" { ... }`.
 /// Pre-33.z: `IRFlowNode::Conditional` triggers
@@ -324,7 +324,7 @@ const CONDITIONAL_FLOW: &str =
           step Generate { ask: \"hi\" output: Stream<Token> }\n\
         }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/cond\" execute: Chat transport: sse }";
+     axonendpoint ChatEndpoint { public: true method: POST path: \"/cond\" execute: Chat transport: sse }";
 
 /// **(orchestration)** `ForIn` — `for x in regions { ... }`.
 /// Pre-33.z: `IRFlowNode::ForIn` triggers
@@ -344,7 +344,7 @@ const FOR_IN_FLOW: &str =
           step Generate { ask: \"hi\" output: Stream<Token> }\n\
         }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/forin\" execute: Chat transport: sse }";
+     axonendpoint ChatEndpoint { public: true method: POST path: \"/forin\" execute: Chat transport: sse }";
 
 /// **(parallel)** `Par` block — `par { step A ... step B ... }`.
 /// Pre-33.z: `IRFlowNode::Par` triggers
@@ -360,7 +360,7 @@ const PAR_FLOW: &str =
           step B { ask: \"b\" output: Stream<Token> }\n\
         }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/par\" execute: Chat transport: sse }";
+     axonendpoint ChatEndpoint { public: true method: POST path: \"/par\" execute: Chat transport: sse }";
 
 /// **(cognitive)** `Remember` — `remember region in session_memory`.
 /// Pre-33.z: `IRFlowNode::Remember` triggers
@@ -379,7 +379,7 @@ const REMEMBER_FLOW: &str =
         remember region in session_memory\n\
         step Generate { ask: \"hi\" output: Stream<Token> }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/remember\" execute: Chat transport: sse }";
+     axonendpoint ChatEndpoint { public: true method: POST path: \"/remember\" execute: Chat transport: sse }";
 
 /// **(algebraic handler)** `ShieldApply` — `shield PHIShield on response -> SanitizedResponse`.
 /// Pre-33.z: `IRFlowNode::ShieldApply` triggers
@@ -404,7 +404,7 @@ const SHIELD_APPLY_FLOW: &str =
         step Generate { ask: \"hi\" output: Stream<Token> }\n\
         shield PHIShield on response -> SanitizedResponse\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/shield\" execute: Chat transport: sse }";
+     axonendpoint ChatEndpoint { public: true method: POST path: \"/shield\" execute: Chat transport: sse }";
 
 /// **(wire integration)** `Emit` — `emit Channel(payload)`.
 /// Pre-33.z: `IRFlowNode::Emit` triggers
@@ -427,7 +427,7 @@ const EMIT_FLOW: &str =
         emit OrdersCreated(payload)\n\
         step Generate { ask: \"hi\" output: Stream<Token> }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/emit\" execute: Chat transport: sse }";
+     axonendpoint ChatEndpoint { public: true method: POST path: \"/emit\" execute: Chat transport: sse }";
 
 /// **(PIX)** `Hibernate` — `hibernate event_name 30s`.
 /// Pre-33.z: `IRFlowNode::Hibernate` triggers
@@ -445,7 +445,7 @@ const HIBERNATE_FLOW: &str =
         hibernate user_response 30s\n\
         step Generate { ask: \"hi\" output: Stream<Token> }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/hibernate\" execute: Chat transport: sse }";
+     axonendpoint ChatEndpoint { public: true method: POST path: \"/hibernate\" execute: Chat transport: sse }";
 
 /// **(lambda + tools)** `LambdaDataApply` — `lambda doubler on x -> Int`.
 /// Pre-33.z: `IRFlowNode::LambdaDataApply` triggers
@@ -470,7 +470,7 @@ const LAMBDA_DATA_APPLY_FLOW: &str =
         lambda doubler on x -> LambdaResult\n\
         step Generate { ask: \"hi\" output: Stream<Token> }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/lambda\" execute: Chat transport: sse }";
+     axonendpoint ChatEndpoint { public: true method: POST path: \"/lambda\" execute: Chat transport: sse }";
 
 // ────────────────────────────────────────────────────────────────────
 //  §1 — D1 canonical Step regression pin (must stay green throughout 33.z)

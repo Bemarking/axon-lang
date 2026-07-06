@@ -65,7 +65,7 @@ const STUB_FLOW_SOURCE: &str =
     "flow Chat() -> Unit {\n\
         step Generate { ask: \"hi\" output: Stream<Token> }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat }";
+     axonendpoint ChatEndpoint { public: true method: POST path: \"/chat\" execute: Chat }";
 
 // ─── §1 — /v1/execute (JSON) path reports steps_executed >= 1 ──────
 
@@ -168,7 +168,7 @@ const MULTI_STEP_SOURCE: &str =
         step Execute { ask: \"do\" output: Stream<Token> }\n\
         step Audit { ask: \"verify\" output: Stream<Token> }\n\
      }\n\
-     axonendpoint PipelineEndpoint { method: POST path: \"/pipe\" execute: Pipeline transport: sse }";
+     axonendpoint PipelineEndpoint { public: true method: POST path: \"/pipe\" execute: Pipeline transport: sse }";
 
 #[tokio::test]
 async fn multi_step_flow_each_step_visible_in_wire() {

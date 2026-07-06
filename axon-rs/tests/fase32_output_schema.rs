@@ -107,7 +107,7 @@ fn post_to(path: &str) -> Request<Body> {
 async fn d9_no_output_declaration_passes_response_through() {
     let app = build_router(server_cfg());
     let src = "flow Ping() -> String { let result = \"pong\" return result }\n\
-               axonendpoint PingEndpoint { method: POST path: \"/ping\" execute: Ping }";
+               axonendpoint PingEndpoint { public: true method: POST path: \"/ping\" execute: Ping }";
     deploy(app.clone(), src).await;
 
     let resp = app.oneshot(post_to("/ping")).await.expect("request");
@@ -128,7 +128,7 @@ async fn d9_no_output_declaration_passes_response_through() {
 async fn output_any_accepts_response_unchanged() {
     let app = build_router(server_cfg());
     let src = "flow Ping() -> String { let result = \"pong\" return result }\n\
-               axonendpoint AnyEndpoint { method: POST path: \"/any\" execute: Ping output: Any }";
+               axonendpoint AnyEndpoint { public: true method: POST path: \"/any\" execute: Ping output: Any }";
     deploy(app.clone(), src).await;
 
     let resp = app.oneshot(post_to("/any")).await.expect("request");
@@ -162,7 +162,7 @@ async fn output_string_rejects_object_response_with_owasp_500() {
     // mismatch through a stub step's string output instead, exercising the
     // SAME D5 gate.)
     let src = "flow Ping() -> Integer { step Compute { ask: \"n\" } return Compute.output }\n\
-               axonendpoint Wrong { method: POST path: \"/wrong\" execute: Ping output: FlowEnvelope<Integer> }";
+               axonendpoint Wrong { public: true method: POST path: \"/wrong\" execute: Ping output: FlowEnvelope<Integer> }";
     deploy(app.clone(), src).await;
 
     let resp = app.oneshot(post_to("/wrong")).await.expect("request");
@@ -201,7 +201,7 @@ async fn output_schema_violation_recorded_in_audit_log_with_full_diagnostic() {
     // declares `Integer` but returns a stub STEP's STRING output `"(stub)"`, so
     // the `FlowEnvelope<Integer>` inner-T validation fails at the D5 gate.
     let src = "flow Ping() -> Integer { step Compute { ask: \"n\" } return Compute.output }\n\
-               axonendpoint Wrong { method: POST path: \"/wrong-audit\" execute: Ping output: FlowEnvelope<Integer> }";
+               axonendpoint Wrong { public: true method: POST path: \"/wrong-audit\" execute: Ping output: FlowEnvelope<Integer> }";
     deploy(app.clone(), src).await;
 
     // Get the audit log starting size so we can find OUR entry.
@@ -285,7 +285,7 @@ async fn sse_response_bypasses_output_validation_gate() {
     let app = build_router(server_cfg());
     let src = "tool chat_token_stream { description: \"stream\" effects: <stream:drop_oldest> }\n\
                flow Chat() -> Unit { step Generate { ask: \"hi\" apply: chat_token_stream } }\n\
-               axonendpoint ChatSse { method: POST path: \"/chat-sse\" execute: Chat transport: sse output: String }";
+               axonendpoint ChatSse { public: true method: POST path: \"/chat-sse\" execute: Chat transport: sse output: String }";
     deploy(app.clone(), src).await;
 
     let resp = app.oneshot(post_to("/chat-sse")).await.expect("request");
@@ -336,7 +336,7 @@ async fn trace_id_in_500_envelope_is_uuid_v4_shape() {
     // declares `Integer` but returns a stub STEP's STRING output `"(stub)"`, so
     // the `FlowEnvelope<Integer>` inner-T validation fails at the D5 gate.
     let src = "flow Ping() -> Integer { step Compute { ask: \"n\" } return Compute.output }\n\
-               axonendpoint Wrong { method: POST path: \"/wrong-uuid\" execute: Ping output: FlowEnvelope<Integer> }";
+               axonendpoint Wrong { public: true method: POST path: \"/wrong-uuid\" execute: Ping output: FlowEnvelope<Integer> }";
     deploy(app.clone(), src).await;
 
     let resp = app.oneshot(post_to("/wrong-uuid")).await.expect("request");
@@ -377,7 +377,7 @@ async fn body_and_output_validation_compose_independently() {
     let app = build_router(server_cfg());
     let src = "type PingReq { msg: String }\n\
                flow Ping() -> String { let result = \"pong\" return result }\n\
-               axonendpoint Both { method: POST path: \"/both\" execute: Ping body: PingReq output: Any }";
+               axonendpoint Both { public: true method: POST path: \"/both\" execute: Ping body: PingReq output: Any }";
     deploy(app.clone(), src).await;
 
     // Well-formed body — passes 32.c gate.

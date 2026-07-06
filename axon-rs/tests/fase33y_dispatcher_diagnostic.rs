@@ -210,7 +210,7 @@ const CANONICAL_STEP_FLOW: &str =
     "flow Chat() -> Unit {\n\
         step Generate { ask: \"hi\" output: Stream<Token> }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat transport: sse }";
+     axonendpoint ChatEndpoint { public: true method: POST path: \"/chat\" execute: Chat transport: sse }";
 
 /// `Let`-binding shape (IRFlowNode::Let). Currently triggers
 /// `PlanFallback::LetBindingPresent` → legacy path. Post-33.y.d
@@ -221,7 +221,7 @@ const LET_BINDING_FLOW: &str =
         let region = \"us\"\n\
         step Generate { ask: \"hi\" output: Stream<Token> }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/let\" execute: Chat transport: sse }";
+     axonendpoint ChatEndpoint { public: true method: POST path: \"/let\" execute: Chat transport: sse }";
 
 /// Reason-step shape (IRFlowNode::Reason — `reason about_x` cognitive
 /// framing variant of step). Currently triggers
@@ -233,7 +233,7 @@ const REASON_STEP_FLOW: &str =
         reason about_topic { target: \"hi\" }\n\
         step Generate { ask: \"hi\" output: Stream<Token> }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/reason\" execute: Chat transport: sse }";
+     axonendpoint ChatEndpoint { public: true method: POST path: \"/reason\" execute: Chat transport: sse }";
 
 /// Tool-using Step shape — declared `apply: TOOL` should activate
 /// the upstream backend's tool-calling state machine. Currently
@@ -244,7 +244,7 @@ const TOOL_USING_STEP_FLOW: &str =
      flow Chat() -> Unit {\n\
         step Generate { ask: \"hi\" apply: chat_stream }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/tool\" execute: Chat transport: sse }";
+     axonendpoint ChatEndpoint { public: true method: POST path: \"/tool\" execute: Chat transport: sse }";
 
 // ────────────────────────────────────────────────────────────────────
 //  §1 — D1 canonical Step regression pin (must stay green throughout 33.y)
@@ -480,6 +480,9 @@ fn ir_flow_node_catalog_pin_45_variants() {
             IRFlowNode::Purge(_) => "purge",
             IRFlowNode::Transact(_) => "transact",
             IRFlowNode::Quant(_) => "quant",
+            // §Fase 88 — the `warden(<target>) within <Scope>` adversarial
+            // security-analysis block (a flow-body block like `quant`).
+            IRFlowNode::Warden(_) => "warden",
             IRFlowNode::Yield(_) => "yield",
             IRFlowNode::Run(_) => "run",
         }
@@ -534,17 +537,18 @@ fn ir_flow_node_catalog_pin_45_variants() {
         "purge",
         "transact",
         "quant",
+        "warden",
         "yield",
         "run",
     ];
 
     assert_eq!(
         CATALOG.len(),
-        48,
+        49,
         "33.y D1 totality invariant: the IRFlowNode closed catalog \
-         has exactly 48 variants. The dispatcher's exhaustive match \
-         must cover all 48 — adding a 49th requires updating both \
-         the dispatcher AND this anchor in lockstep."
+         has exactly 49 variants (§88 added `warden`). The dispatcher's \
+         exhaustive match must cover all 49 — adding a 50th requires \
+         updating both the dispatcher AND this anchor in lockstep."
     );
 
     // Unused-variable suppression for `kind_for` — the function

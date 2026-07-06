@@ -11,5 +11,5 @@ axonendpoint VoterRegistrationValidateEndpoint {
     method: POST
     path: "/government/voter-registration-validate"
     execute: VoterRegistrationValidate
-    transport: sse
+    transport: sse public: true
 }

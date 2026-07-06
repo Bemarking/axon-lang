@@ -13,5 +13,5 @@ axonendpoint PublicRecordsSearchIterEndpoint {
     method: POST
     path: "/government/public-records-search-iter"
     execute: PublicRecordsSearchIter
-    transport: sse
+    transport: sse public: true
 }

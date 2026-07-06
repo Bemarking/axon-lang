@@ -12,5 +12,5 @@ axonendpoint PiiScanShieldEndpoint {
     method: POST
     path: "/cross/pii-scan-shield"
     execute: PiiScanShield
-    transport: sse
+    transport: sse public: true
 }

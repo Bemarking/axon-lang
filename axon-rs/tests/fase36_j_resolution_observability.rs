@@ -126,7 +126,7 @@ async fn s2_json_response_carries_header_and_body_resolution() {
     deploy(
         &app,
         "flow Chat() -> Unit { step S { ask: \"hi\" } }\n\
-         axonendpoint E { method: POST path: \"/chat\" execute: Chat backend: stub }",
+         axonendpoint E { public: true method: POST path: \"/chat\" execute: Chat backend: stub }",
     )
     .await;
 
@@ -155,7 +155,7 @@ async fn s3_server_default_route_reports_the_server_default_rung() {
     deploy(
         &app,
         "flow Chat() -> Unit { step S { ask: \"hi\" } }\n\
-         axonendpoint E { method: POST path: \"/chat\" execute: Chat }",
+         axonendpoint E { public: true method: POST path: \"/chat\" execute: Chat }",
     )
     .await;
 
@@ -179,7 +179,7 @@ async fn s4_sse_response_carries_the_backend_header() {
     deploy(
         &app,
         "flow Stream() -> Unit { step S { ask: \"hi\" output: Stream<Token> } }\n\
-         axonendpoint E { method: POST path: \"/stream\" execute: Stream \
+         axonendpoint E { public: true method: POST path: \"/stream\" execute: Stream \
          backend: stub transport: sse }",
     )
     .await;
@@ -212,7 +212,7 @@ async fn s5_honest_failure_header_reports_no_backend_available() {
     deploy(
         &app,
         "flow Chat() -> Unit { step S { ask: \"hi\" } }\n\
-         axonendpoint E { method: POST path: \"/chat\" execute: Chat }",
+         axonendpoint E { public: true method: POST path: \"/chat\" execute: Chat }",
     )
     .await;
 

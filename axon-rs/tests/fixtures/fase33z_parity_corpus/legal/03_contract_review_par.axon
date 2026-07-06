@@ -14,5 +14,5 @@ axonendpoint ContractReviewParEndpoint {
     method: POST
     path: "/legal/contract-review-par"
     execute: ContractReviewPar
-    transport: sse
+    transport: sse public: true
 }

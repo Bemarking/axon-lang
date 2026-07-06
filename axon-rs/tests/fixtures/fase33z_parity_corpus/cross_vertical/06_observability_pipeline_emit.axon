@@ -14,5 +14,5 @@ axonendpoint ObservabilityPipelineEmitEndpoint {
     method: POST
     path: "/cross/observability-pipeline-emit"
     execute: ObservabilityPipelineEmit
-    transport: sse
+    transport: sse public: true
 }

@@ -107,21 +107,21 @@ fn assert_json(ct: &str, ctx: &str) {
 
 const STREAM_FLOW_NO_DECL: &str = "tool t { description: \"t\" effects: <stream:drop_oldest> }\n\
                                    flow F() -> Unit { step S { ask: \"x\" apply: t } }\n\
-                                   axonendpoint E { method: POST path: \"/f\" execute: F }";
+                                   axonendpoint E { public: true method: POST path: \"/f\" execute: F }";
 
 const STREAM_FLOW_DECL_SSE: &str = "tool t { description: \"t\" effects: <stream:drop_oldest> }\n\
                                     flow F() -> Unit { step S { ask: \"x\" apply: t } }\n\
-                                    axonendpoint E { method: POST path: \"/f\" execute: F transport: sse }";
+                                    axonendpoint E { public: true method: POST path: \"/f\" execute: F transport: sse }";
 
 const STREAM_FLOW_DECL_JSON: &str = "tool t { description: \"t\" effects: <stream:drop_oldest> }\n\
                                      flow F() -> Unit { step S { ask: \"x\" apply: t } }\n\
-                                     axonendpoint E { method: POST path: \"/f\" execute: F transport: json }";
+                                     axonendpoint E { public: true method: POST path: \"/f\" execute: F transport: json }";
 
 const NON_STREAM_FLOW_NO_DECL: &str = "flow F() -> Int { step S { ask: \"x\" output: Int } }\n\
-                                       axonendpoint E { method: POST path: \"/f\" execute: F }";
+                                       axonendpoint E { public: true method: POST path: \"/f\" execute: F }";
 
 const NON_STREAM_FLOW_DECL_JSON: &str = "flow F() -> Int { step S { ask: \"x\" output: Int } }\n\
-                                         axonendpoint E { method: POST path: \"/f\" execute: F transport: json }";
+                                         axonendpoint E { public: true method: POST path: \"/f\" execute: F transport: json }";
 
 // ═══════════════════════════════════════════════════════════════════
 //   STRICT MODE ON — Type-Driven Wire Inference (D1, D6 future-default)

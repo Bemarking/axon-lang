@@ -15,5 +15,5 @@ axonendpoint FoiaScopeIterationEndpoint {
     method: POST
     path: "/government/foia-scope-iteration"
     execute: FoiaScopeIteration
-    transport: sse
+    transport: sse public: true
 }

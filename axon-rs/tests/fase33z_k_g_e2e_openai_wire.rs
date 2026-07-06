@@ -109,7 +109,7 @@ async fn kivi_shape_emits_openai_wire_bytes_end_to_end() {
         flow Chat() -> Unit {\n\
             step Generate { ask: \"hi\" apply: chat_token_stream output: Stream<Token> }\n\
         }\n\
-        axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat }";
+        axonendpoint ChatEndpoint { public: true method: POST path: \"/chat\" execute: Chat }";
     let app = build_router(server_cfg());
     assert_eq!(deploy(app.clone(), src).await, StatusCode::OK);
     let (status, ct, body) = post_no_accept(app, "/chat").await;
@@ -175,7 +175,7 @@ async fn explicit_transport_sse_openai_emits_openai_wire() {
     let src = "flow Chat() -> Unit {\n\
             step Generate { ask: \"hi\" output: Stream<Token> }\n\
         }\n\
-        axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat transport: sse(openai) }";
+        axonendpoint ChatEndpoint { public: true method: POST path: \"/chat\" execute: Chat transport: sse(openai) }";
     let app = build_router(server_cfg());
     assert_eq!(deploy(app.clone(), src).await, StatusCode::OK);
     let (status, ct, body) = post_no_accept(app, "/chat").await;
@@ -200,7 +200,7 @@ async fn q7_axon_metadata_frame_emitted_before_done_sentinel() {
         flow Chat() -> Unit {\n\
             step Generate { ask: \"hi\" apply: chat_token_stream output: Stream<Token> }\n\
         }\n\
-        axonendpoint ChatEndpoint { method: POST path: \"/q7\" execute: Chat }";
+        axonendpoint ChatEndpoint { public: true method: POST path: \"/q7\" execute: Chat }";
     let app = build_router(server_cfg());
     assert_eq!(deploy(app.clone(), src).await, StatusCode::OK);
     let (_status, _ct, body) = post_no_accept(app, "/q7").await;
@@ -233,7 +233,7 @@ async fn openai_wire_has_no_axon_named_events_at_all() {
         flow Chat() -> Unit {\n\
             step Generate { ask: \"hi\" apply: chat_token_stream output: Stream<Token> }\n\
         }\n\
-        axonendpoint ChatEndpoint { method: POST path: \"/mutex\" execute: Chat }";
+        axonendpoint ChatEndpoint { public: true method: POST path: \"/mutex\" execute: Chat }";
     let app = build_router(server_cfg());
     assert_eq!(deploy(app.clone(), src).await, StatusCode::OK);
     let (_status, _ct, body) = post_no_accept(app, "/mutex").await;

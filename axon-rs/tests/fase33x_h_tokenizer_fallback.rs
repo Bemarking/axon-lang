@@ -113,7 +113,7 @@ const SIMPLE_STREAM_FLOW: &str =
     "flow Chat() -> Unit {\n\
         step Generate { ask: \"hi\" output: Stream<Token> }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat transport: sse }";
+     axonendpoint ChatEndpoint { public: true method: POST path: \"/chat\" execute: Chat transport: sse }";
 
 // ─── §1 — D4: ASYNC path is unaffected by the flag ─────────────────
 

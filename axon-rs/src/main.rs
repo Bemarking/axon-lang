@@ -348,6 +348,23 @@ enum Commands {
         #[arg(long)]
         no_color: bool,
     },
+    /// §Fase 89.b.2 — `axon fix`: the AuthorizationCoverage migration
+    /// (doctrine `every_boundary_is_guarded`). Walks `.axon` files and
+    /// inserts `public: true` into every DISPATCHING `axonendpoint` that
+    /// declares no coverage (no `requires:` / `shield:` / `compliance:`)
+    /// and no `public:` — turning the pre-§89 "silently uncovered" state
+    /// into an explicit, auditable opt-out. This is the one-shot migration
+    /// for the §89.b hard break; it never touches an already-covered or
+    /// already-`public` endpoint (idempotent).
+    Fix {
+        /// File path or directory (walked recursively for `.axon`).
+        #[arg(required = true)]
+        patterns: Vec<String>,
+        /// Report what WOULD change and exit non-zero if anything would,
+        /// WITHOUT modifying files (CI gate).
+        #[arg(long)]
+        check: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -582,9 +599,208 @@ fn main() {
         Commands::Fmt { file, check, write, no_color } => {
             run_fmt_command(&file, check, write, no_color)
         }
+        Commands::Fix { patterns, check } => run_fix_command(&patterns, check),
     };
 
     process::exit(exit_code);
+}
+
+// ── §Fase 89.b.2 — `axon fix` AuthorizationCoverage migration ────────────────
+
+/// One uncovered dispatching endpoint that `axon fix` will annotate.
+struct FixSite {
+    name: String,
+    /// Byte offset of the endpoint block's matching closing `}`.
+    close_off: usize,
+}
+
+/// Scan `src` from `start` for the first `{`, then return the byte offset of
+/// its matching `}` (brace-depth counted, string literals skipped). `None` if
+/// unbalanced.
+fn matching_block_close(src: &str, start: usize) -> Option<usize> {
+    let b = src.as_bytes();
+    let mut i = start;
+    while i < b.len() && b[i] != b'{' {
+        i += 1;
+    }
+    if i >= b.len() {
+        return None;
+    }
+    let mut depth = 0usize;
+    let mut in_str = false;
+    let mut esc = false;
+    while i < b.len() {
+        let c = b[i];
+        if in_str {
+            if esc {
+                esc = false;
+            } else if c == b'\\' {
+                esc = true;
+            } else if c == b'"' {
+                in_str = false;
+            }
+        } else {
+            match c {
+                b'"' => in_str = true,
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(i);
+                    }
+                }
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Convert a 1-indexed (line, column) `Loc` into a byte offset in `src`.
+fn line_col_to_offset(src: &str, line: u32, col: u32) -> usize {
+    let mut off = 0usize;
+    for (idx, l) in src.split_inclusive('\n').enumerate() {
+        if (idx as u32) + 1 == line {
+            return (off + col.saturating_sub(1) as usize).min(src.len());
+        }
+        off += l.len();
+    }
+    src.len()
+}
+
+/// Rewrite one `.axon` source string, inserting `public: true` into every
+/// uncovered dispatching endpoint. Returns `(new_src, fixed_names)`; the source
+/// is unchanged when nothing needs fixing (idempotent).
+fn fix_source(src: &str) -> (String, Vec<String>) {
+    use axon::ast::Declaration;
+    let tokens = match axon::lexer::Lexer::new(src, "<fix>").tokenize() {
+        Ok(t) => t,
+        Err(_) => return (src.to_string(), Vec::new()),
+    };
+    let program = match axon::parser::Parser::new(tokens).parse() {
+        Ok(p) => p,
+        Err(_) => return (src.to_string(), Vec::new()),
+    };
+    let mut sites: Vec<FixSite> = Vec::new();
+    for decl in &program.declarations {
+        if let Declaration::AxonEndpoint(ep) = decl {
+            // Mirror the §89.b rule EXACTLY: a dispatching endpoint that is
+            // uncovered and not already `public: true`.
+            let dispatches = !ep.execute_flow.is_empty();
+            let covered = !ep.requires_capabilities.is_empty()
+                || !ep.shield_ref.is_empty()
+                || !ep.compliance.is_empty();
+            if dispatches && !covered && !ep.public {
+                let start = line_col_to_offset(src, ep.loc.line, ep.loc.column);
+                if let Some(close) = matching_block_close(src, start) {
+                    sites.push(FixSite {
+                        name: ep.name.clone(),
+                        close_off: close,
+                    });
+                }
+            }
+        }
+    }
+    if sites.is_empty() {
+        return (src.to_string(), Vec::new());
+    }
+    // Apply bottom-up so earlier offsets stay valid as we splice.
+    sites.sort_by(|a, b| b.close_off.cmp(&a.close_off));
+    let mut out = src.to_string();
+    let mut fixed = Vec::new();
+    for site in &sites {
+        // Insert after the last non-whitespace char before the `}` so the
+        // result reads `… execute: F public: true }` regardless of the
+        // pre-existing spacing.
+        let mut e = site.close_off;
+        let bytes = out.as_bytes();
+        while e > 0 && bytes[e - 1].is_ascii_whitespace() {
+            e -= 1;
+        }
+        out.insert_str(e, " public: true");
+        fixed.push(site.name.clone());
+    }
+    fixed.reverse(); // report in source order
+    (out, fixed)
+}
+
+/// Recursively collect `.axon` files under `path` (a file or directory).
+fn collect_axon_files(path: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    if path.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(path) {
+            let mut children: Vec<_> = entries.filter_map(|e| e.ok().map(|e| e.path())).collect();
+            children.sort();
+            for child in children {
+                collect_axon_files(&child, out);
+            }
+        }
+    } else if path.extension().and_then(|s| s.to_str()) == Some("axon") {
+        out.push(path.to_path_buf());
+    }
+}
+
+/// `axon fix` dispatcher. Walks the patterns, rewrites each `.axon` file
+/// in place (or reports under `--check`), and exits non-zero under `--check`
+/// when anything would change (a CI gate).
+fn run_fix_command(patterns: &[String], check: bool) -> i32 {
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    for p in patterns {
+        collect_axon_files(std::path::Path::new(p), &mut files);
+    }
+    if files.is_empty() {
+        eprintln!("axon fix: no `.axon` files found in {patterns:?}");
+        return 1;
+    }
+    let mut changed_files = 0usize;
+    let mut total_fixed = 0usize;
+    for file in &files {
+        let src = match std::fs::read_to_string(file) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("axon fix: cannot read {}: {e}", file.display());
+                continue;
+            }
+        };
+        let (new_src, fixed) = fix_source(&src);
+        if fixed.is_empty() {
+            continue;
+        }
+        changed_files += 1;
+        total_fixed += fixed.len();
+        if check {
+            println!(
+                "would fix {} ({} endpoint{}): {}",
+                file.display(),
+                fixed.len(),
+                if fixed.len() == 1 { "" } else { "s" },
+                fixed.join(", ")
+            );
+        } else if let Err(e) = std::fs::write(file, new_src) {
+            eprintln!("axon fix: cannot write {}: {e}", file.display());
+            return 1;
+        } else {
+            println!(
+                "fixed {} ({} endpoint{}): {}",
+                file.display(),
+                fixed.len(),
+                if fixed.len() == 1 { "" } else { "s" },
+                fixed.join(", ")
+            );
+        }
+    }
+    if changed_files == 0 {
+        println!("axon fix: nothing to do — every endpoint is already covered or `public`.");
+        return 0;
+    }
+    if check {
+        println!(
+            "axon fix --check: {total_fixed} endpoint(s) across {changed_files} file(s) need `public: true`."
+        );
+        return 1; // CI gate: uncovered endpoints remain
+    }
+    println!("axon fix: annotated {total_fixed} endpoint(s) across {changed_files} file(s).");
+    0
 }
 
 /// §Fase 39.f — `axon parse` subcommand dispatcher. Delegates the
@@ -872,5 +1088,83 @@ async fn run_store_introspect(
             println!("{rendered}");
             0
         }
+    }
+}
+
+// ── §Fase 89.b.2 — `axon fix` codemod unit tests ────────────────────────────
+#[cfg(test)]
+mod fix_tests {
+    use super::fix_source;
+
+    const FLOW: &str = "flow Chat() -> Unit { step S { ask: \"hi\" } }\n";
+
+    /// Re-run the §89.b type-checker rule on `src` and report whether T890
+    /// fires — the codemod's output MUST clear it (the strongest pin).
+    fn fires_t890(src: &str) -> bool {
+        let tokens = axon::lexer::Lexer::new(src, "<t>").tokenize().expect("lex");
+        let prog = axon::parser::Parser::new(tokens).parse().expect("parse");
+        axon::type_checker::TypeChecker::new(&prog)
+            .check()
+            .into_iter()
+            .any(|e| e.message.contains("axon-T890"))
+    }
+
+    #[test]
+    fn bare_dispatching_endpoint_gets_public_true() {
+        let src = format!("{FLOW}axonendpoint E {{ method: POST path: \"/c\" execute: Chat }}");
+        assert!(fires_t890(&src), "precondition: bare endpoint fires T890");
+        let (out, fixed) = fix_source(&src);
+        assert_eq!(fixed, vec!["E".to_string()]);
+        assert!(out.contains("public: true"), "codemod inserts public: true. Got: {out}");
+        assert!(!fires_t890(&out), "codemod output must clear T890. Got: {out}");
+    }
+
+    #[test]
+    fn covered_endpoint_is_untouched() {
+        let src = format!(
+            "{FLOW}axonendpoint E {{ method: POST path: \"/c\" execute: Chat requires: [flow.execute] }}"
+        );
+        let (out, fixed) = fix_source(&src);
+        assert!(fixed.is_empty(), "a covered endpoint must not be fixed");
+        assert_eq!(out, src, "a covered endpoint's source is unchanged");
+    }
+
+    #[test]
+    fn already_public_endpoint_is_untouched() {
+        let src = format!(
+            "{FLOW}axonendpoint E {{ method: POST path: \"/c\" execute: Chat public: true }}"
+        );
+        let (out, fixed) = fix_source(&src);
+        assert!(fixed.is_empty(), "an already-public endpoint must not be re-fixed");
+        assert_eq!(out, src);
+    }
+
+    #[test]
+    fn non_dispatching_endpoint_is_untouched() {
+        let src = "axonendpoint E { method: POST path: \"/c\" }".to_string();
+        let (_out, fixed) = fix_source(&src);
+        assert!(fixed.is_empty(), "an endpoint with no execute crosses no boundary");
+    }
+
+    #[test]
+    fn codemod_is_idempotent() {
+        let src = format!("{FLOW}axonendpoint E {{ method: POST path: \"/c\" execute: Chat }}");
+        let (once, _) = fix_source(&src);
+        let (twice, fixed2) = fix_source(&once);
+        assert!(fixed2.is_empty(), "second run finds nothing to fix");
+        assert_eq!(once, twice, "codemod is idempotent");
+    }
+
+    #[test]
+    fn multiple_endpoints_all_fixed_in_one_pass() {
+        let src = format!(
+            "{FLOW}\
+             axonendpoint A {{ method: POST path: \"/a\" execute: Chat }}\n\
+             axonendpoint B {{ method: GET path: \"/b\" execute: Chat requires: [flow.execute] }}\n\
+             axonendpoint C {{ method: PUT path: \"/c\" execute: Chat }}"
+        );
+        let (out, fixed) = fix_source(&src);
+        assert_eq!(fixed, vec!["A".to_string(), "C".to_string()], "A and C fixed, B (covered) skipped");
+        assert!(!fires_t890(&out), "all boundaries covered after fix. Got: {out}");
     }
 }

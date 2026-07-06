@@ -161,7 +161,7 @@ const ADOPTER_STREAM_DROP_OLDEST: &str =
      flow Chat() -> Unit {\n\
         step Generate { ask: \"hi\" apply: chat_token_stream }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat transport: sse(axon) }";
+     axonendpoint ChatEndpoint { public: true method: POST path: \"/chat\" execute: Chat transport: sse(axon) }";
 
 /// Same shape but without effect declaration — D2 should NOT activate
 /// enforcer; stream_policies array should be EMPTY (or omitted per D4
@@ -171,7 +171,7 @@ const ADOPTER_STREAM_NO_EFFECT: &str =
     "flow Chat() -> Unit {\n\
         step Generate { ask: \"hi\" output: Stream<Token> }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat transport: sse }";
+     axonendpoint ChatEndpoint { public: true method: POST path: \"/chat\" execute: Chat transport: sse }";
 
 /// Parse SSE body into structured events for assertion clarity.
 #[derive(Debug, Default, Clone)]
@@ -473,7 +473,7 @@ const ADOPTER_STREAM_DROP_OLDEST_WITH_REPLAY: &str =
      flow Chat() -> Unit {\n\
         step Generate { ask: \"hi\" apply: chat_token_stream }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat transport: sse(axon) replay: true }";
+     axonendpoint ChatEndpoint { public: true method: POST path: \"/chat\" execute: Chat transport: sse(axon) replay: true }";
 
 #[tokio::test]
 async fn d6_post_33_x_f_replay_returns_step_audit_for_sse_flow() {

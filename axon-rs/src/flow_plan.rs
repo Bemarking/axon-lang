@@ -539,7 +539,7 @@ mod tests {
         "flow Chat() -> Unit {\n\
             step Generate { ask: \"hi\" output: Stream<Token> }\n\
          }\n\
-         axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat transport: sse }"
+         axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat transport: sse public: true }"
     }
 
     fn parse_stream_with_effect_source() -> &'static str {
@@ -548,7 +548,7 @@ mod tests {
          flow Chat() -> Unit {\n\
             step Generate { ask: \"hi\" apply: chat_token_stream }\n\
          }\n\
-         axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat transport: sse }"
+         axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat transport: sse public: true }"
     }
 
     #[test]
@@ -622,7 +622,7 @@ mod tests {
                      step Second { ask: \"two\" }\n\
                      step Third { ask: \"three\" }\n\
                    }\n\
-                   axonendpoint E { method: POST path: \"/m\" execute: MultiStep transport: sse }";
+                   axonendpoint E { method: POST path: \"/m\" execute: MultiStep transport: sse public: true }";
         let plan = build_streaming_plan(src, "test.axon", "MultiStep", "stub").unwrap();
         assert_eq!(plan.steps.len(), 3);
         assert_eq!(plan.steps[0].step_name, "First");
@@ -694,7 +694,7 @@ mod tests {
         // Pathological but parseable case: empty flow body.
         let src = "flow Empty() -> Unit {\n\
                    }\n\
-                   axonendpoint E { method: POST path: \"/e\" execute: Empty transport: sse }";
+                   axonendpoint E { method: POST path: \"/e\" execute: Empty transport: sse public: true }";
         let plan = build_streaming_plan(src, "test.axon", "Empty", "stub").unwrap();
         assert!(plan.steps.is_empty());
         assert_eq!(plan.flow_name, "Empty");
@@ -739,7 +739,7 @@ mod tests {
         // §Fase 28 — `axonendpoint method: YEET` is rejected at
         // parse time. Use a different shape that parses cleanly
         // but fails type-check: undefined flow reference.
-        let src = "axonendpoint Bad { method: POST path: \"/x\" execute: NonexistentFlow }";
+        let src = "axonendpoint Bad { method: POST path: \"/x\" execute: NonexistentFlow public: true }";
         let err = compile_source_to_ir(src, "test.axon").unwrap_err();
         // Either parser rejected it (post-Fase 28 hardening may
         // catch undefined references at parse time) or the type
@@ -944,7 +944,7 @@ mod tests {
                    flow Chat() -> Unit {\n\
                        step Generate { ask: \"hi\" output: Stream<Token> }\n\
                    }\n\
-                   axonendpoint E { method: POST path: \"/c\" execute: Chat transport: sse }";
+                   axonendpoint E { method: POST path: \"/c\" execute: Chat transport: sse public: true }";
         let (_p, ir) = compile_source_to_ir(src, "t.axon").unwrap();
         let flow = find_ir_flow_by_name(&ir, "Chat").unwrap();
         let prompt = compose_system_prompt_public(flow, &ir, None);

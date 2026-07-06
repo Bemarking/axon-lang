@@ -16,5 +16,5 @@ axonendpoint SanctionsListMatchEndpoint {
     method: POST
     path: "/banking/sanctions-list-match"
     execute: SanctionsListMatch
-    transport: sse
+    transport: sse public: true
 }

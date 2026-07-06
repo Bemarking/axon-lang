@@ -15,5 +15,5 @@ axonendpoint CustomerDueDiligenceMemoryEndpoint {
     method: POST
     path: "/banking/customer-due-diligence-memory"
     execute: CustomerDueDiligenceMemory
-    transport: sse
+    transport: sse public: true
 }

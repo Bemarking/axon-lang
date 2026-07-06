@@ -13,5 +13,5 @@ axonendpoint AuditTrailPixEndpoint {
     method: POST
     path: "/cross/audit-trail-pix"
     execute: AuditTrailPix
-    transport: sse
+    transport: sse public: true
 }

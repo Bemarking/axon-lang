@@ -12,5 +12,5 @@ axonendpoint PhiScrubShieldEndpoint {
     method: POST
     path: "/medicine/phi-scrub-shield"
     execute: PhiScrubShield
-    transport: sse
+    transport: sse public: true
 }

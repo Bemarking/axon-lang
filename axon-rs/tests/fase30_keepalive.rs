@@ -100,7 +100,7 @@ fn parse_to_program(source: &str) -> axon::ast::Program {
 fn lookup_from_program_finds_explicit_5s() {
     let src = r#"
         flow F() { step S { ask: "hi" } }
-        axonendpoint E {
+        axonendpoint E { public: true
             method: POST
             path: "/f"
             execute: F
@@ -120,7 +120,7 @@ fn lookup_from_program_finds_all_enum_values() {
     for v in ["5s", "15s", "30s", "60s"] {
         let src = format!(
             "flow F() {{ step S {{ ask: \"x\" }} }}\n\
-             axonendpoint E {{\n\
+             axonendpoint E {{ public: true\n\
                 method: POST\n\
                 path: \"/f\"\n\
                 execute: F\n\
@@ -141,7 +141,7 @@ fn lookup_from_program_finds_all_enum_values() {
 fn lookup_from_program_returns_empty_string_when_axonendpoint_omits_keepalive() {
     let src = r#"
         flow F() { step S { ask: "hi" } }
-        axonendpoint E {
+        axonendpoint E { public: true
             method: POST
             path: "/f"
             execute: F
@@ -162,7 +162,7 @@ fn lookup_from_program_returns_none_when_no_axonendpoint_matches_flow() {
     let src = r#"
         flow F() { step S { ask: "hi" } }
         flow G() { step T { ask: "bye" } }
-        axonendpoint E {
+        axonendpoint E { public: true
             method: POST
             path: "/g"
             execute: G
@@ -182,7 +182,7 @@ fn lookup_from_program_returns_none_when_no_axonendpoint_matches_flow() {
 
 #[test]
 fn source_text_finds_keepalive_with_space_after_colon() {
-    let src = "axonendpoint E {\n  execute: F\n  keepalive: 30s\n}\n";
+    let src = "axonendpoint E { public: true\n  execute: F\n  keepalive: 30s\n}\n";
     assert_eq!(
         source_text_axonendpoint_keepalive(src, "F"),
         Some("30s".to_string())
@@ -191,7 +191,7 @@ fn source_text_finds_keepalive_with_space_after_colon() {
 
 #[test]
 fn source_text_finds_keepalive_without_space_after_colon() {
-    let src = "axonendpoint E { execute:F keepalive:60s }";
+    let src = "axonendpoint E { public: true execute:F keepalive:60s }";
     assert_eq!(
         source_text_axonendpoint_keepalive(src, "F"),
         Some("60s".to_string())
@@ -202,7 +202,7 @@ fn source_text_finds_keepalive_without_space_after_colon() {
 fn source_text_word_boundary_does_not_confuse_5s_with_15s() {
     // The keepalive value is "15s" but the substring "5s" appears
     // inside it. Without word-boundary anchoring we'd return Some("5s").
-    let src = "axonendpoint E { execute: F keepalive: 15s }";
+    let src = "axonendpoint E { public: true execute: F keepalive: 15s }";
     assert_eq!(
         source_text_axonendpoint_keepalive(src, "F"),
         Some("15s".to_string())
@@ -211,13 +211,13 @@ fn source_text_word_boundary_does_not_confuse_5s_with_15s() {
 
 #[test]
 fn source_text_returns_none_when_no_axonendpoint_matches_flow() {
-    let src = "axonendpoint E { execute: G keepalive: 30s }";
+    let src = "axonendpoint E { public: true execute: G keepalive: 30s }";
     assert_eq!(source_text_axonendpoint_keepalive(src, "F"), None);
 }
 
 #[test]
 fn source_text_returns_none_when_axonendpoint_has_no_keepalive_field() {
-    let src = "axonendpoint E { execute: F transport: sse }";
+    let src = "axonendpoint E { public: true execute: F transport: sse }";
     assert_eq!(source_text_axonendpoint_keepalive(src, "F"), None);
 }
 
@@ -226,7 +226,7 @@ fn source_text_string_aware_braces_dont_break_lookup() {
     // The brace counter must not confuse `{` inside the path string
     // literal with the structural close. (Defensive: if it did, we'd
     // exit the block early and miss the keepalive field.)
-    let src = r#"axonendpoint E {
+    let src = r#"axonendpoint E { public: true
         method: POST
         path: "/users/{id}/messages/{mid}"
         execute: F
@@ -245,8 +245,8 @@ fn source_text_walks_multiple_axonendpoints_until_match() {
     // F with keepalive 5s. The lookup must walk past the first and
     // return the second.
     let src = r#"
-        axonendpoint E1 { execute: G transport: sse keepalive: 30s }
-        axonendpoint E2 { execute: F transport: sse keepalive: 5s }
+        axonendpoint E1 { public: true execute: G transport: sse keepalive: 30s }
+        axonendpoint E2 { public: true execute: F transport: sse keepalive: 5s }
     "#;
     assert_eq!(
         source_text_axonendpoint_keepalive(src, "F"),
@@ -270,7 +270,7 @@ fn resolve_returns_default_15s_when_no_axonendpoint() {
 fn resolve_returns_default_15s_when_axonendpoint_omits_keepalive() {
     let src = r#"
         flow F() { step S { ask: "hi" } }
-        axonendpoint E {
+        axonendpoint E { public: true
             method: POST
             path: "/f"
             execute: F
@@ -285,7 +285,7 @@ fn resolve_returns_declared_value_via_ast() {
     for (declared, expected_secs) in [("5s", 5u64), ("15s", 15), ("30s", 30), ("60s", 60)] {
         let src = format!(
             "flow F() {{ step S {{ ask: \"x\" }} }}\n\
-             axonendpoint E {{\n\
+             axonendpoint E {{ public: true\n\
                 method: POST\n\
                 path: \"/f\"\n\
                 execute: F\n\
@@ -306,7 +306,7 @@ fn resolve_falls_back_to_source_text_when_ast_parse_fails() {
     // Source-text-only fragment that's not a parseable axon program
     // (no flow declaration, just the axonendpoint shape). The AST
     // path returns None → fallback engages and finds the keepalive.
-    let src = "axonendpoint E { execute: F transport: sse keepalive: 60s }";
+    let src = "axonendpoint E { public: true execute: F transport: sse keepalive: 60s }";
     // Note: lexer/parser may succeed or fail on this fragment depending
     // on grammar; either way the resolve function must NOT panic and
     // must return either the AST verdict (60s) or the source-text
@@ -319,7 +319,7 @@ fn resolve_default_when_flow_name_does_not_match_any_axonendpoint() {
     let src = r#"
         flow F() { step S { ask: "x" } }
         flow G() { step T { ask: "y" } }
-        axonendpoint E {
+        axonendpoint E { public: true
             method: POST
             path: "/g"
             execute: G
@@ -413,7 +413,7 @@ async fn sse_response_well_formed_with_declared_5s_keepalive() {
     let app = build_router(server_cfg());
     let src = r#"
         flow F() { step S { ask: "hi" } }
-        axonendpoint E {
+        axonendpoint E { public: true
             method: POST
             path: "/f"
             execute: F
@@ -436,7 +436,7 @@ async fn sse_response_well_formed_with_declared_60s_keepalive() {
     let app = build_router(server_cfg());
     let src = r#"
         flow F() { step S { ask: "hi" } }
-        axonendpoint E {
+        axonendpoint E { public: true
             method: POST
             path: "/f"
             execute: F

@@ -92,7 +92,7 @@ async fn explicit_sse_anthropic_emits_messages_streaming_wire() {
     let src = "flow Chat() -> Unit {\n\
             step Generate { ask: \"hi\" output: Stream<Token> }\n\
         }\n\
-        axonendpoint ChatEndpoint { method: POST path: \"/anthropic\" execute: Chat transport: sse(anthropic) }";
+        axonendpoint ChatEndpoint { public: true method: POST path: \"/anthropic\" execute: Chat transport: sse(anthropic) }";
     let app = build_router(server_cfg());
     assert_eq!(deploy(app.clone(), src).await, StatusCode::OK);
     let (status, ct, body) = post_no_accept(app, "/anthropic").await;
@@ -140,7 +140,7 @@ async fn q7_axon_metadata_frame_precedes_message_stop() {
         flow Chat() -> Unit {\n\
             step Generate { ask: \"hi\" apply: chat_token_stream output: Stream<Token> }\n\
         }\n\
-        axonendpoint ChatEndpoint { method: POST path: \"/anthropic-q7\" execute: Chat transport: sse(anthropic) }";
+        axonendpoint ChatEndpoint { public: true method: POST path: \"/anthropic-q7\" execute: Chat transport: sse(anthropic) }";
     let app = build_router(server_cfg());
     assert_eq!(deploy(app.clone(), src).await, StatusCode::OK);
     let (_status, _ct, body) = post_no_accept(app, "/anthropic-q7").await;
@@ -170,7 +170,7 @@ async fn anthropic_wire_has_no_openai_style_framing() {
     let src = "flow Chat() -> Unit {\n\
             step Generate { ask: \"hi\" output: Stream<Token> }\n\
         }\n\
-        axonendpoint ChatEndpoint { method: POST path: \"/anthropic-mutex\" execute: Chat transport: sse(anthropic) }";
+        axonendpoint ChatEndpoint { public: true method: POST path: \"/anthropic-mutex\" execute: Chat transport: sse(anthropic) }";
     let app = build_router(server_cfg());
     assert_eq!(deploy(app.clone(), src).await, StatusCode::OK);
     let (_status, _ct, body) = post_no_accept(app, "/anthropic-mutex").await;

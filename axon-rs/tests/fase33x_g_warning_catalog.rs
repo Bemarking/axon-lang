@@ -148,7 +148,7 @@ fn simple_streaming_flow_with_replay() -> &'static str {
     "flow Chat() -> Unit {\n\
         step Generate { ask: \"hi\" output: Stream<Token> }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat transport: sse replay: true }"
+     axonendpoint ChatEndpoint { public: true method: POST path: \"/chat\" execute: Chat transport: sse replay: true }"
 }
 
 fn flow_with_for_in_post_33_z_e() -> &'static str {
@@ -162,7 +162,7 @@ fn flow_with_for_in_post_33_z_e() -> &'static str {
             step S { ask: \"hi\" output: Stream<Token> }\n\
         }\n\
      }\n\
-     axonendpoint LoopEndpoint { method: POST path: \"/loop\" execute: Loop transport: sse replay: true }"
+     axonendpoint LoopEndpoint { public: true method: POST path: \"/loop\" execute: Loop transport: sse replay: true }"
 }
 
 // ─── §1 — D5 anchor: happy path → no warnings ───────────────────────
@@ -229,7 +229,7 @@ async fn d5_replay_audit_row_mirrors_runtime_warnings_field() {
 #[tokio::test]
 async fn d5_audit_row_runtime_warnings_field_present_for_legacy_json_entries() {
     let src = "flow Touch() -> Unit { step S { ask: \"hi\" } }\n\
-               axonendpoint TouchEndpoint { method: POST path: \"/touch\" execute: Touch replay: true }";
+               axonendpoint TouchEndpoint { public: true method: POST path: \"/touch\" execute: Touch replay: true }";
     let app = build_router(server_cfg());
     assert!(deploy(app.clone(), src).await);
     let (status, trace_id, _body) = post_route(app.clone(), "/touch", "{}").await;

@@ -56,7 +56,7 @@ use tower::ServiceExt;
 const PURE_FLOW_SRC: &str = "flow Demo() -> Unit {\n\
     step Reply { ask: \"hello\" output: Stream<Token> }\n\
 }\n\
-axonendpoint DemoE { method: POST path: \"/demo\" \
+axonendpoint DemoE { public: true method: POST path: \"/demo\" \
 execute: Demo backend: stub transport: sse }";
 
 fn server_cfg(schemas_dir: Option<&str>) -> ServerConfig {

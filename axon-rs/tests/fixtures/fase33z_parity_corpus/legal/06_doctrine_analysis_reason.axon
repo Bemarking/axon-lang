@@ -10,5 +10,5 @@ axonendpoint DoctrineAnalysisReasonEndpoint {
     method: POST
     path: "/legal/doctrine-analysis-reason"
     execute: DoctrineAnalysisReason
-    transport: sse
+    transport: sse public: true
 }

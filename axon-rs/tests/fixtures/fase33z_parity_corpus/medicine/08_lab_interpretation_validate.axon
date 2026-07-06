@@ -11,5 +11,5 @@ axonendpoint LabInterpretationValidateEndpoint {
     method: POST
     path: "/medicine/lab-interpretation-validate"
     execute: LabInterpretationValidate
-    transport: sse
+    transport: sse public: true
 }

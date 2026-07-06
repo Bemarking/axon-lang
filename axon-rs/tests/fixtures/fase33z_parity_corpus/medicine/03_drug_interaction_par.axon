@@ -14,5 +14,5 @@ axonendpoint DrugInteractionParEndpoint {
     method: POST
     path: "/medicine/drug-interaction-par"
     execute: DrugInteractionPar
-    transport: sse
+    transport: sse public: true
 }

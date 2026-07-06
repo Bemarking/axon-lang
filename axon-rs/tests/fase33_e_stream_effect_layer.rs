@@ -109,7 +109,7 @@ async fn fire_dynamic_route_for_policy(policy_slug: &str) -> serde_json::Value {
          flow Chat() -> Unit {{\n\
             step Generate {{ ask: \"hi\" apply: chat_stream output: Stream<Token> }}\n\
          }}\n\
-         axonendpoint ChatEndpoint {{ method: POST path: \"/chat\" execute: Chat transport: sse(axon) }}",
+         axonendpoint ChatEndpoint {{ public: true method: POST path: \"/chat\" execute: Chat transport: sse(axon) }}",
         policy = policy_slug,
     );
 
@@ -169,7 +169,7 @@ async fn flow_without_stream_effects_omits_stream_policies_field() {
         "flow Chat() -> Unit {\n\
             step Generate { ask: \"hi\" output: Stream<Token> }\n\
          }\n\
-         axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat transport: sse }";
+         axonendpoint ChatEndpoint { public: true method: POST path: \"/chat\" execute: Chat transport: sse }";
     let app = build_router(server_cfg(true));
     deploy(app.clone(), src).await;
     let req = Request::builder()
@@ -206,7 +206,7 @@ async fn multi_step_flow_surfaces_per_step_policies_independently() {
             step Generate { ask: \"do\" apply: chat_stream output: Stream<Token> }\n\
             step Audit { ask: \"verify\" apply: audit_tool output: Stream<Token> }\n\
          }\n\
-         axonendpoint PipelineEndpoint { method: POST path: \"/pipe\" execute: Pipeline transport: sse(axon) }";
+         axonendpoint PipelineEndpoint { public: true method: POST path: \"/pipe\" execute: Pipeline transport: sse(axon) }";
     let app = build_router(server_cfg(true));
     deploy(app.clone(), src).await;
     let req = Request::builder()
@@ -261,7 +261,7 @@ async fn pre_33e_canonical_wire_body_byte_compat_with_no_effects() {
         "flow Chat() -> Unit {\n\
             step Generate { ask: \"hi\" output: Stream<Token> }\n\
          }\n\
-         axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat transport: sse }";
+         axonendpoint ChatEndpoint { public: true method: POST path: \"/chat\" execute: Chat transport: sse }";
     let app = build_router(server_cfg(true));
     deploy(app.clone(), src).await;
     let req = Request::builder()
@@ -309,7 +309,7 @@ async fn malformed_source_resolver_falls_back_to_empty_policies() {
                   step Step1 { ask: \"hi\" }\n\
                   step Step2 { ask: \"there\" }\n\
                }\n\
-               axonendpoint P { method: POST path: \"/plain\" execute: Plain transport: sse }";
+               axonendpoint P { public: true method: POST path: \"/plain\" execute: Plain transport: sse }";
     let app = build_router(server_cfg(true));
     deploy(app.clone(), src).await;
     let req = Request::builder()

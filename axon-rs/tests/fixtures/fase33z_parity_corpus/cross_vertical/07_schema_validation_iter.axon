@@ -13,5 +13,5 @@ axonendpoint SchemaValidationIterEndpoint {
     method: POST
     path: "/cross/schema-validation-iter"
     execute: SchemaValidationIter
-    transport: sse
+    transport: sse public: true
 }

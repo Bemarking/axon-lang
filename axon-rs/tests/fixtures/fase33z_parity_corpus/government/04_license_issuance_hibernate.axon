@@ -10,5 +10,5 @@ axonendpoint LicenseIssuanceHibernateEndpoint {
     method: POST
     path: "/government/license-issuance-hibernate"
     execute: LicenseIssuanceHibernate
-    transport: sse
+    transport: sse public: true
 }

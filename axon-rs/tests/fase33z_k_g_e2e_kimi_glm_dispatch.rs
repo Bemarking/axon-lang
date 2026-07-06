@@ -144,7 +144,7 @@ async fn explicit_sse_kimi_emits_canonical_openai_wire() {
     let src = "flow Chat() -> Unit {\n\
             step Generate { ask: \"hi\" output: Stream<Token> }\n\
         }\n\
-        axonendpoint ChatEndpoint { method: POST path: \"/kimi\" execute: Chat transport: sse(kimi) }";
+        axonendpoint ChatEndpoint { public: true method: POST path: \"/kimi\" execute: Chat transport: sse(kimi) }";
     let app = build_router(server_cfg());
     assert_eq!(deploy(app.clone(), src).await, StatusCode::OK);
     let (status, ct, body) = post_no_accept(app, "/kimi").await;
@@ -174,7 +174,7 @@ async fn explicit_sse_glm_emits_canonical_openai_wire() {
     let src = "flow Chat() -> Unit {\n\
             step Generate { ask: \"hi\" output: Stream<Token> }\n\
         }\n\
-        axonendpoint ChatEndpoint { method: POST path: \"/glm\" execute: Chat transport: sse(glm) }";
+        axonendpoint ChatEndpoint { public: true method: POST path: \"/glm\" execute: Chat transport: sse(glm) }";
     let app = build_router(server_cfg());
     assert_eq!(deploy(app.clone(), src).await, StatusCode::OK);
     let (status, ct, body) = post_no_accept(app, "/glm").await;
@@ -205,15 +205,15 @@ async fn kimi_glm_openai_dialects_dispatch_to_same_adapter() {
     let src_openai = "flow Chat() -> Unit {\n\
             step Generate { ask: \"hi\" output: Stream<Token> }\n\
         }\n\
-        axonendpoint ChatEndpoint { method: POST path: \"/d\" execute: Chat transport: sse(openai) }";
+        axonendpoint ChatEndpoint { public: true method: POST path: \"/d\" execute: Chat transport: sse(openai) }";
     let src_kimi = "flow Chat() -> Unit {\n\
             step Generate { ask: \"hi\" output: Stream<Token> }\n\
         }\n\
-        axonendpoint ChatEndpoint { method: POST path: \"/d\" execute: Chat transport: sse(kimi) }";
+        axonendpoint ChatEndpoint { public: true method: POST path: \"/d\" execute: Chat transport: sse(kimi) }";
     let src_glm = "flow Chat() -> Unit {\n\
             step Generate { ask: \"hi\" output: Stream<Token> }\n\
         }\n\
-        axonendpoint ChatEndpoint { method: POST path: \"/d\" execute: Chat transport: sse(glm) }";
+        axonendpoint ChatEndpoint { public: true method: POST path: \"/d\" execute: Chat transport: sse(glm) }";
 
     let bodies: Vec<String> = {
         let mut out = Vec::new();

@@ -13,5 +13,5 @@ axonendpoint SettlementAnalysisMemoryEndpoint {
     method: POST
     path: "/legal/settlement-analysis-memory"
     execute: SettlementAnalysisMemory
-    transport: sse
+    transport: sse public: true
 }

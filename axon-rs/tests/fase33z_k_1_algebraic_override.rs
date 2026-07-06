@@ -19,7 +19,7 @@
 //!     }
 //! }
 //!
-//! axonendpoint ChatEndpoint {
+//! axonendpoint ChatEndpoint { public: true
 //!     method: POST
 //!     path: "/chat"
 //!     execute: Chat
@@ -153,7 +153,7 @@ fn kivi_shape_source() -> &'static str {
      flow Chat() -> Unit {\n\
         step Generate { ask: \"hi\" apply: chat_token_stream output: Stream<Token> }\n\
      }\n\
-     axonendpoint ChatEndpoint {\n\
+     axonendpoint ChatEndpoint { public: true\n\
         method: POST\n\
         path: \"/chat\"\n\
         execute: Chat\n\
@@ -168,7 +168,7 @@ fn kivi_shape_with_d3_optout_source() -> &'static str {
      flow ChatJson() -> Unit {\n\
         step Generate { ask: \"hi\" apply: chat_token_stream output: Stream<Token> }\n\
      }\n\
-     axonendpoint ChatJsonEndpoint {\n\
+     axonendpoint ChatJsonEndpoint { public: true\n\
         method: POST\n\
         path: \"/chat-json\"\n\
         execute: ChatJson\n\
@@ -184,7 +184,7 @@ fn type_annotation_only_source() -> &'static str {
     "flow ChatTypeOnly() -> Unit {\n\
         step Generate { ask: \"hi\" output: Stream<Token> }\n\
      }\n\
-     axonendpoint ChatTypeOnlyEndpoint {\n\
+     axonendpoint ChatTypeOnlyEndpoint { public: true\n\
         method: POST\n\
         path: \"/chat-type-only\"\n\
         execute: ChatTypeOnly\n\
@@ -324,9 +324,9 @@ async fn s5_override_fires_across_http_methods() {
         flow ChatPatch() -> Unit {\n\
             step S { ask: \"hi\" apply: chat_token_stream output: Stream<Token> }\n\
         }\n\
-        axonendpoint EpPost { method: POST path: \"/method-post\" execute: ChatPost }\n\
-        axonendpoint EpPut { method: PUT path: \"/method-put\" execute: ChatPut }\n\
-        axonendpoint EpPatch { method: PATCH path: \"/method-patch\" execute: ChatPatch }";
+        axonendpoint EpPost { public: true method: POST path: \"/method-post\" execute: ChatPost }\n\
+        axonendpoint EpPut { public: true method: PUT path: \"/method-put\" execute: ChatPut }\n\
+        axonendpoint EpPatch { public: true method: PATCH path: \"/method-patch\" execute: ChatPatch }";
     let app = build_router(server_cfg());
     assert_eq!(deploy(app.clone(), src).await, StatusCode::OK);
 

@@ -113,7 +113,7 @@ async fn s1_canonical_agent_flow_streams_clean() {
              step Deliberate { ask: \"answer\" output: Stream<Token> }\n\
              persist into mem { kind: \"reply\" content: \"done\" }\n\
          }\n\
-         axonendpoint AgentE { method: POST path: \"/agent\" execute: AgentFlow \
+         axonendpoint AgentE { public: true method: POST path: \"/agent\" execute: AgentFlow \
          backend: stub transport: sse }",
     )
     .await;
@@ -152,7 +152,7 @@ async fn s2_founder_chatflow_shape_streams_and_counts_all_nodes() {
              step Generate { ask: \"deliberate\" output: Stream<Token> }\n\
              persist into mem { kind: \"assistant_msg\" content: \"reply\" }\n\
          }\n\
-         axonendpoint ChatE { method: POST path: \"/chat\" execute: ChatFlow \
+         axonendpoint ChatE { public: true method: POST path: \"/chat\" execute: ChatFlow \
          backend: stub transport: sse }",
     )
     .await;
@@ -189,7 +189,7 @@ async fn s3_mixed_flow_emits_exactly_one_terminator() {
              step Think { ask: \"x\" output: Stream<Token> }\n\
              persist into mem { kind: \"r\" content: \"v\" }\n\
          }\n\
-         axonendpoint E { method: POST path: \"/a\" execute: AgentFlow \
+         axonendpoint E { public: true method: POST path: \"/a\" execute: AgentFlow \
          backend: stub transport: sse }",
     )
     .await;
@@ -219,7 +219,7 @@ async fn s4_store_ops_add_no_wire_frames() {
              step Think { ask: \"x\" output: Stream<Token> }\n\
              persist into mem { kind: \"r\" content: \"v\" }\n\
          }\n\
-         axonendpoint E { method: POST path: \"/a\" execute: AgentFlow \
+         axonendpoint E { public: true method: POST path: \"/a\" execute: AgentFlow \
          backend: stub transport: sse }",
     )
     .await;
@@ -261,7 +261,7 @@ async fn s5_mid_flow_store_error_emits_one_terminator() {
              retrieve live { where: \"1 = 1\" as: ctx }\n\
              step Think { ask: \"x\" output: Stream<Token> }\n\
          }\n\
-         axonendpoint E { method: POST path: \"/a\" execute: AgentFlow \
+         axonendpoint E { public: true method: POST path: \"/a\" execute: AgentFlow \
          backend: stub transport: sse }",
     )
     .await;

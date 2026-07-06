@@ -13,5 +13,5 @@ axonendpoint MultiTenantRoutingBranchEndpoint {
     method: POST
     path: "/cross/multi-tenant-routing-branch"
     execute: MultiTenantRoutingBranch
-    transport: sse
+    transport: sse public: true
 }

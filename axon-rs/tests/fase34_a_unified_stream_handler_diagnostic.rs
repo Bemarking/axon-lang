@@ -142,7 +142,7 @@ async fn s1_disjunct_a_type_level_stream_emits_axon_dialect_baseline() {
     let src = "flow Chat() -> Unit {\n\
         step Generate { ask: \"hi\" output: Stream<Token> }\n\
     }\n\
-    axonendpoint ChatEndpoint { method: POST path: \"/a\" execute: Chat transport: sse }";
+    axonendpoint ChatEndpoint { public: true method: POST path: \"/a\" execute: Chat transport: sse }";
 
     let app = build_router(server_cfg());
     assert_eq!(deploy(app.clone(), src).await, StatusCode::OK);
@@ -208,7 +208,7 @@ async fn s2_disjunct_b_apply_syntax_with_stream_effect_emits_openai_baseline() {
         flow Chat() -> Unit {\n\
             step Generate { ask: \"hi\" apply: chat_token_stream output: Stream<Token> }\n\
         }\n\
-        axonendpoint ChatEndpoint { method: POST path: \"/b\" execute: Chat }";
+        axonendpoint ChatEndpoint { public: true method: POST path: \"/b\" execute: Chat }";
 
     let app = build_router(server_cfg());
     assert_eq!(deploy(app.clone(), src).await, StatusCode::OK);
@@ -298,7 +298,7 @@ async fn s3_disjunct_c_use_tool_syntax_collapses_to_apply_at_runtime() {
         flow ReasoningFlow() -> Unit {\n\
             step Reason { ask: \"reason\" apply: stream_reasoner output: Stream<Token> }\n\
         }\n\
-        axonendpoint ReasoningEndpoint { method: POST path: \"/c\" execute: ReasoningFlow }";
+        axonendpoint ReasoningEndpoint { public: true method: POST path: \"/c\" execute: ReasoningFlow }";
 
     let app = build_router(server_cfg());
     assert_eq!(deploy(app.clone(), src).await, StatusCode::OK);

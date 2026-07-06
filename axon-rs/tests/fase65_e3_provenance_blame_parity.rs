@@ -51,7 +51,7 @@ flow DueDiligence() -> Unit {
     step Finalize { ask: "Finalize CDD profile" output: Stream<Token> }
 }
 
-axonendpoint DueDiligenceEndpoint {
+axonendpoint DueDiligenceEndpoint { public: true
     method: POST
     path: "/test/due-diligence"
     execute: DueDiligence

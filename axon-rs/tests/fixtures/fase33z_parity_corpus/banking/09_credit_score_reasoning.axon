@@ -16,5 +16,5 @@ axonendpoint CreditScoreReasoningEndpoint {
     method: POST
     path: "/banking/credit-score-reasoning"
     execute: CreditScoreReasoning
-    transport: sse
+    transport: sse public: true
 }

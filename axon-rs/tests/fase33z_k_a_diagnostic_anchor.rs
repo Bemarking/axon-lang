@@ -115,7 +115,7 @@ async fn s1_canonical_step_stub_emits_one_token_one_complete() {
     let src = "flow Chat() -> Unit {\n\
         step Generate { ask: \"hi\" output: Stream<Token> }\n\
     }\n\
-    axonendpoint ChatEndpoint { method: POST path: \"/canonical\" execute: Chat transport: sse }";
+    axonendpoint ChatEndpoint { public: true method: POST path: \"/canonical\" execute: Chat transport: sse }";
 
     let app = build_router(server_cfg());
     assert_eq!(deploy(app.clone(), src).await, StatusCode::OK);
@@ -161,7 +161,7 @@ async fn s2_algebraic_effect_emits_openai_wire_post_33_z_k_g_2() {
         flow Chat() -> Unit {\n\
             step Generate { ask: \"hi\" apply: chat_token_stream output: Stream<Token> }\n\
         }\n\
-        axonendpoint ChatEndpoint { method: POST path: \"/algebraic\" execute: Chat }";
+        axonendpoint ChatEndpoint { public: true method: POST path: \"/algebraic\" execute: Chat }";
 
     let app = build_router(server_cfg());
     assert_eq!(deploy(app.clone(), src).await, StatusCode::OK);
@@ -257,7 +257,7 @@ async fn s4_bare_transport_sse_grammar_accepts_pre_33_z_k_b() {
     // captures the pre-state so the parser-grammar lift is observable
     // as a single change (33.z.k.b) rather than an unsignaled drift.
     let src = "flow F() -> Unit { step S { ask: \"x\" output: Stream<Token> } }\n\
-        axonendpoint E { method: POST path: \"/grammar\" execute: F transport: sse }";
+        axonendpoint E { public: true method: POST path: \"/grammar\" execute: F transport: sse }";
 
     let app = build_router(server_cfg());
     let status = deploy(app.clone(), src).await;

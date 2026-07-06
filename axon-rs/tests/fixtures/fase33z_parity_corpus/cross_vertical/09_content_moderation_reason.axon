@@ -10,5 +10,5 @@ axonendpoint ContentModerationReasonEndpoint {
     method: POST
     path: "/cross/content-moderation-reason"
     execute: ContentModerationReason
-    transport: sse
+    transport: sse public: true
 }

@@ -111,7 +111,7 @@ async fn s1_founder_chatflow_shape_threads_every_body_param() {
                  apply: Echo }}\n\
              persist into mem {{ stage: \"replied\" }}\n\
          }}\n\
-         axonendpoint ChatE {{ method: POST path: \"/chat\" \
+         axonendpoint ChatE {{ public: true method: POST path: \"/chat\" \
              body: ChatBody execute: ChatFlow backend: stub transport: sse(axon) }}"
     );
     deploy(&app, &src).await;
@@ -153,7 +153,7 @@ async fn s2_body_param_round_trips_through_the_store() {
              retrieve mem {{ where: \"secret\" as: loaded }}\n\
              step Reply {{ ask: \"loaded=${{loaded}}\" apply: Echo }}\n\
          }}\n\
-         axonendpoint RtE {{ method: POST path: \"/rt\" \
+         axonendpoint RtE {{ public: true method: POST path: \"/rt\" \
              body: RtBody execute: RoundTrip backend: stub transport: sse(axon) }}"
     );
     deploy(&app, &src).await;
@@ -189,7 +189,7 @@ async fn s3_errored_agent_flow_names_why_on_the_wire() {
              retrieve bad {{ where: \"ctx\" as: r }}\n\
              step Reply {{ ask: \"t=${{tenant_id}}\" apply: Echo }}\n\
          }}\n\
-         axonendpoint ErrAgentE {{ method: POST path: \"/erragent\" \
+         axonendpoint ErrAgentE {{ public: true method: POST path: \"/erragent\" \
              body: ErrBody execute: ErrAgent backend: stub transport: sse(axon) }}"
     );
     deploy(&app, &src).await;
@@ -221,7 +221,7 @@ async fn s4_agent_flow_runs_on_the_json_transport() {
             step Reply { ask: \"on ${topic}\" output: String }\n\
             persist into mem { stage: \"done\" }\n\
         }\n\
-        axonendpoint JsonAgentE { method: POST path: \"/jsonagent\" \
+        axonendpoint JsonAgentE { public: true method: POST path: \"/jsonagent\" \
             body: JBody execute: JsonAgent backend: stub transport: json }";
     deploy(&app, src).await;
 
@@ -256,7 +256,7 @@ async fn s5_d3_adversarial_body_value_is_inert_data() {
          flow AdvFlow(payload: String) -> Unit {{\n\
              step Reply {{ ask: \"got=[${{payload}}]\" apply: Echo }}\n\
          }}\n\
-         axonendpoint AdvE {{ method: POST path: \"/adv\" \
+         axonendpoint AdvE {{ public: true method: POST path: \"/adv\" \
              body: AdvBody execute: AdvFlow backend: stub transport: sse(axon) }}"
     );
     deploy(&app, &src).await;
@@ -292,7 +292,7 @@ async fn s6_d5_parameterless_flow_unaffected() {
     let src = "flow PlainFlow() -> Unit {\n\
             step S { ask: \"static\" output: Stream<Token> }\n\
         }\n\
-        axonendpoint PlainE { method: POST path: \"/plain37f\" \
+        axonendpoint PlainE { public: true method: POST path: \"/plain37f\" \
             execute: PlainFlow backend: stub transport: sse }";
     deploy(&app, src).await;
 

@@ -48,7 +48,7 @@ fn route<'a>(table: &'a RouteTable, method: &str, path: &str) -> &'a DynamicEndp
 #[test]
 fn s1_declared_backend_reaches_the_route() {
     let src = "flow F() -> Unit { step S { ask: \"x\" } }\n\
-        axonendpoint E { method: POST path: \"/chat\" execute: F backend: gemini }";
+        axonendpoint E { public: true method: POST path: \"/chat\" execute: F backend: gemini }";
     let table = collect(src);
     assert_eq!(
         route(&table, "POST", "/chat").backend,
@@ -63,7 +63,7 @@ fn s1_declared_backend_reaches_the_route() {
 #[test]
 fn s2_omitted_backend_is_empty_route_field_d9() {
     let src = "flow F() -> Unit { step S { ask: \"x\" } }\n\
-        axonendpoint E { method: POST path: \"/chat\" execute: F }";
+        axonendpoint E { public: true method: POST path: \"/chat\" execute: F }";
     let table = collect(src);
     assert_eq!(
         route(&table, "POST", "/chat").backend,
@@ -78,7 +78,7 @@ fn s2_omitted_backend_is_empty_route_field_d9() {
 #[test]
 fn s3_explicit_deploy_backend_fills_empty_routes() {
     let src = "flow F() -> Unit { step S { ask: \"x\" } }\n\
-        axonendpoint E { method: POST path: \"/chat\" execute: F }";
+        axonendpoint E { public: true method: POST path: \"/chat\" execute: F }";
     let mut table = collect(src);
     apply_deploy_backend_default(&mut table, "openai");
     assert_eq!(
@@ -94,7 +94,7 @@ fn s3_explicit_deploy_backend_fills_empty_routes() {
 #[test]
 fn s4_deploy_default_never_overrides_a_declared_backend() {
     let src = "flow F() -> Unit { step S { ask: \"x\" } }\n\
-        axonendpoint E { method: POST path: \"/chat\" execute: F backend: gemini }";
+        axonendpoint E { public: true method: POST path: \"/chat\" execute: F backend: gemini }";
     let mut table = collect(src);
     apply_deploy_backend_default(&mut table, "openai");
     assert_eq!(
@@ -110,7 +110,7 @@ fn s4_deploy_default_never_overrides_a_declared_backend() {
 #[test]
 fn s5_auto_and_empty_deploy_backends_do_not_fill() {
     let src = "flow F() -> Unit { step S { ask: \"x\" } }\n\
-        axonendpoint E { method: POST path: \"/chat\" execute: F }";
+        axonendpoint E { public: true method: POST path: \"/chat\" execute: F }";
     for transparent in ["auto", ""] {
         let mut table = collect(src);
         apply_deploy_backend_default(&mut table, transparent);
@@ -129,7 +129,7 @@ fn s5_auto_and_empty_deploy_backends_do_not_fill() {
 #[test]
 fn s6_stub_deploy_backend_is_explicit_and_fills() {
     let src = "flow F() -> Unit { step S { ask: \"x\" } }\n\
-        axonendpoint E { method: POST path: \"/chat\" execute: F }";
+        axonendpoint E { public: true method: POST path: \"/chat\" execute: F }";
     let mut table = collect(src);
     apply_deploy_backend_default(&mut table, "stub");
     assert_eq!(
@@ -145,8 +145,8 @@ fn s6_stub_deploy_backend_is_explicit_and_fills() {
 #[test]
 fn s7_fill_is_deterministic_and_idempotent() {
     let src = "flow F() -> Unit { step S { ask: \"x\" } }\n\
-        axonendpoint A { method: POST path: \"/a\" execute: F }\n\
-        axonendpoint B { method: GET  path: \"/b\" execute: F backend: kimi }";
+        axonendpoint A { public: true method: POST path: \"/a\" execute: F }\n\
+        axonendpoint B { public: true method: GET  path: \"/b\" execute: F backend: kimi }";
     let mut once = collect(src);
     apply_deploy_backend_default(&mut once, "openai");
 
@@ -170,8 +170,8 @@ fn s7_fill_is_deterministic_and_idempotent() {
 #[test]
 fn s8_mixed_table_declared_kept_undeclared_filled() {
     let src = "flow F() -> Unit { step S { ask: \"x\" } }\n\
-        axonendpoint Declared   { method: POST path: \"/d\" execute: F backend: anthropic }\n\
-        axonendpoint Undeclared { method: POST path: \"/u\" execute: F }";
+        axonendpoint Declared   { public: true method: POST path: \"/d\" execute: F backend: anthropic }\n\
+        axonendpoint Undeclared { public: true method: POST path: \"/u\" execute: F }";
     let mut table = collect(src);
     apply_deploy_backend_default(&mut table, "glm");
     assert_eq!(route(&table, "POST", "/d").backend, "anthropic");

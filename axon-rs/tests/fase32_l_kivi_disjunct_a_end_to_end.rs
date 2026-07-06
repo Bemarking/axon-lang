@@ -80,7 +80,7 @@ const KIVI_DISJUNCT_A_SOURCE: &str =
     "flow Chat() -> Unit {\n\
         step Generate { ask: \"hi\" output: Stream<Token> }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat }";
+     axonendpoint ChatEndpoint { public: true method: POST path: \"/chat\" execute: Chat }";
 
 // ─── Strict mode: D1 inference fires → SSE ──────────────────────────
 
@@ -187,7 +187,7 @@ const KIVI_EXPLICIT_SSE_SOURCE: &str =
     "flow Chat() -> Unit {\n\
         step Generate { ask: \"hi\" output: Stream<Token> }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat transport: sse }";
+     axonendpoint ChatEndpoint { public: true method: POST path: \"/chat\" execute: Chat transport: sse }";
 
 #[tokio::test]
 async fn kivi_explicit_sse_always_serves_sse_even_legacy_mode() {

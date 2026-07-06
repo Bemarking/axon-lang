@@ -11,5 +11,5 @@ axonendpoint CapabilityMediationValidateEndpoint {
     method: POST
     path: "/cross/capability-mediation-validate"
     execute: CapabilityMediationValidate
-    transport: sse
+    transport: sse public: true
 }

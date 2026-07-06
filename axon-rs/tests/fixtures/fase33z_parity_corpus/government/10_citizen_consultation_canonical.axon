@@ -10,5 +10,5 @@ axonendpoint CitizenConsultationCanonicalEndpoint {
     method: POST
     path: "/government/citizen-consultation-canonical"
     execute: CitizenConsultationCanonical
-    transport: sse
+    transport: sse public: true
 }

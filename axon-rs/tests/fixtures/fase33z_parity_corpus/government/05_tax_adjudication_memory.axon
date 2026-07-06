@@ -13,5 +13,5 @@ axonendpoint TaxAdjudicationMemoryEndpoint {
     method: POST
     path: "/government/tax-adjudication-memory"
     execute: TaxAdjudicationMemory
-    transport: sse
+    transport: sse public: true
 }

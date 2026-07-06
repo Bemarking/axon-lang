@@ -109,7 +109,7 @@ async fn s1_every_declared_parameter_binds_from_its_body_field() {
          flow MultiFlow(message: String, tenant_id: String) -> Unit {{\n\
              step Reply {{ ask: \"m=${{message}}|t=${{tenant_id}}\" apply: Echo }}\n\
          }}\n\
-         axonendpoint MultiE {{ method: POST path: \"/multi\" \
+         axonendpoint MultiE {{ public: true method: POST path: \"/multi\" \
              body: MultiBody execute: MultiFlow backend: stub transport: sse }}"
     );
     deploy(&app, &src).await;
@@ -154,7 +154,7 @@ async fn s2_body_param_threads_through_the_full_agent_flow() {
              step Reply {{ ask: \"answering: ${{query}}\" apply: Echo }}\n\
              persist into mem {{ q: \"${{query}}\" answer: \"done\" }}\n\
          }}\n\
-         axonendpoint AgentE {{ method: POST path: \"/agent\" \
+         axonendpoint AgentE {{ public: true method: POST path: \"/agent\" \
              body: AgentBody execute: AgentFlow backend: stub transport: sse }}"
     );
     deploy(&app, &src).await;
@@ -189,7 +189,7 @@ async fn s3_d4_undeclared_body_field_is_not_bound() {
          flow D4Flow(declared: String) -> Unit {{\n\
              step Reply {{ ask: \"d=${{declared}}|u=${{undeclared}}\" apply: Echo }}\n\
          }}\n\
-         axonendpoint D4E {{ method: POST path: \"/d4\" \
+         axonendpoint D4E {{ public: true method: POST path: \"/d4\" \
              body: D4Body execute: D4Flow backend: stub transport: sse }}"
     );
     deploy(&app, &src).await;
@@ -223,7 +223,7 @@ async fn s4_d5_parameterless_flow_streams_clean() {
     let src = "flow PlainFlow() -> Unit {\n\
              step Reply { ask: \"static prompt\" output: Stream<Token> }\n\
          }\n\
-         axonendpoint PlainE { method: POST path: \"/plain\" \
+         axonendpoint PlainE { public: true method: POST path: \"/plain\" \
              execute: PlainFlow backend: stub transport: sse }";
     deploy(&app, src).await;
 
@@ -253,7 +253,7 @@ async fn s5_request_binding_holds_on_the_json_transport() {
          flow JsonFlow(payload: String) -> Unit {\n\
              step Reply { ask: \"got ${payload}\" output: String }\n\
          }\n\
-         axonendpoint JsonE { method: POST path: \"/json\" \
+         axonendpoint JsonE { public: true method: POST path: \"/json\" \
              body: JsonBody execute: JsonFlow backend: stub transport: json }";
     deploy(&app, src).await;
 

@@ -12,5 +12,5 @@ axonendpoint RateLimitingLambdaEndpoint {
     method: POST
     path: "/cross/rate-limiting-lambda"
     execute: RateLimitingLambda
-    transport: sse
+    transport: sse public: true
 }

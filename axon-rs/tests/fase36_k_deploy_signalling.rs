@@ -86,7 +86,7 @@ async fn s1_resolvable_route_deploys_with_empty_warnings() {
     let resp = deploy(
         &app,
         "flow Chat() -> Unit { step S { ask: \"hi\" } }\n\
-         axonendpoint E { method: POST path: \"/chat\" execute: Chat backend: stub }",
+         axonendpoint E { public: true method: POST path: \"/chat\" execute: Chat backend: stub }",
     )
     .await;
     assert_eq!(resp["success"], true);
@@ -116,7 +116,7 @@ async fn s2_unresolvable_route_surfaces_a_deploy_warning() {
     let resp = deploy(
         &app,
         "flow Chat() -> Unit { step S { ask: \"hi\" } }\n\
-         axonendpoint E { method: POST path: \"/chat\" execute: Chat }",
+         axonendpoint E { public: true method: POST path: \"/chat\" execute: Chat }",
     )
     .await;
     assert_eq!(
@@ -148,7 +148,7 @@ async fn s3_stub_route_executes_a_real_step_never_a_misleading_zero() {
     deploy(
         &app,
         "flow Chat() -> Unit { step S { ask: \"hi\" } }\n\
-         axonendpoint E { method: POST path: \"/chat\" execute: Chat backend: stub }",
+         axonendpoint E { public: true method: POST path: \"/chat\" execute: Chat backend: stub }",
     )
     .await;
     let (status, json) = hit(&app, "/chat").await;
@@ -178,7 +178,7 @@ async fn s4_honest_failure_is_structured_never_a_hollow_zero() {
     deploy(
         &app,
         "flow Chat() -> Unit { step S { ask: \"hi\" } }\n\
-         axonendpoint E { method: POST path: \"/chat\" execute: Chat }",
+         axonendpoint E { public: true method: POST path: \"/chat\" execute: Chat }",
     )
     .await;
     let (status, json) = hit(&app, "/chat").await;

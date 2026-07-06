@@ -20,5 +20,5 @@ axonendpoint CreditEndpoint {
     method: POST
     path: "/credit/decide"
     execute: CreditDecision
-    transport: sse
+    transport: sse public: true
 }

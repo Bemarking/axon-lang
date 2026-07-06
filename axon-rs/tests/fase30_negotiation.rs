@@ -121,7 +121,7 @@ async fn declared_sse_forces_sse_with_accept_json() {
     let app = deploy(
         app,
         "flow F() { step S { ask: \"hi\" } }\n\
-         axonendpoint Live { method: POST path: \"/l\" execute: F transport: sse }\n",
+         axonendpoint Live { public: true method: POST path: \"/l\" execute: F transport: sse }\n",
     )
     .await;
 
@@ -141,7 +141,7 @@ async fn declared_sse_forces_sse_without_accept_header() {
     let app = deploy(
         app,
         "flow F() { step S { ask: \"hi\" } }\n\
-         axonendpoint Live { method: POST path: \"/l\" execute: F transport: sse }\n",
+         axonendpoint Live { public: true method: POST path: \"/l\" execute: F transport: sse }\n",
     )
     .await;
 
@@ -162,7 +162,7 @@ async fn declared_ndjson_also_forces_streaming_branch() {
     let app = deploy(
         app,
         "flow F() { step S { ask: \"hi\" } }\n\
-         axonendpoint Live { method: POST path: \"/l\" execute: F transport: ndjson }\n",
+         axonendpoint Live { public: true method: POST path: \"/l\" execute: F transport: ndjson }\n",
     )
     .await;
     let (status, ct, _) = execute_with_accept(app, "F", None).await;
@@ -191,7 +191,7 @@ async fn explicit_json_transport_suppresses_sse_even_with_accept_sse() {
         app,
         "tool Streamer { provider: local effects: <stream:drop_oldest> }\n\
          flow F() { step S { ask: \"hi\" } }\n\
-         axonendpoint BatchOnly { method: POST path: \"/b\" execute: F transport: json }\n",
+         axonendpoint BatchOnly { public: true method: POST path: \"/b\" execute: F transport: json }\n",
     )
     .await;
 
@@ -354,7 +354,7 @@ async fn promoted_sse_response_carries_retry_directive_and_complete_event() {
     let app = deploy(
         app,
         "flow F() { step S { ask: \"hi\" } }\n\
-         axonendpoint Live { method: POST path: \"/l\" execute: F transport: sse }\n",
+         axonendpoint Live { public: true method: POST path: \"/l\" execute: F transport: sse }\n",
     )
     .await;
 

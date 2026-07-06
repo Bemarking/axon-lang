@@ -10,5 +10,5 @@ axonendpoint TreatmentPlanningHibernateEndpoint {
     method: POST
     path: "/medicine/treatment-planning-hibernate"
     execute: TreatmentPlanningHibernate
-    transport: sse
+    transport: sse public: true
 }

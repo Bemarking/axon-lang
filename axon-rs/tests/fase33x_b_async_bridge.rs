@@ -158,7 +158,7 @@ const SIMPLE_STREAM: &str =
     "flow Chat() -> Unit {\n\
         step Generate { ask: \"hi\" output: Stream<Token> }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat transport: sse }";
+     axonendpoint ChatEndpoint { public: true method: POST path: \"/chat\" execute: Chat transport: sse }";
 
 // §Fase 33.z.k.g.2 — Algebraic-effect flows declare
 // `transport: sse(axon)` explicitly (Q5 escape valve) so the 33.x.b
@@ -170,28 +170,28 @@ const STREAM_WITH_DROP_OLDEST: &str =
      flow Chat() -> Unit {\n\
         step Generate { ask: \"hi\" apply: chat_tokens }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat transport: sse(axon) }";
+     axonendpoint ChatEndpoint { public: true method: POST path: \"/chat\" execute: Chat transport: sse(axon) }";
 
 const STREAM_WITH_FAIL_POLICY: &str =
     "tool chat_tokens { description: \"stream\" effects: <stream:fail> }\n\
      flow Chat() -> Unit {\n\
         step Generate { ask: \"hi\" apply: chat_tokens }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat transport: sse(axon) }";
+     axonendpoint ChatEndpoint { public: true method: POST path: \"/chat\" execute: Chat transport: sse(axon) }";
 
 const STREAM_WITH_PAUSE_UPSTREAM: &str =
     "tool chat_tokens { description: \"stream\" effects: <stream:pause_upstream> }\n\
      flow Chat() -> Unit {\n\
         step Generate { ask: \"hi\" apply: chat_tokens }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat transport: sse(axon) }";
+     axonendpoint ChatEndpoint { public: true method: POST path: \"/chat\" execute: Chat transport: sse(axon) }";
 
 const STREAM_WITH_DEGRADE_QUALITY: &str =
     "tool chat_tokens { description: \"stream\" effects: <stream:degrade_quality> }\n\
      flow Chat() -> Unit {\n\
         step Generate { ask: \"hi\" apply: chat_tokens }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat transport: sse(axon) }";
+     axonendpoint ChatEndpoint { public: true method: POST path: \"/chat\" execute: Chat transport: sse(axon) }";
 
 const MULTI_STEP_STREAM: &str =
     "flow Chain() -> Unit {\n\
@@ -199,7 +199,7 @@ const MULTI_STEP_STREAM: &str =
         step Second { ask: \"two\" output: Stream<Token> }\n\
         step Third { ask: \"three\" output: Stream<Token> }\n\
      }\n\
-     axonendpoint ChainEndpoint { method: POST path: \"/chain\" execute: Chain transport: sse }";
+     axonendpoint ChainEndpoint { public: true method: POST path: \"/chain\" execute: Chain transport: sse }";
 
 // ─── §1 — D1 anchor: Backend::stream() reached on production path ───
 
@@ -447,7 +447,7 @@ async fn declared_effect_on_one_step_does_not_pollute_other_steps() {
                    step Plain { ask: \"plain\" output: Stream<Token> }\n\
                    step Effecting { ask: \"hi\" apply: chat_tokens }\n\
                }\n\
-               axonendpoint MultiEndpoint { method: POST path: \"/multi\" execute: Multi transport: sse(axon) }";
+               axonendpoint MultiEndpoint { public: true method: POST path: \"/multi\" execute: Multi transport: sse(axon) }";
     let app = build_router(server_cfg());
     deploy(app.clone(), src).await;
     let (_status, _, body) = fetch_sse_body(app, "/multi", "{}").await;

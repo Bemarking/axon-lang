@@ -121,7 +121,7 @@ fn d9_deploy_request_backend_defaults_to_auto() {
 fn d9_pre_36_axon_compiles_with_zero_errors() {
     // No `backend:` field anywhere — the v1.33.0 adopter program.
     let src = "flow Chat() -> Unit { step S { ask: \"hi\" } }\n\
-               axonendpoint E { method: POST path: \"/chat\" execute: Chat }";
+               axonendpoint E { public: true method: POST path: \"/chat\" execute: Chat }";
     let tokens = axon::lexer::Lexer::new(src, "t.axon").tokenize().expect("lex");
     let prog = axon::parser::Parser::new(tokens).parse().expect("parse");
     let errors = axon::type_checker::TypeChecker::new(&prog).check();
@@ -143,7 +143,7 @@ async fn d9_undeclared_backend_endpoint_still_deploys() {
         "/v1/deploy",
         serde_json::json!({
             "source": "flow Chat() -> Unit { step S { ask: \"hi\" } }\n\
-                       axonendpoint E { method: POST path: \"/chat\" execute: Chat }",
+                       axonendpoint E { public: true method: POST path: \"/chat\" execute: Chat }",
             "source_file": "t.axon",
         }),
     )
@@ -178,7 +178,7 @@ async fn d9_endpoint_runs_resolved_backend_with_zero_source_change() {
         "/v1/deploy",
         serde_json::json!({
             "source": "flow Chat() -> Unit { step S { ask: \"hi\" } }\n\
-                       axonendpoint E { method: POST path: \"/chat\" execute: Chat }",
+                       axonendpoint E { public: true method: POST path: \"/chat\" execute: Chat }",
             "source_file": "t.axon",
         }),
     )
