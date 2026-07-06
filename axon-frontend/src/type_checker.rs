@@ -91,6 +91,17 @@ const VALID_EFFECTS: &[&str] = &[
 /// default single-replica tier; `redis` is the enterprise multi-replica tier.
 const VALID_CACHE_BACKENDS: &[&str] = &["in_process", "redis"];
 
+/// §Fase 87.b — the closed `savant.cognition.depth:` catalog. Each tier sets the
+/// HRR (holographic reduced representation) dimensionality of the memory codec:
+/// `standard` (baseline), `deep`, `hyper` (hyperbolic). A typo can never
+/// silently select a smaller — or larger, more expensive — memory geometry.
+const VALID_SAVANT_DEPTHS: &[&str] = &["standard", "deep", "hyper"];
+
+/// §Fase 87.b — the closed `savant.cognition.divergence:` catalog. Governs how
+/// aggressively the active-inference loop explores epistemic (β₂) voids versus
+/// exploiting known structure when minimising Expected Free Energy.
+const VALID_SAVANT_DIVERGENCES: &[&str] = &["low", "med", "high"];
+
 /// §Fase 86.c — the closed `forge.mode:` catalog: Margaret Boden's three
 /// creativity types (*The Creative Mind*, 1990). Each maps to a distinct
 /// sampling-parameter profile at runtime (D86.3).
@@ -1597,10 +1608,10 @@ impl<'a> TypeChecker<'a> {
                 Declaration::Voice(n) => self.check_voice(n),
                 Declaration::Cors(n) => self.check_cors(n),
                 Declaration::Cache(n) => self.check_cache(n),
-                // §Fase 87.a — surface only; `check_savant` (catalog + typed
-                // output + memory-ref/budget/interruptibility binding) lands in
-                // §87.b/c. Registered above so name resolution already works.
-                Declaration::Savant(_) => {}
+                // §Fase 87.b — own-field validation (domain, mandates, cognition
+                // catalogs). Ref resolution (memory backend) + §72 budget binding
+                // + §79 interruptibility land in §87.c.
+                Declaration::Savant(n) => self.check_savant(n),
                 Declaration::Observable(n) => self.check_observable(n),
                 Declaration::Witness(n) => self.check_witness(n),
                 Declaration::Immune(n) => self.check_immune(n),
@@ -3565,6 +3576,107 @@ impl<'a> TypeChecker<'a> {
                     );
                 }
                 Some(_) => {}
+            }
+        }
+    }
+
+    /// §Fase 87.b — validate one `savant { … }` declaration's own fields. Ref
+    /// resolution (`memory.backend` → a declared `memory`/`corpus`), §72 budget
+    /// binding, and §79 interruptibility are §87.c; the `SavantSoundness` PCC is
+    /// §87.g. Every diagnostic here is a HARD error — a savant governs an
+    /// expensive, weeks-long autonomous process, so an under-specified one must
+    /// never deploy silently.
+    fn check_savant(&mut self, node: &SavantDefinition) {
+        // axon-T873 — a savant MUST declare its ontological `domain:` (the
+        // generative boundary the free-energy loop minimises surprise over). An
+        // empty domain is an unbounded mandate — the exact footgun §87 forbids.
+        if node.domain.trim().is_empty() {
+            self.emit(
+                format!(
+                    "axon-T873 savant '{}' declares no `domain:` — a long-horizon research \
+                     agent needs a bounded ontological scope; add e.g. `domain: \"…\"`",
+                    node.name
+                ),
+                &node.loc,
+            );
+        }
+
+        // axon-T874 — a savant MUST carry at least one `mandate`, and each
+        // mandate MUST have a non-empty `objective:` and a declared `output:`
+        // type. A savant with no mandate has nothing to research; a mandate with
+        // no objective/output is an unrunnable task.
+        if node.mandates.is_empty() {
+            self.emit(
+                format!(
+                    "axon-T874 savant '{}' declares no `mandate` — add at least one \
+                     `mandate <Name> {{ objective: \"…\", output: <Type> }}`",
+                    node.name
+                ),
+                &node.loc,
+            );
+        }
+        for m in &node.mandates {
+            if m.objective.trim().is_empty() {
+                self.emit(
+                    format!(
+                        "axon-T874 mandate '{}' in savant '{}' has an empty `objective:` — \
+                         state the research goal the savant autonomously decomposes",
+                        m.name, node.name
+                    ),
+                    &m.loc,
+                );
+            }
+            if m.output_type.trim().is_empty() {
+                self.emit(
+                    format!(
+                        "axon-T874 mandate '{}' in savant '{}' declares no `output:` type — \
+                         the final report must inhabit a declared type (e.g. `output: FormalReport`)",
+                        m.name, node.name
+                    ),
+                    &m.loc,
+                );
+            }
+        }
+
+        // axon-T876 — the `cognition { … }` params are closed catalogs, and the
+        // EFE convergence bound must be a positive probability mass. A typo'd
+        // `depth`/`divergence` can never silently pick a different engine
+        // geometry; a non-positive threshold can never make the loop converge.
+        if let Some(cog) = &node.cognition {
+            if !cog.depth.is_empty() && !is_valid(&cog.depth, VALID_SAVANT_DEPTHS) {
+                self.emit(
+                    format!(
+                        "axon-T876 unknown savant cognition depth '{}' in savant '{}'. Valid: {}",
+                        cog.depth,
+                        node.name,
+                        valid_list(VALID_SAVANT_DEPTHS)
+                    ),
+                    &cog.loc,
+                );
+            }
+            if !cog.divergence.is_empty() && !is_valid(&cog.divergence, VALID_SAVANT_DIVERGENCES) {
+                self.emit(
+                    format!(
+                        "axon-T876 unknown savant cognition divergence '{}' in savant '{}'. Valid: {}",
+                        cog.divergence,
+                        node.name,
+                        valid_list(VALID_SAVANT_DIVERGENCES)
+                    ),
+                    &cog.loc,
+                );
+            }
+            if let Some(threshold) = cog.entropic_threshold {
+                if !(threshold > 0.0) {
+                    self.emit(
+                        format!(
+                            "axon-T876 savant '{}' cognition `entropic_threshold: {}` must be > 0 — \
+                             it is the Expected-Free-Energy convergence bound; a non-positive bound \
+                             can never be reached and the loop would never terminate",
+                            node.name, threshold
+                        ),
+                        &cog.loc,
+                    );
+                }
             }
         }
     }

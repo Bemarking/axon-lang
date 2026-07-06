@@ -249,13 +249,97 @@ fn minimal_savant_parses() {
 // ── Property 7: §87.a is check-clean (semantics deferred) ────────────────────
 
 #[test]
-fn surface_savant_is_check_clean() {
-    // Unresolved `memory` backend + output type + no budget: all deferred to
-    // §87.b/c, so §87.a must report NO diagnostics for a savant program.
+fn well_formed_savant_is_check_clean() {
+    // FULL has a domain, a mandate (objective + output), and valid cognition
+    // (depth/divergence catalog + entropic_threshold > 0). The unresolved
+    // `memory` backend is §87.c territory, so §87.b reports nothing here.
     let src = format!("{FULL}{FLOW}");
     let errs = check_errors(&src);
     assert!(
-        errs.is_empty(),
-        "§87.a surface must be diagnostic-free (checker is §87.b/c): {errs:?}"
+        errs.iter().all(|e| !e.contains("axon-T87")),
+        "well-formed savant must raise no §87 diagnostic: {errs:?}"
     );
+}
+
+// ── §87.b — check_savant (own-field validation) ──────────────────────────────
+
+fn has_code(errs: &[String], code: &str) -> bool {
+    errs.iter().any(|e| e.contains(code))
+}
+
+#[test]
+fn t873_empty_domain() {
+    let src = "savant S { domain: \"\" mandate m { objective: \"o\", output: T } }\n";
+    let errs = check_errors(src);
+    assert!(has_code(&errs, "axon-T873"), "{errs:?}");
+}
+
+#[test]
+fn t874_no_mandate() {
+    let src = "savant S { domain: \"d\" }\n";
+    let errs = check_errors(src);
+    assert!(has_code(&errs, "axon-T874"), "{errs:?}");
+}
+
+#[test]
+fn t874_empty_objective() {
+    let src = "savant S { domain: \"d\" mandate m { objective: \"\", output: T } }\n";
+    let errs = check_errors(src);
+    assert!(has_code(&errs, "axon-T874"), "{errs:?}");
+}
+
+#[test]
+fn t876_unknown_depth() {
+    let src = r#"
+savant S {
+    domain: "d"
+    cognition { depth: galactic, divergence: high }
+    mandate m { objective: "o", output: T }
+}
+"#;
+    let errs = check_errors(src);
+    assert!(has_code(&errs, "axon-T876"), "{errs:?}");
+}
+
+#[test]
+fn t876_unknown_divergence() {
+    let src = r#"
+savant S {
+    domain: "d"
+    cognition { depth: deep, divergence: maximal }
+    mandate m { objective: "o", output: T }
+}
+"#;
+    let errs = check_errors(src);
+    assert!(has_code(&errs, "axon-T876"), "{errs:?}");
+}
+
+#[test]
+fn t876_nonpositive_threshold() {
+    let src = r#"
+savant S {
+    domain: "d"
+    cognition { depth: deep, entropic_threshold: 0.0, divergence: low }
+    mandate m { objective: "o", output: T }
+}
+"#;
+    let errs = check_errors(src);
+    assert!(has_code(&errs, "axon-T876"), "{errs:?}");
+}
+
+#[test]
+fn valid_cognition_catalogs_are_clean() {
+    for depth in ["standard", "deep", "hyper"] {
+        for div in ["low", "med", "high"] {
+            let src = format!(
+                "savant S {{ domain: \"d\" cognition {{ depth: {depth}, divergence: {div} }} \
+                 mandate m {{ objective: \"o\", output: T }} }}\n"
+            );
+            let errs = check_errors(&src);
+            assert!(
+                !has_code(&errs, "axon-T876"),
+                "depth={depth} div={div}: {errs:?}"
+            );
+        }
+    }
 }
