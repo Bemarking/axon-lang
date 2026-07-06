@@ -132,6 +132,9 @@ pub fn check_proof(proof: &ProofTerm, ir: &IRProgram) -> CheckOutcome {
         (PropertyClass::ForgeSoundness, Witness::ForgeSoundness(w)) => {
             check_forge_soundness(w, ir)
         }
+        (PropertyClass::SavantSoundness, Witness::SavantSoundness(w)) => {
+            check_savant_soundness(w, ir)
+        }
         _ => CheckOutcome::UnknownProperty,
     }
 }
@@ -1130,6 +1133,72 @@ fn check_forge_soundness(
                 "axon-T871 forge '{}' `constraints:` does not resolve to an anchor with a \
                  confidence_floor",
                 actual.forge_name
+            ),
+        };
+    }
+    CheckOutcome::Verified
+}
+
+/// §87.g — independent checker for [`PropertyClass::SavantSoundness`]. Finds the
+/// savant by name, re-derives its witness, and rejects a forged/stale proof or
+/// any governance violation (T873/T874/T875/T876/T877).
+fn check_savant_soundness(
+    claimed: &super::proof_term::SavantSoundnessWitness,
+    ir: &IRProgram,
+) -> CheckOutcome {
+    let savant = match ir.savants.iter().find(|s| s.name == claimed.savant_name) {
+        Some(s) => s,
+        None => {
+            return CheckOutcome::Refuted {
+                reason: format!(
+                    "no savant '{}' in program — forged or stale proof",
+                    claimed.savant_name
+                ),
+            }
+        }
+    };
+    let actual = super::generate::derive_savant_soundness_witness(savant, ir);
+    if actual != *claimed {
+        return CheckOutcome::Refuted {
+            reason: "witness disagrees with artifact re-derivation (forged or stale proof)"
+                .to_string(),
+        };
+    }
+    if !actual.domain_present {
+        return CheckOutcome::Refuted {
+            reason: format!("axon-T873 savant '{}' has no `domain:`", actual.savant_name),
+        };
+    }
+    if !actual.mandate_ok {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axon-T874 savant '{}' has no well-formed `mandate` (objective + output)",
+                actual.savant_name
+            ),
+        };
+    }
+    if !actual.budget_bounded {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axon-T877 savant '{}' declares no positive `budget.max_iterations` — an \
+                 unbounded autonomous loop is fail-open",
+                actual.savant_name
+            ),
+        };
+    }
+    if !actual.cognition_ok {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axon-T876 savant '{}' has an out-of-catalog cognition parameter",
+                actual.savant_name
+            ),
+        };
+    }
+    if !actual.memory_ref_ok {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axon-T875 savant '{}' `memory.backend` does not resolve to a memory/corpus",
+                actual.savant_name
             ),
         };
     }

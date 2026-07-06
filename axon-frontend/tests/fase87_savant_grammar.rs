@@ -250,7 +250,7 @@ fn minimal_savant_parses() {
 
 /// The declarations FULL references — a real `memory` store and the report
 /// `type` — so a well-formed savant program resolves cleanly under §87.c.
-const DECLS: &str = "memory ResearchStore { store: vector }\n\
+const DECLS: &str = "memory ResearchStore { store: persistent }\n\
                      type FormalReport { summary: String }\n";
 
 #[test]

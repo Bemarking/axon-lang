@@ -21,7 +21,7 @@ use super::proof_term::{
     EffectBudgetedWitness,
     EffectRowSoundnessWitness, InterruptibleSessionSoundnessWitness, JsonShapeSoundnessWitness,
     ParkedResidualSoundnessWitness, ProofTerm, PropertyClass,
-    CacheSoundnessWitness, ForgeSoundnessWitness, ResourceBoundsWitness,
+    CacheSoundnessWitness, ForgeSoundnessWitness, ResourceBoundsWitness, SavantSoundnessWitness,
     ShieldHaltGuaranteeWitness, TechnicianCommandSafetyWitness, ToolCallSoundnessWitness,
     UpstreamProjectionSoundnessWitness, Witness,
     CALL_INTERRUPT_CAUSES, MAX_RETRIES, VALID_BREACH_POLICIES, VALID_BUDGET_PERIODS,
@@ -2044,6 +2044,75 @@ pub fn generate_forge_soundness_proofs(ir: &IRProgram, axon_version: &str) -> Ve
         .collect()
 }
 
+/// §87.g — the checker's own statement of the `savant` cognition catalogs
+/// (mirror of the private `axon_frontend::type_checker::VALID_SAVANT_*`).
+const SAVANT_DEPTHS: &[&str] = &["standard", "deep", "hyper"];
+const SAVANT_DIVERGENCES: &[&str] = &["low", "med", "high"];
+
+/// §87.g — re-derive one savant's governance-soundness witness against the IR.
+/// The single source of truth reused by both the prover and the verifier
+/// (`check_savant_soundness`), so a forged/stale proof is caught by
+/// re-derivation, exactly as ForgeSoundness/CacheSoundness.
+pub fn derive_savant_soundness_witness(
+    savant: &axon_frontend::ir_nodes::IRSavant,
+    ir: &IRProgram,
+) -> SavantSoundnessWitness {
+    let domain_present = !savant.domain.trim().is_empty();
+
+    let mandate_ok = !savant.mandates.is_empty()
+        && savant
+            .mandates
+            .iter()
+            .all(|m| !m.objective.trim().is_empty() && !m.output_type.trim().is_empty());
+
+    let max_iterations = savant
+        .budget
+        .as_ref()
+        .and_then(|b| b.max_iterations)
+        .unwrap_or(0);
+    let budget_bounded = max_iterations > 0;
+
+    let cognition_ok = savant.cognition.as_ref().is_none_or(|c| {
+        let depth_ok = c.depth.is_empty() || SAVANT_DEPTHS.contains(&c.depth.as_str());
+        let div_ok = c.divergence.is_empty() || SAVANT_DIVERGENCES.contains(&c.divergence.as_str());
+        let thr_ok = c.entropic_threshold.is_none_or(|t| t > 0.0);
+        depth_ok && div_ok && thr_ok
+    });
+
+    let memory_ref_ok = savant.memory.as_ref().is_none_or(|m| {
+        m.backend.is_empty()
+            || ir.memories.iter().any(|x| x.name == m.backend)
+            || ir.corpus_specs.iter().any(|x| x.name == m.backend)
+    });
+
+    SavantSoundnessWitness {
+        savant_name: savant.name.clone(),
+        mandate_count: savant.mandates.len() as i64,
+        max_iterations,
+        domain_present,
+        mandate_ok,
+        budget_bounded,
+        cognition_ok,
+        memory_ref_ok,
+    }
+}
+
+/// §87.g — one SavantSoundness proof per `savant` in the program. `savant` is a
+/// top-level declaration, so this iterates `ir.savants` directly (no flow-step
+/// walk like forge).
+pub fn generate_savant_soundness_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm> {
+    let digest = artifact_digest(ir);
+    ir.savants
+        .iter()
+        .map(|savant| ProofTerm {
+            property: PropertyClass::SavantSoundness,
+            artifact_digest: digest.clone(),
+            witness: Witness::SavantSoundness(derive_savant_soundness_witness(savant, ir)),
+            axon_version: axon_version.to_string(),
+        })
+        .collect()
+}
+
 /// §51.f — generate proofs across ALL property classes for `ir`. The
 /// `axon pcc prove` entry point. Concatenates every per-class
 /// generator (compliance / effects / capability-gate / resources /
@@ -2071,5 +2140,6 @@ pub fn generate_all_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm>
     proofs.extend(generate_technician_command_safety_proofs(ir, axon_version));
     proofs.extend(generate_cache_soundness_proofs(ir, axon_version));
     proofs.extend(generate_forge_soundness_proofs(ir, axon_version));
+    proofs.extend(generate_savant_soundness_proofs(ir, axon_version));
     proofs
 }

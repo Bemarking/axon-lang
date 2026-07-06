@@ -1243,7 +1243,8 @@ Body prose.
         // §Fase 80.g: 55 → 56 with `voice` (the inspectable voice-agent sugar).
         // §Fase 83: 56 → 57 with `cors` (the named browser-origin policy).
         // §Fase 85: 57 → 58 with `cache` (the result-memoization policy).
-        assert_eq!(s.total, 58);
+        // §Fase 87: 58 → 60 with `savant` + `synth`.
+        assert_eq!(s.total, 60);
     }
 
     /// §Phase 5 — every MCP prompt shipped under

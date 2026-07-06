@@ -252,6 +252,18 @@ pub enum PropertyClass {
     /// verification gate — the measured-novelty *outcome* is data-dependent and
     /// enforced at runtime (D86.6).
     ForgeSoundness,
+    /// §87.g — for each `savant` (the long-horizon autonomous research
+    /// primitive), re-derives the governance invariants the §87.b/c type-checker
+    /// proved: a bounded ontological `domain` (T873); at least one well-formed
+    /// `mandate` (T874); a mandatory, positive compute `budget.max_iterations`
+    /// (T877 — the §72 linear-budget discipline, the load-bearing
+    /// "budget-bounded" half of the doctrine `autonomy_is_a_governed_
+    /// orchestration_not_a_loop`); and valid `cognition` catalogs (T876). This
+    /// certifies a stored/deployed savant is STILL governed — an autonomous loop
+    /// that runs for weeks with a stale proof that dropped its budget would be
+    /// fail-open, so it gets a deploy-time re-derivation. (Interruptibility +
+    /// provenance are enforced by the enterprise host, §87.k.)
+    SavantSoundness,
 }
 
 /// §72.f — the closed period catalog for `budget` quotas. The checker's own
@@ -300,6 +312,7 @@ impl PropertyClass {
             PropertyClass::TechnicianCommandSafety => "technician_command_safety",
             PropertyClass::CacheSoundness => "cache_soundness",
             PropertyClass::ForgeSoundness => "forge_soundness",
+            PropertyClass::SavantSoundness => "savant_soundness",
         }
     }
 }
@@ -856,6 +869,31 @@ pub struct ForgeSoundnessWitness {
     pub constraints_ok: bool,
 }
 
+/// §87.g — witness for [`PropertyClass::SavantSoundness`], one per `savant`. The
+/// checker RE-DERIVES every field from `ir.savants` (+ `ir.memories`/
+/// `ir.corpus_specs` for the memory binding) and rejects on disagreement. A
+/// verifying proof has every `*_ok` flag true.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SavantSoundnessWitness {
+    pub savant_name: String,
+    /// The number of mandates (T874: ≥ 1).
+    pub mandate_count: i64,
+    /// The declared FEP-loop ceiling (0 if none — then `budget_bounded` is false).
+    pub max_iterations: i64,
+    /// A non-empty ontological `domain:` (T873).
+    pub domain_present: bool,
+    /// At least one mandate, each with a non-empty objective + output type (T874).
+    pub mandate_ok: bool,
+    /// A mandatory, positive `budget.max_iterations` (T877 — the §72 discipline;
+    /// the load-bearing "budget-bounded" invariant).
+    pub budget_bounded: bool,
+    /// `cognition` absent, OR its `depth`/`divergence` are in catalog and
+    /// `entropic_threshold` (if set) is > 0 (T876).
+    pub cognition_ok: bool,
+    /// `memory.backend` empty, OR resolves to a declared `memory`/`corpus` (T875).
+    pub memory_ref_ok: bool,
+}
+
 /// The property-specific witness. Tagged so the JSON is self-describing
 /// + a future class adds a variant without ambiguity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -880,6 +918,7 @@ pub enum Witness {
     TechnicianCommandSafety(TechnicianCommandSafetyWitness),
     CacheSoundness(CacheSoundnessWitness),
     ForgeSoundness(ForgeSoundnessWitness),
+    SavantSoundness(SavantSoundnessWitness),
 }
 
 impl Witness {
@@ -915,6 +954,7 @@ impl Witness {
             // §85.c — program-wide property, no single named subject.
             Witness::CacheSoundness(_) => "<program>",
             Witness::ForgeSoundness(w) => &w.forge_name,
+            Witness::SavantSoundness(w) => &w.savant_name,
         }
     }
 }

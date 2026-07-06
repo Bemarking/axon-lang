@@ -675,11 +675,47 @@ fn run_desugar(file: &str) -> i32 {
                 print!("{}", axon::upstream_presets::render_upstream(u));
                 println!();
             }
+            // §87.g — `savant` is NOT sugar (it lowers straight to IRSavant), so
+            // there is no lower-level program to print. Instead show an honest
+            // COMPOSITION view: which existing primitives + engines it
+            // orchestrates. Clearly labelled so it never masquerades as an
+            // expansion.
+            axon::ast::Declaration::Savant(s) => {
+                printed_any = true;
+                println!("// ── savant {} composes ───────────────────────────", s.name);
+                println!("//   (a composition view, not a macro-expansion: `savant`");
+                println!("//    lowers directly to IRSavant.)");
+                println!("//   domain    → {:?}", s.domain);
+                if let Some(c) = &s.cognition {
+                    println!(
+                        "//   cognition → active-inference engine (depth: {}, divergence: {})",
+                        if c.depth.is_empty() { "default" } else { &c.depth },
+                        if c.divergence.is_empty() { "default" } else { &c.divergence }
+                    );
+                }
+                if let Some(m) = &s.memory {
+                    if !m.backend.is_empty() {
+                        println!("//   memory    → composes `memory`/`corpus` {}", m.backend);
+                    }
+                }
+                if let Some(b) = &s.budget {
+                    if let Some(n) = b.max_iterations {
+                        println!("//   budget    → linear compute budget (max_iterations: {n})  [§72]");
+                    }
+                }
+                for md in &s.mandates {
+                    println!("//   mandate   → {} -> {}", md.name, md.output_type);
+                }
+                println!("//   engines   → inference (VFE/EFE) · topology (Betti/PHC) · holograph (HRR)");
+                println!();
+            }
             _ => {}
         }
     }
     if !printed_any {
-        println!("// no `voice` or preset-instantiated `upstream` declarations — nothing to desugar");
+        println!(
+            "// no `voice` / preset-`upstream` / `savant` declarations — nothing to desugar"
+        );
     }
     0
 }

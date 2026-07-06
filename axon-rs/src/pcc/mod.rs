@@ -1988,6 +1988,74 @@ mod tests {
         assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
     }
 
+    // ── §87.g — SavantSoundness ──────────────────────────────────────────────
+
+    const VALID_SAVANT: &str = "memory ResearchStore { store: persistent }\n\
+         savant DeepAnalyst {\n\
+           domain: \"quantum error correction\"\n\
+           cognition { depth: hyper, entropic_threshold: 0.001, divergence: high }\n\
+           memory { backend: ResearchStore, corpus_graph: true }\n\
+           budget { max_iterations: 50000 }\n\
+           mandate m { objective: \"synthesise papers\", output: Report }\n\
+         }";
+
+    #[test]
+    fn savant_soundness_round_trips_and_verifies() {
+        let ir = ir_from_source(VALID_SAVANT);
+        let proofs = super::generate::generate_savant_soundness_proofs(&ir, "test");
+        assert_eq!(proofs.len(), 1, "one proof per savant");
+        assert_eq!(proofs[0].property, PropertyClass::SavantSoundness);
+        assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
+        assert!(
+            generate_all_proofs(&ir, "test")
+                .iter()
+                .any(|p| p.property == PropertyClass::SavantSoundness),
+            "generate_all_proofs must include the savant-soundness class"
+        );
+    }
+
+    #[test]
+    fn savant_soundness_refutes_unbudgeted() {
+        // Parses + lowers, but declares no budget → the PCC checker REFUTES it
+        // (T877 — an unbounded autonomous loop is fail-open).
+        let ir = ir_from_source(
+            "savant S { domain: \"d\" mandate m { objective: \"o\", output: T } }",
+        );
+        let proofs = super::generate::generate_savant_soundness_proofs(&ir, "test");
+        assert_eq!(proofs.len(), 1);
+        assert!(matches!(
+            check_proof(&proofs[0], &ir),
+            CheckOutcome::Refuted { .. }
+        ));
+    }
+
+    #[test]
+    fn savant_soundness_refutes_undefined_memory() {
+        let ir = ir_from_source(
+            "savant S { domain: \"d\" memory { backend: Nope } budget { max_iterations: 5 } \
+             mandate m { objective: \"o\", output: T } }",
+        );
+        let proofs = super::generate::generate_savant_soundness_proofs(&ir, "test");
+        assert!(matches!(
+            check_proof(&proofs[0], &ir),
+            CheckOutcome::Refuted { .. }
+        ));
+    }
+
+    #[test]
+    fn savant_soundness_refutes_forged_witness() {
+        let ir = ir_from_source(VALID_SAVANT);
+        let mut proof = super::generate::generate_savant_soundness_proofs(&ir, "test").remove(0);
+        // Tamper: claim a budget bound the artifact does not carry.
+        if let Witness::SavantSoundness(ref mut w) = proof.witness {
+            w.max_iterations = 999_999;
+        }
+        assert!(matches!(
+            check_proof(&proof, &ir),
+            CheckOutcome::Refuted { .. }
+        ));
+    }
+
     #[test]
     fn budgetless_daemon_carries_no_effect_budgeted_proof() {
         let ir = ir_from_source(

@@ -609,6 +609,22 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         summary: "A flow-body block that lifts a continuous carrier tensor into a finite Hilbert space, evolves it, and yields the expectation of a declared observable (the cognitive↔quantum bridge; OSS simulator capped at n≤10).",
         doc_status: DocStatus::Documented,
     },
+    PrimitiveInfo {
+        name: "savant",
+        category: "operators",
+        top_level: true,
+        since: "Fase 87",
+        summary: "The long-horizon autonomous research primitive — a governed ORCHESTRATOR that composes memory/corpus, budget, quant, forge and daemon into a budget-bounded, interruptible, fail-closed, provenance-witnessed research loop. Enterprise-exclusive at scale; the keyword + type discipline + PCC live in OSS.",
+        doc_status: DocStatus::Documented,
+    },
+    PrimitiveInfo {
+        name: "synth",
+        category: "operators",
+        top_level: true,
+        since: "Fase 87",
+        summary: "A dynamic tool-synthesis policy — the safety envelope (risk ceiling, source language, mandatory WASM zero-trust sandbox, Coder/Reviewer consensus) under which a savant may synthesise and run a tool at runtime. OSS disciplines the policy and ships a deny-by-default backend; the Extism executor is enterprise.",
+        doc_status: DocStatus::Documented,
+    },
     // §Fase 6.d — `logic` was registered in 6.a as an operators
     // primitive but has NO parser production (the lexer recognises
     // the `logic` keyword token; no `parse_logic` exists; the
@@ -716,9 +732,11 @@ mod tests {
         // policy) → 56→57.
         // §Fase 85 added `cache` (the named, referenced result-memoization
         // policy) → 57→58.
+        // §Fase 87 added `savant` (the long-horizon autonomous research
+        // primitive) + `synth` (the dynamic tool-synthesis policy) → 58→60.
         assert_eq!(
             PRIMITIVE_REGISTRY.len(),
-            58,
+            60,
             "PRIMITIVE_REGISTRY count drift — add/remove the primitive intentionally + update this assertion"
         );
     }
@@ -817,6 +835,9 @@ mod tests {
             "cors",
             // §Fase 85 — the named, referenced result-memoization policy.
             "cache",
+            // §Fase 87 — the long-horizon autonomous research primitive + its
+            // dynamic tool-synthesis policy.
+            "savant", "synth",
         ]
         .into_iter()
         .collect();
@@ -838,13 +859,14 @@ mod tests {
         // §Fase 80.b: 54 → 55 with `upstream`; §80.g: 55 → 56 with `voice`.
         // §Fase 83: 56 → 57 with `cors`.
         // §Fase 85: 57 → 58 with `cache`.
-        assert_eq!(s.total, 58);
+        // §Fase 87: 58 → 60 with `savant` + `synth`.
+        assert_eq!(s.total, 60);
         assert_eq!(s.documented + s.pending, s.total);
         // §Fase 6.d achieves **100% coverage** — every entry in the
         // registry has a `.md` and a passing drift-gated canonical
         // program. Pending count is 0; any future drop is a
         // regression the gate catches.
-        assert_eq!(s.documented, 58);
+        assert_eq!(s.documented, 60);
         assert_eq!(s.pending, 0);
     }
 
