@@ -47,4 +47,8 @@ axonendpoint ReviewAPI {
     backend: auto
     retries: 1
     timeout: 10s
+    // Every endpoint is a trust boundary (axon://logic/every_boundary_is_guarded):
+    // declare a covering discipline (`requires:` / `shield:` / `compliance:`) OR
+    // the explicit opt-out `public: true`, else `axon check` fails (axon-T890).
+    public:  true
 }

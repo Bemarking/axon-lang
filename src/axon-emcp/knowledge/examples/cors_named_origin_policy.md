@@ -46,4 +46,8 @@ axonendpoint ReviewAPI {
     execute: Review
     output:  FlowEnvelope<ReviewOutput>
     cors:    PublicWebCors
+    // `cors:` is a browser-origin policy, NOT authorization coverage — this
+    // endpoint still needs a covering discipline or `public: true`
+    // (axon://logic/every_boundary_is_guarded).
+    public:  true
 }

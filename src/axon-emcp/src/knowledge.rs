@@ -1369,6 +1369,8 @@ Body prose.
             (ReferenceKind::Logic, "open_data_is_total"),
             // §Fase 74 — a channel's declared delivery is enforced or flagged.
             (ReferenceKind::Logic, "delivery_is_a_kept_promise"),
+            // §Fase 89 — every dispatching boundary is covered or explicitly public.
+            (ReferenceKind::Logic, "every_boundary_is_guarded"),
             (ReferenceKind::Compliance, "hipaa"),
             (ReferenceKind::Compliance, "gdpr"),
             (ReferenceKind::Compliance, "pci_dss"),
@@ -1412,7 +1414,7 @@ Body prose.
         );
         assert_eq!(
             cat.reference_count_of(ReferenceKind::Logic),
-            10,
+            11,
             "logic family count drift"
         );
         assert_eq!(

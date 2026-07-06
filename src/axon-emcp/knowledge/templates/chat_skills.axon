@@ -115,5 +115,5 @@ axonendpoint ChatSkillsAPI {
     output:    FlowEnvelope<RoutedAnswer>
     backend:   auto
     retries:   1
-    timeout:   30s
+    timeout:   30s public: true
 }

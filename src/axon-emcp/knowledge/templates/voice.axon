@@ -94,5 +94,5 @@ axonendpoint VoiceCallAPI {
     backend:   auto
     transport: sse(axon)
     retries:   0
-    timeout:   60s
+    timeout:   60s public: true
 }

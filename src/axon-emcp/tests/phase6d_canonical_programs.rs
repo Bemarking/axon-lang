@@ -85,6 +85,7 @@ axpoint EchoAPI {
     execute:  Echo
     output:   FlowEnvelope<EchoResponse>
     backend:  auto
+    public:   true
 }
 "#;
     must_compile("axpoint/canonical", src);

@@ -81,5 +81,5 @@ axonendpoint ChatToolsAPI {
     backend:   auto
     transport: sse(axon)
     retries:   0
-    timeout:   90s
+    timeout:   90s public: true
 }

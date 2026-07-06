@@ -85,5 +85,5 @@ axonendpoint DevAPI {
     backend:   auto
     transport: sse(axon)
     retries:   0
-    timeout:   120s
+    timeout:   120s public: true
 }

@@ -53,4 +53,5 @@ axonendpoint ChatAPI {
     transport: sse(axon)
     retries:   0
     timeout:   60s
+    public:    true  // authorization-coverage opt-out (every_boundary_is_guarded)
 }
