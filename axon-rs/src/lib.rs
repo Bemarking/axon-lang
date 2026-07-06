@@ -365,6 +365,13 @@ pub mod forge;
 // (circular-convolution binding via a self-contained radix-2 FFT), the
 // `savant` long-horizon memory-compression layer (paper §5).
 pub mod holograph;
+// §Fase 87.f — the remaining `savant` runtime ports + OSS reference impls:
+// `inference` (classical VFE/EFE active inference, no advantage claim),
+// `topology` (Vietoris–Rips β₀/β₁ + PHC-proxy centrality), and `synth`
+// (deny-by-default dynamic tool synthesis — the Extism executor is enterprise).
+pub mod inference;
+pub mod synth;
+pub mod topology;
 pub mod tool_validator;
 pub mod trace_export;
 pub mod trace_store;
