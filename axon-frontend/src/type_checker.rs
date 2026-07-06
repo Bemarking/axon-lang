@@ -1389,6 +1389,17 @@ impl<'a> TypeChecker<'a> {
                 Declaration::Cache(n) => {
                     registrations.push((n.name.clone(), "cache".into(), n.loc.line, n.loc.clone()));
                 }
+                // §Fase 87.a — register the savant so a future cross-reference
+                // (and duplicate-name detection) resolves it. Field validation
+                // is §87.b (`check_savant`).
+                Declaration::Savant(n) => {
+                    registrations.push((
+                        n.name.clone(),
+                        "savant".into(),
+                        n.loc.line,
+                        n.loc.clone(),
+                    ));
+                }
                 // §Fase 51.c.2 — register the Pauli-sum observable so a
                 // `quant(observable: <Name>)` reference resolves to it.
                 Declaration::Observable(n) => {
@@ -1586,6 +1597,10 @@ impl<'a> TypeChecker<'a> {
                 Declaration::Voice(n) => self.check_voice(n),
                 Declaration::Cors(n) => self.check_cors(n),
                 Declaration::Cache(n) => self.check_cache(n),
+                // §Fase 87.a — surface only; `check_savant` (catalog + typed
+                // output + memory-ref/budget/interruptibility binding) lands in
+                // §87.b/c. Registered above so name resolution already works.
+                Declaration::Savant(_) => {}
                 Declaration::Observable(n) => self.check_observable(n),
                 Declaration::Witness(n) => self.check_witness(n),
                 Declaration::Immune(n) => self.check_immune(n),

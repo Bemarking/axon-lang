@@ -149,6 +149,15 @@ pub enum Declaration {
     /// `cors`'s shape), resolved per `tool.cache:` / `retrieve.cache:`
     /// (docs/fase/fase_85_native_cache_primitive.md).
     Cache(CacheDefinition),
+    /// §Fase 87.a — the long-horizon autonomous research primitive: a governed
+    /// ORCHESTRATOR (not a monolith) that composes existing primitives
+    /// (`memory`/`corpus`, `par`, `quant`, `forge`, `daemon`, the §72 budget,
+    /// the §79 interruptible session, the §77 signed egress) into a
+    /// budget-bounded, interruptible, fail-closed, provenance-witnessed
+    /// research loop. Enterprise-exclusive at scale (charter split R1); the
+    /// keyword + type discipline + ports live in OSS
+    /// (docs/fase/fase_87_savant.md).
+    Savant(SavantDefinition),
     /// §Fase 51.c.2 — a Pauli-sum observable `M = Σ cₖ Pₖ` that a `quant`
     /// block measures against (paper §3.2; plan D5).
     Observable(ObservableDefinition),
@@ -644,6 +653,113 @@ pub struct CacheDefinition {
     pub leading_trivia: Vec<crate::tokens::Trivia>,
     /// Fase 14.b — trailing comment trivia.
     pub trailing_trivia: Vec<crate::tokens::Trivia>,
+}
+
+/// §Fase 87.a — `savant <Name> { domain:, cognition{…}, memory{…}, budget{…},
+/// mandate <M> {…} … }` — the long-horizon autonomous research primitive.
+///
+/// A `savant` is a declarative ORCHESTRATOR, not a new engine: it composes the
+/// primitives Axon already ships (memory/corpus retention, `par` swarms, the
+/// `quant` Hilbert substrate, `forge` novelty synthesis, the `daemon` host, the
+/// §72 linear budget, the §79 interruptible session, the §77 signed egress)
+/// into a single governed research loop. The paper's vision (docs/papers/
+/// paper_primitiva_savant.md) grounded to real primitives in its §9.
+///
+/// §87.a parses the FULL block surface; the semantics land incrementally:
+/// param-catalog + typed-output validation is §87.b (checker), memory-ref
+/// resolution + §72 budget binding + §79 interruptibility is §87.c, and the
+/// `SavantSoundness` PCC proof is §87.g. **Unknown fields are a hard parse
+/// error** (the §83 D83.7 discipline, as `cache`/`cors`): a savant governs an
+/// expensive, risk-bearing autonomous process, so a typo'd field can never
+/// silently mean "no policy."
+#[derive(Debug, Default)]
+pub struct SavantDefinition {
+    pub name: String,
+    /// `domain: "…"` — the ontological scope of the generative boundary (the
+    /// research topic the free-energy loop minimises surprise over). Required
+    /// (§87.b `axon-T873`); empty until parsed.
+    pub domain: String,
+    /// `cognition { … }` — the epistemic parameters of the active-inference
+    /// engine (depth / entropic threshold / divergence). `None` ⇒ engine
+    /// defaults (§87.b supplies a catalog-checked default).
+    pub cognition: Option<SavantCognition>,
+    /// `memory { … }` — the retention layer. `backend` resolves to a declared
+    /// `memory`/`corpus` primitive in §87.c (`axon-T875`); `None` ⇒ ephemeral.
+    pub memory: Option<SavantMemory>,
+    /// `budget { … }` — the compute ceiling. Bound to a §72 linear budget
+    /// (`RateLease`) in §87.c so `max_iterations` is a TYPE-enforced ceiling,
+    /// not a hope. `None` ⇒ §87.c rejects (a weeks-long autonomous loop with no
+    /// budget is uninsurable).
+    pub budget: Option<SavantBudget>,
+    /// `mandate <Name> { objective:, output: }` — one or more epistemic
+    /// mandates the savant autonomously decomposes into tasks. At least one
+    /// required (§87.b `axon-T874`).
+    pub mandates: Vec<SavantMandate>,
+    pub loc: Loc,
+    /// Fase 14.b — leading comment trivia.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
+}
+
+/// §Fase 87.a — the `cognition { … }` sub-block of a [`SavantDefinition`]: the
+/// active-inference engine's epistemic parameters (paper §3, §7.1).
+#[derive(Debug, Default)]
+pub struct SavantCognition {
+    /// `depth: standard | deep | hyper` — the HRR dimensionality tier of the
+    /// holographic memory codec. Closed catalog (§87.b `axon-T876`).
+    pub depth: String,
+    /// `entropic_threshold: <float>` — the Expected-Free-Energy convergence
+    /// bound: the loop halts synthesis when no policy reduces EFE below this.
+    /// Must be `> 0` (§87.b). `None` ⇒ engine default.
+    pub entropic_threshold: Option<f64>,
+    /// `divergence: low | med | high` — how aggressively the loop explores
+    /// epistemic (β₂) voids vs. exploiting known structure. Closed catalog.
+    pub divergence: String,
+    pub loc: Loc,
+}
+
+/// §Fase 87.a — the `memory { … }` sub-block of a [`SavantDefinition`]: the
+/// durable retention layer, composed from existing `memory`/`corpus` primitives.
+#[derive(Debug, Default)]
+pub struct SavantMemory {
+    /// `backend: <Name>` — a reference to a declared `memory` or `corpus`
+    /// primitive (resolved in §87.c `axon-T875`). Empty ⇒ ephemeral memory.
+    pub backend: String,
+    /// `corpus_graph: <bool>` — whether to iteratively index the ingested
+    /// corpus as a simplicial-complex graph for the topological (β_n) reading.
+    pub corpus_graph: bool,
+    /// `isolation_level: strict | …` — per-tenant tensor partitioning. The
+    /// enterprise engine enforces it; OSS records it. Empty ⇒ default.
+    pub isolation_level: String,
+    pub loc: Loc,
+}
+
+/// §Fase 87.a — the `budget { … }` sub-block of a [`SavantDefinition`]: the
+/// compute ceiling, bound to a §72 linear budget in §87.c.
+#[derive(Debug, Default)]
+pub struct SavantBudget {
+    /// `max_iterations: <int>` — the hard ceiling on FEP-loop iterations before
+    /// the savant pauses (the paper's `compute_budget`). `> 0` (§87.b).
+    pub max_iterations: Option<i64>,
+    /// `max_tool_synth: <int>` — the hard ceiling on `synth` (§87.d) dynamic
+    /// tool-creation events per mandate. `None` ⇒ 0 (no synthesis).
+    pub max_tool_synth: Option<i64>,
+    pub loc: Loc,
+}
+
+/// §Fase 87.a — a `mandate <Name> { objective:, output: }` sub-block of a
+/// [`SavantDefinition`]: one epistemic research goal the savant pursues.
+#[derive(Debug, Default)]
+pub struct SavantMandate {
+    pub name: String,
+    /// `objective: "…"` — the natural-language research goal. Required
+    /// (non-empty, §87.b `axon-T874`).
+    pub objective: String,
+    /// `output: <Type>` — the declared type the final report must inhabit
+    /// (resolved to a declared `type` in §87.b). Required.
+    pub output_type: String,
+    pub loc: Loc,
 }
 
 /// `reconnect: { backoff_ms: 500, max_attempts: 5, on_exhausted: fail }` —

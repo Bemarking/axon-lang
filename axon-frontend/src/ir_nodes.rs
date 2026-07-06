@@ -124,6 +124,13 @@ pub struct IRProgram {
     /// `skip_serializing_if = empty` IR-SHA discipline as `cors_policies`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub caches: Vec<IRCache>,
+    /// §Fase 87.a — long-horizon autonomous research primitives (compiled). Each
+    /// carries its domain, cognition params, memory binding, compute budget and
+    /// mandates so the enterprise engine (§87.h+) can drive the active-inference
+    /// loop. Same `skip_serializing_if = empty` IR-SHA discipline as `caches`
+    /// (a savant-less program's IR JSON stays byte-identical — zero drift).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub savants: Vec<IRSavant>,
     /// §Fase 23 — algebraic effect declarations (compiled).
     /// Each declared effect persists into IR so axon-rs can build the
     /// per-effect operation table at startup. The CPS state graph for
@@ -195,6 +202,7 @@ impl IRProgram {
             upstreams: Vec::new(),
             cors_policies: Vec::new(),
             caches: Vec::new(),
+            savants: Vec::new(),
             effects: Vec::new(),
         }
     }
@@ -1806,6 +1814,74 @@ pub struct IRDaemon {
     /// requires-less daemon's JSON byte-identical (D8).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub requires_capabilities: Vec<String>,
+}
+
+// ── §Fase 87 — the long-horizon autonomous research primitive ────────────────
+
+/// §Fase 87.a — a compiled `savant` (long-horizon autonomous research
+/// primitive). A governed orchestrator: the IR carries the declared surface so
+/// the enterprise active-inference engine (§87.h+) can drive the FEP loop, and
+/// the §87.c checker can bind `memory` to a declared store, `budget` to a §72
+/// linear budget, and the body to a §79 interruptible session.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRSavant {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub name: String,
+    pub domain: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cognition: Option<IRSavantCognition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<IRSavantMemory>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<IRSavantBudget>,
+    pub mandates: Vec<IRSavantMandate>,
+}
+
+/// §Fase 87.a — the compiled `cognition { … }` sub-block (active-inference
+/// engine parameters).
+#[derive(Debug, Clone, Serialize)]
+pub struct IRSavantCognition {
+    /// `standard | deep | hyper` — HRR dimensionality tier (validated §87.b).
+    pub depth: String,
+    /// Expected-Free-Energy convergence bound (`> 0`, §87.b). `None` ⇒ default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entropic_threshold: Option<f64>,
+    /// `low | med | high` — explore/exploit balance (validated §87.b).
+    pub divergence: String,
+}
+
+/// §Fase 87.a — the compiled `memory { … }` sub-block (retention binding).
+#[derive(Debug, Clone, Serialize)]
+pub struct IRSavantMemory {
+    /// A declared `memory`/`corpus` name (resolved §87.c). Empty ⇒ ephemeral.
+    pub backend: String,
+    /// Whether to index the corpus as a simplicial-complex graph (topological
+    /// β_n reading).
+    pub corpus_graph: bool,
+    /// Per-tenant tensor partitioning level (enforced by the enterprise engine).
+    pub isolation_level: String,
+}
+
+/// §Fase 87.a — the compiled `budget { … }` sub-block (compute ceiling, bound to
+/// a §72 linear budget in §87.c).
+#[derive(Debug, Clone, Serialize)]
+pub struct IRSavantBudget {
+    /// Hard ceiling on FEP-loop iterations before the savant pauses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_iterations: Option<i64>,
+    /// Hard ceiling on `synth` (§87.d) tool-creation events per mandate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tool_synth: Option<i64>,
+}
+
+/// §Fase 87.a — a compiled `mandate <Name> { … }` sub-block (one research goal).
+#[derive(Debug, Clone, Serialize)]
+pub struct IRSavantMandate {
+    pub name: String,
+    pub objective: String,
+    pub output_type: String,
 }
 
 // ── §Fase 53 — Closed-catalog extension mechanism ────────────────────────────

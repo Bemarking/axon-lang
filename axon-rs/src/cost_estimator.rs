@@ -550,6 +550,7 @@ mod tests {
             upstreams: vec![],
             cors_policies: vec![],
             caches: vec![],
+            savants: vec![],
             effects: vec![],
         };
 
@@ -623,6 +624,7 @@ mod tests {
             upstreams: vec![],
             cors_policies: vec![],
             caches: vec![],
+            savants: vec![],
             effects: vec![],
         };
 
@@ -698,6 +700,7 @@ mod tests {
             upstreams: vec![],
             cors_policies: vec![],
             caches: vec![],
+            savants: vec![],
             effects: vec![],
         };
 

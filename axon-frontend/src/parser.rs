@@ -242,6 +242,10 @@ fn attach_trivia_to_decl(decl: &mut Declaration, leading: Vec<Trivia>, trailing:
             n.leading_trivia = leading;
             n.trailing_trivia = trailing;
         }
+        Declaration::Savant(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
         Declaration::Observable(n) => {
             n.leading_trivia = leading;
             n.trailing_trivia = trailing;
@@ -485,6 +489,8 @@ const fn is_top_level_decl_kw_for_recovery(tt: &TokenType) -> bool {
             | TokenType::Mandate
             | TokenType::Compute
             | TokenType::Daemon
+            // §Fase 87.a — the long-horizon autonomous research primitive.
+            | TokenType::Savant
             | TokenType::AxonStore
             | TokenType::AxonEndpoint
             | TokenType::Resource
@@ -2069,6 +2075,9 @@ impl Parser {
 
             // ── §Fase 85.a — the named result-memoization policy ─
             TokenType::Cache => self.parse_cache().map(Declaration::Cache),
+
+            // ── §Fase 87.a — the long-horizon autonomous research primitive ─
+            TokenType::Savant => self.parse_savant().map(Declaration::Savant),
 
             // ── §Fase 51.c.2 — Pauli-sum observable ────────────
             TokenType::Observable => self.parse_observable().map(Declaration::Observable),
@@ -6993,6 +7002,200 @@ impl Parser {
             }
             if self.check(TokenType::Comma) {
                 self.consume(TokenType::Comma)?;
+            }
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(node)
+    }
+
+    /// §Fase 87.a — parse `savant <Name> { domain:, cognition{…}, memory{…},
+    /// budget{…}, mandate <M> {…} … }`. The block surface only; catalog +
+    /// ref-resolution + budget/interruptibility binding is the §87.b/c checker's
+    /// job (the standing parse/check split). Unknown fields are a hard error
+    /// (D83.7): a savant governs an expensive autonomous process.
+    fn parse_savant(&mut self) -> Result<SavantDefinition, ParseError> {
+        let tok = self.consume(TokenType::Savant)?;
+        let name = self.consume(TokenType::Identifier)?.value;
+        let mut node = SavantDefinition {
+            name,
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+            ..Default::default()
+        };
+        self.consume(TokenType::LBrace)?;
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            let field = self.current().clone();
+            let field_name = field.value.clone();
+            self.advance();
+            if self.check(TokenType::Colon) {
+                self.advance();
+                match field_name.as_str() {
+                    "domain" => node.domain = self.consume(TokenType::StringLit)?.value,
+                    other => {
+                        return Err(self.error(&format!(
+                            "unknown savant field `{other}` in savant `{}` — expected \
+                             `domain:` or a `cognition` / `memory` / `budget` / `mandate` block",
+                            node.name
+                        )))
+                    }
+                }
+            } else if field_name == "cognition" {
+                node.cognition = Some(self.parse_savant_cognition(field.line, field.column)?);
+            } else if field_name == "memory" {
+                node.memory = Some(self.parse_savant_memory(field.line, field.column)?);
+            } else if field_name == "budget" {
+                node.budget = Some(self.parse_savant_budget(field.line, field.column)?);
+            } else if field_name == "mandate" {
+                node.mandates
+                    .push(self.parse_savant_mandate(field.line, field.column)?);
+            } else {
+                return Err(self.error(&format!(
+                    "unexpected `{field_name}` in savant `{}` body — expected `domain:` or a \
+                     `cognition` / `memory` / `budget` / `mandate` block",
+                    node.name
+                )));
+            }
+            if self.check(TokenType::Comma) {
+                self.advance();
+            }
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(node)
+    }
+
+    /// §Fase 87.a — the `cognition { depth:, entropic_threshold:, divergence: }`
+    /// sub-block. Catalog validation of `depth`/`divergence` is §87.b.
+    fn parse_savant_cognition(
+        &mut self,
+        line: u32,
+        column: u32,
+    ) -> Result<SavantCognition, ParseError> {
+        self.consume(TokenType::LBrace)?;
+        let mut node = SavantCognition {
+            loc: Loc { line, column },
+            ..Default::default()
+        };
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            let key = self.consume_any_ident_or_kw()?.value;
+            self.consume(TokenType::Colon)?;
+            match key.as_str() {
+                "depth" => node.depth = self.consume_any_ident_or_kw()?.value,
+                "entropic_threshold" => node.entropic_threshold = self.parse_optional_float(),
+                "divergence" => node.divergence = self.consume_any_ident_or_kw()?.value,
+                other => {
+                    return Err(self.error(&format!(
+                        "unknown savant `cognition` field `{other}` — expected \
+                         `depth` / `entropic_threshold` / `divergence`"
+                    )))
+                }
+            }
+            if self.check(TokenType::Comma) {
+                self.advance();
+            }
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(node)
+    }
+
+    /// §Fase 87.a — the `memory { backend:, corpus_graph:, isolation_level: }`
+    /// sub-block. `backend` is resolved to a declared `memory`/`corpus` in §87.c.
+    fn parse_savant_memory(
+        &mut self,
+        line: u32,
+        column: u32,
+    ) -> Result<SavantMemory, ParseError> {
+        self.consume(TokenType::LBrace)?;
+        let mut node = SavantMemory {
+            loc: Loc { line, column },
+            ..Default::default()
+        };
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            let key = self.consume_any_ident_or_kw()?.value;
+            self.consume(TokenType::Colon)?;
+            match key.as_str() {
+                "backend" => node.backend = self.consume_any_ident_or_kw()?.value,
+                "corpus_graph" => {
+                    node.corpus_graph = self.consume_any_ident_or_kw()?.value == "true"
+                }
+                "isolation_level" => node.isolation_level = self.consume_any_ident_or_kw()?.value,
+                other => {
+                    return Err(self.error(&format!(
+                        "unknown savant `memory` field `{other}` — expected \
+                         `backend` / `corpus_graph` / `isolation_level`"
+                    )))
+                }
+            }
+            if self.check(TokenType::Comma) {
+                self.advance();
+            }
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(node)
+    }
+
+    /// §Fase 87.a — the `budget { max_iterations:, max_tool_synth: }` sub-block.
+    /// Bound to a §72 linear budget (`RateLease`) in §87.c.
+    fn parse_savant_budget(
+        &mut self,
+        line: u32,
+        column: u32,
+    ) -> Result<SavantBudget, ParseError> {
+        self.consume(TokenType::LBrace)?;
+        let mut node = SavantBudget {
+            loc: Loc { line, column },
+            ..Default::default()
+        };
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            let key = self.consume_any_ident_or_kw()?.value;
+            self.consume(TokenType::Colon)?;
+            match key.as_str() {
+                "max_iterations" => node.max_iterations = self.parse_optional_int(),
+                "max_tool_synth" => node.max_tool_synth = self.parse_optional_int(),
+                other => {
+                    return Err(self.error(&format!(
+                        "unknown savant `budget` field `{other}` — expected \
+                         `max_iterations` / `max_tool_synth`"
+                    )))
+                }
+            }
+            if self.check(TokenType::Comma) {
+                self.advance();
+            }
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(node)
+    }
+
+    /// §Fase 87.a — the `mandate <Name> { objective:, output: }` sub-block. The
+    /// `mandate` keyword is already consumed by `parse_savant`.
+    fn parse_savant_mandate(
+        &mut self,
+        line: u32,
+        column: u32,
+    ) -> Result<SavantMandate, ParseError> {
+        let name = self.consume(TokenType::Identifier)?.value;
+        let mut node = SavantMandate {
+            name,
+            loc: Loc { line, column },
+            ..Default::default()
+        };
+        self.consume(TokenType::LBrace)?;
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            let key = self.consume_any_ident_or_kw()?.value;
+            self.consume(TokenType::Colon)?;
+            match key.as_str() {
+                "objective" => node.objective = self.consume(TokenType::StringLit)?.value,
+                "output" => node.output_type = self.consume_any_ident_or_kw()?.value,
+                other => {
+                    return Err(self.error(&format!(
+                        "unknown savant `mandate` field `{other}` — expected `objective` / `output`"
+                    )))
+                }
+            }
+            if self.check(TokenType::Comma) {
+                self.advance();
             }
         }
         self.consume(TokenType::RBrace)?;

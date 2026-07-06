@@ -299,6 +299,8 @@ impl IRGenerator {
             Declaration::Upstream(n) => ir.upstreams.push(self.visit_upstream(n)),
             Declaration::Cors(n) => ir.cors_policies.push(self.visit_cors(n)),
             Declaration::Cache(n) => ir.caches.push(self.visit_cache(n)),
+            // §Fase 87.a — lower the `savant` orchestrator into the IR.
+            Declaration::Savant(n) => ir.savants.push(self.visit_savant(n)),
             // §Fase 80.g — `voice` never reaches the IR: the parser already
             // expanded it into ordinary ots/session/socket/upstream
             // declarations (in this same program), and THOSE are the
@@ -1407,6 +1409,57 @@ impl IRGenerator {
             listeners: n.listeners.iter().map(|l| self.lower_listen(l)).collect(),
             // §Fase 52.d — the daemon's declared capability scope.
             requires_capabilities: n.requires_capabilities.clone(),
+        }
+    }
+
+    /// §Fase 87.a — lower a `savant` orchestrator (surface only; the checker
+    /// owns catalog/ref/budget validation).
+    fn visit_savant(&self, n: &SavantDefinition) -> IRSavant {
+        IRSavant {
+            node_type: "savant",
+            source_line: n.loc.line,
+            source_column: n.loc.column,
+            name: n.name.clone(),
+            domain: n.domain.clone(),
+            cognition: n.cognition.as_ref().map(Self::visit_savant_cognition),
+            memory: n.memory.as_ref().map(Self::visit_savant_memory),
+            budget: n.budget.as_ref().map(Self::visit_savant_budget),
+            mandates: n
+                .mandates
+                .iter()
+                .map(Self::visit_savant_mandate)
+                .collect(),
+        }
+    }
+
+    fn visit_savant_cognition(n: &SavantCognition) -> IRSavantCognition {
+        IRSavantCognition {
+            depth: n.depth.clone(),
+            entropic_threshold: n.entropic_threshold,
+            divergence: n.divergence.clone(),
+        }
+    }
+
+    fn visit_savant_memory(n: &SavantMemory) -> IRSavantMemory {
+        IRSavantMemory {
+            backend: n.backend.clone(),
+            corpus_graph: n.corpus_graph,
+            isolation_level: n.isolation_level.clone(),
+        }
+    }
+
+    fn visit_savant_budget(n: &SavantBudget) -> IRSavantBudget {
+        IRSavantBudget {
+            max_iterations: n.max_iterations,
+            max_tool_synth: n.max_tool_synth,
+        }
+    }
+
+    fn visit_savant_mandate(n: &SavantMandate) -> IRSavantMandate {
+        IRSavantMandate {
+            name: n.name.clone(),
+            objective: n.objective.clone(),
+            output_type: n.output_type.clone(),
         }
     }
 

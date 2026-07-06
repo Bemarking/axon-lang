@@ -122,6 +122,8 @@ pub enum TokenType {
     Daemon,
     Listen,
     BudgetPerEvent,
+    // §Fase 87 — the long-horizon autonomous research primitive (governed orchestrator).
+    Savant,
     // Compute
     Compute,
     Logic,
@@ -532,6 +534,8 @@ pub fn keyword_type(word: &str) -> TokenType {
         "cors" => TokenType::Cors,
         // `cache` (§Fase 85.a) — the named result-memoization policy.
         "cache" => TokenType::Cache,
+        // `savant` (§Fase 87.a) — long-horizon autonomous research primitive.
+        "savant" => TokenType::Savant,
         // `quant` as a cognitive primitive (§Fase 51.a) — flow-body block.
         "quant" => TokenType::Quant,
         // `observable` (§Fase 51.c.2) — top-level Pauli-sum declaration.
@@ -632,6 +636,8 @@ pub fn is_declaration_keyword(tt: &TokenType) -> bool {
             | TokenType::Cors
             // §Fase 85.a — the named result-memoization policy declaration
             | TokenType::Cache
+            // §Fase 87.a — the long-horizon autonomous research primitive
+            | TokenType::Savant
             // §Fase 51.c.2 — Pauli-sum observable declaration
             | TokenType::Observable
             // §Fase 69.a — Advantage-Witness declaration
