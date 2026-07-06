@@ -2056,6 +2056,61 @@ mod tests {
         ));
     }
 
+    // ── §88.e — WardenSoundness ──────────────────────────────────────────────
+
+    const VALID_WARDEN: &str = "scope InternalAudit {\n\
+           targets: [ \"svc://payments\" ]\n\
+           depth: static_artifact\n\
+           approver: requires \"security.lead\"\n\
+         }\n\
+         flow Audit() -> Unit {\n\
+           warden(payments) within InternalAudit { step S { ask: \"x\" output: Unit } }\n\
+         }";
+
+    #[test]
+    fn warden_soundness_round_trips_and_verifies() {
+        let ir = ir_from_source(VALID_WARDEN);
+        let proofs = super::generate::generate_warden_soundness_proofs(&ir, "test");
+        assert_eq!(proofs.len(), 1, "one proof per warden block");
+        assert_eq!(proofs[0].property, PropertyClass::WardenSoundness);
+        assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
+        assert!(
+            generate_all_proofs(&ir, "test")
+                .iter()
+                .any(|p| p.property == PropertyClass::WardenSoundness),
+            "generate_all_proofs must include the warden-soundness class"
+        );
+    }
+
+    #[test]
+    fn warden_soundness_refutes_undefined_scope() {
+        // Parses + lowers, but `within Ghost` resolves to no declared scope → the
+        // PCC checker REFUTES it (T887 — no authorization scope, no analysis).
+        let ir = ir_from_source(
+            "flow Audit() -> Unit { warden(t) within Ghost { step S { ask: \"x\" output: Unit } } }",
+        );
+        let proofs = super::generate::generate_warden_soundness_proofs(&ir, "test");
+        assert_eq!(proofs.len(), 1);
+        assert!(matches!(
+            check_proof(&proofs[0], &ir),
+            CheckOutcome::Refuted { .. }
+        ));
+    }
+
+    #[test]
+    fn warden_soundness_refutes_forged_witness() {
+        let ir = ir_from_source(VALID_WARDEN);
+        let mut proof = super::generate::generate_warden_soundness_proofs(&ir, "test").remove(0);
+        // Tamper: claim the scope resolves to a different name than the artifact.
+        if let Witness::WardenSoundness(ref mut w) = proof.witness {
+            w.approver_present = false;
+        }
+        assert!(matches!(
+            check_proof(&proof, &ir),
+            CheckOutcome::Refuted { .. }
+        ));
+    }
+
     #[test]
     fn budgetless_daemon_carries_no_effect_budgeted_proof() {
         let ir = ir_from_source(

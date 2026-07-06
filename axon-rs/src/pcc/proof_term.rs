@@ -264,6 +264,16 @@ pub enum PropertyClass {
     /// fail-open, so it gets a deploy-time re-derivation. (Interruptibility +
     /// provenance are enforced by the enterprise host, §87.k.)
     SavantSoundness,
+    /// §88.e — for each `warden` adversarial-analysis block, re-derives the
+    /// authorization invariants the §88.b/c type-checker proved: the mandatory
+    /// `within <Scope>` RESOLVES to a declared `scope` (T887), and that scope is
+    /// well-formed — a non-empty `targets` allowlist (T884), a catalog `depth`
+    /// (T885), and a named `approver` (T886). This certifies a stored/deployed
+    /// warden is STILL authorized — a security-analysis block whose stale proof
+    /// dropped its scope (or whose scope lost its approver) would be an
+    /// ungoverned offensive capability, so it gets a deploy-time re-derivation.
+    /// The target-in-allowlist + depth-ceiling enforcement is runtime (§88.h).
+    WardenSoundness,
 }
 
 /// §72.f — the closed period catalog for `budget` quotas. The checker's own
@@ -313,6 +323,7 @@ impl PropertyClass {
             PropertyClass::CacheSoundness => "cache_soundness",
             PropertyClass::ForgeSoundness => "forge_soundness",
             PropertyClass::SavantSoundness => "savant_soundness",
+            PropertyClass::WardenSoundness => "warden_soundness",
         }
     }
 }
@@ -894,6 +905,24 @@ pub struct SavantSoundnessWitness {
     pub memory_ref_ok: bool,
 }
 
+/// §88.e — witness for [`PropertyClass::WardenSoundness`], one per `warden`
+/// block. The checker RE-DERIVES every field from the IR (`flows` + `scopes`)
+/// and rejects on disagreement. A verifying proof has every `*_ok` flag true.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WardenSoundnessWitness {
+    pub warden_target: String,
+    pub flow_name: String,
+    pub scope_ref: String,
+    /// `within <Scope>` resolves to a declared `scope` (T887).
+    pub scope_resolves: bool,
+    /// The resolved scope's `targets` allowlist is non-empty (T884).
+    pub targets_nonempty: bool,
+    /// The resolved scope's `depth` is empty or in the closed catalog (T885).
+    pub depth_ok: bool,
+    /// The resolved scope names an `approver` (T886).
+    pub approver_present: bool,
+}
+
 /// The property-specific witness. Tagged so the JSON is self-describing
 /// + a future class adds a variant without ambiguity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -919,6 +948,7 @@ pub enum Witness {
     CacheSoundness(CacheSoundnessWitness),
     ForgeSoundness(ForgeSoundnessWitness),
     SavantSoundness(SavantSoundnessWitness),
+    WardenSoundness(WardenSoundnessWitness),
 }
 
 impl Witness {
@@ -955,6 +985,7 @@ impl Witness {
             Witness::CacheSoundness(_) => "<program>",
             Witness::ForgeSoundness(w) => &w.forge_name,
             Witness::SavantSoundness(w) => &w.savant_name,
+            Witness::WardenSoundness(w) => &w.warden_target,
         }
     }
 }

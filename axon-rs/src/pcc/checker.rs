@@ -135,6 +135,9 @@ pub fn check_proof(proof: &ProofTerm, ir: &IRProgram) -> CheckOutcome {
         (PropertyClass::SavantSoundness, Witness::SavantSoundness(w)) => {
             check_savant_soundness(w, ir)
         }
+        (PropertyClass::WardenSoundness, Witness::WardenSoundness(w)) => {
+            check_warden_soundness(w, ir)
+        }
         _ => CheckOutcome::UnknownProperty,
     }
 }
@@ -1200,6 +1203,76 @@ fn check_savant_soundness(
                 "axon-T875 savant '{}' `memory.backend` does not resolve to a memory/corpus",
                 actual.savant_name
             ),
+        };
+    }
+    CheckOutcome::Verified
+}
+
+/// §88.e — independent checker for [`PropertyClass::WardenSoundness`]. Finds the
+/// warden block by (flow, target, scope), re-derives its witness, and rejects a
+/// forged/stale proof or any authorization violation (T887/T884/T885/T886).
+fn check_warden_soundness(
+    claimed: &super::proof_term::WardenSoundnessWitness,
+    ir: &IRProgram,
+) -> CheckOutcome {
+    // Locate the warden block the witness claims.
+    let mut found = None;
+    for flow in &ir.flows {
+        if flow.name != claimed.flow_name {
+            continue;
+        }
+        let mut wardens = Vec::new();
+        super::generate::__collect_warden_for_check(&flow.steps, &mut wardens);
+        if let Some(w) = wardens
+            .into_iter()
+            .find(|w| w.target == claimed.warden_target && w.scope_ref == claimed.scope_ref)
+        {
+            found = Some(w);
+            break;
+        }
+    }
+    let warden = match found {
+        Some(w) => w,
+        None => {
+            return CheckOutcome::Refuted {
+                reason: format!(
+                    "no warden '{}' within '{}' in flow '{}' — forged or stale proof",
+                    claimed.warden_target, claimed.scope_ref, claimed.flow_name
+                ),
+            }
+        }
+    };
+    let actual = super::generate::derive_warden_soundness_witness(&claimed.flow_name, warden, ir);
+    if actual != *claimed {
+        return CheckOutcome::Refuted {
+            reason: "witness disagrees with artifact re-derivation (forged or stale proof)"
+                .to_string(),
+        };
+    }
+    if !actual.scope_resolves {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axon-T887 warden '{}' `within {}` does not resolve to a declared scope",
+                actual.warden_target, actual.scope_ref
+            ),
+        };
+    }
+    if !actual.targets_nonempty {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axon-T884 scope '{}' has an empty `targets` allowlist",
+                actual.scope_ref
+            ),
+        };
+    }
+    if !actual.depth_ok {
+        return CheckOutcome::Refuted {
+            reason: format!("axon-T885 scope '{}' has an out-of-catalog depth", actual.scope_ref),
+        };
+    }
+    if !actual.approver_present {
+        return CheckOutcome::Refuted {
+            reason: format!("axon-T886 scope '{}' names no approver", actual.scope_ref),
         };
     }
     CheckOutcome::Verified

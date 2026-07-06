@@ -625,6 +625,22 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         summary: "A dynamic tool-synthesis policy — the safety envelope (risk ceiling, source language, mandatory WASM zero-trust sandbox, Coder/Reviewer consensus) under which a savant may synthesise and run a tool at runtime. OSS disciplines the policy and ships a deny-by-default backend; the Extism executor is enterprise.",
         doc_status: DocStatus::Documented,
     },
+    PrimitiveInfo {
+        name: "warden",
+        category: "operators",
+        top_level: false,
+        since: "Fase 88",
+        summary: "An adversarial security-analysis flow-body block — `warden(<target>) within <Scope>` audits a target under a paraconsistent adversarial framing (abduction over authorized evidence), emitting attested `Vulnerability` findings (a witness, not LLM prose). Authorization-native: the `within <Scope>` clause is mandatory (fail-closed). The active auditor of a TARGET, distinct from `shield` (the passive I/O firewall of the AGENT).",
+        doc_status: DocStatus::Documented,
+    },
+    PrimitiveInfo {
+        name: "scope",
+        category: "operators",
+        top_level: true,
+        since: "Fase 88",
+        summary: "A named authorization scope — the signed envelope (`targets` allowlist + `depth` ceiling + `approver`) a `warden` analysis MUST run `within`. The load-bearing safety construct that makes adversarial analysis a governed, auditable, fail-closed capability rather than an unscoped weapon.",
+        doc_status: DocStatus::Documented,
+    },
     // §Fase 6.d — `logic` was registered in 6.a as an operators
     // primitive but has NO parser production (the lexer recognises
     // the `logic` keyword token; no `parse_logic` exists; the
@@ -734,9 +750,11 @@ mod tests {
         // policy) → 57→58.
         // §Fase 87 added `savant` (the long-horizon autonomous research
         // primitive) + `synth` (the dynamic tool-synthesis policy) → 58→60.
+        // §Fase 88 added `warden` (the adversarial security-analysis block) +
+        // `scope` (the authorization-scope policy) → 60→62.
         assert_eq!(
             PRIMITIVE_REGISTRY.len(),
-            60,
+            62,
             "PRIMITIVE_REGISTRY count drift — add/remove the primitive intentionally + update this assertion"
         );
     }
@@ -838,6 +856,9 @@ mod tests {
             // §Fase 87 — the long-horizon autonomous research primitive + its
             // dynamic tool-synthesis policy.
             "savant", "synth",
+            // §Fase 88 — the adversarial security-analysis block + its
+            // authorization-scope policy.
+            "warden", "scope",
         ]
         .into_iter()
         .collect();
@@ -860,13 +881,14 @@ mod tests {
         // §Fase 83: 56 → 57 with `cors`.
         // §Fase 85: 57 → 58 with `cache`.
         // §Fase 87: 58 → 60 with `savant` + `synth`.
-        assert_eq!(s.total, 60);
+        // §Fase 88: 60 → 62 with `warden` + `scope`.
+        assert_eq!(s.total, 62);
         assert_eq!(s.documented + s.pending, s.total);
         // §Fase 6.d achieves **100% coverage** — every entry in the
         // registry has a `.md` and a passing drift-gated canonical
         // program. Pending count is 0; any future drop is a
         // regression the gate catches.
-        assert_eq!(s.documented, 60);
+        assert_eq!(s.documented, 62);
         assert_eq!(s.pending, 0);
     }
 

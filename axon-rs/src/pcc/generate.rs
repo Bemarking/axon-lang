@@ -22,6 +22,7 @@ use super::proof_term::{
     EffectRowSoundnessWitness, InterruptibleSessionSoundnessWitness, JsonShapeSoundnessWitness,
     ParkedResidualSoundnessWitness, ProofTerm, PropertyClass,
     CacheSoundnessWitness, ForgeSoundnessWitness, ResourceBoundsWitness, SavantSoundnessWitness,
+    WardenSoundnessWitness,
     ShieldHaltGuaranteeWitness, TechnicianCommandSafetyWitness, ToolCallSoundnessWitness,
     UpstreamProjectionSoundnessWitness, Witness,
     CALL_INTERRUPT_CAUSES, MAX_RETRIES, VALID_BREACH_POLICIES, VALID_BUDGET_PERIODS,
@@ -2119,6 +2120,101 @@ pub fn generate_savant_soundness_proofs(ir: &IRProgram, axon_version: &str) -> V
         .collect()
 }
 
+// ── §Fase 88.e — WardenSoundness ─────────────────────────────────────────────
+
+const SCOPE_DEPTHS: &[&str] = &["static_artifact", "memory_dump", "live_network"];
+
+/// Recursively collect `(flow_name, &IRWarden)` from a flow's step tree (warden
+/// blocks can nest inside `if`/`for`/`quant` and other warden bodies).
+fn collect_warden_blocks<'a>(
+    steps: &'a [axon_frontend::ir_nodes::IRFlowNode],
+    flow_name: &str,
+    out: &mut Vec<(String, &'a axon_frontend::ir_nodes::IRWarden)>,
+) {
+    use axon_frontend::ir_nodes::IRFlowNode;
+    for step in steps {
+        match step {
+            IRFlowNode::Warden(w) => {
+                out.push((flow_name.to_string(), w));
+                collect_warden_blocks(&w.body, flow_name, out);
+            }
+            IRFlowNode::Conditional(c) => {
+                collect_warden_blocks(&c.then_body, flow_name, out);
+                collect_warden_blocks(&c.else_body, flow_name, out);
+            }
+            IRFlowNode::ForIn(f) => collect_warden_blocks(&f.body, flow_name, out),
+            IRFlowNode::Quant(q) => collect_warden_blocks(&q.body, flow_name, out),
+            _ => {}
+        }
+    }
+}
+
+/// §88.e — collect `&IRWarden` from a step tree (checker helper; recurses into
+/// `if`/`for`/`quant`/warden bodies).
+pub(crate) fn __collect_warden_for_check<'a>(
+    steps: &'a [axon_frontend::ir_nodes::IRFlowNode],
+    out: &mut Vec<&'a axon_frontend::ir_nodes::IRWarden>,
+) {
+    use axon_frontend::ir_nodes::IRFlowNode;
+    for step in steps {
+        match step {
+            IRFlowNode::Warden(w) => {
+                out.push(w);
+                __collect_warden_for_check(&w.body, out);
+            }
+            IRFlowNode::Conditional(c) => {
+                __collect_warden_for_check(&c.then_body, out);
+                __collect_warden_for_check(&c.else_body, out);
+            }
+            IRFlowNode::ForIn(f) => __collect_warden_for_check(&f.body, out),
+            IRFlowNode::Quant(q) => __collect_warden_for_check(&q.body, out),
+            _ => {}
+        }
+    }
+}
+
+/// §88.e — re-derive one warden block's authorization-soundness witness against
+/// the IR (`scopes`). The single source of truth reused by the prover + the
+/// verifier (`check_warden_soundness`), so a forged/stale proof is caught by
+/// re-derivation.
+pub fn derive_warden_soundness_witness(
+    flow_name: &str,
+    warden: &axon_frontend::ir_nodes::IRWarden,
+    ir: &IRProgram,
+) -> WardenSoundnessWitness {
+    let scope = ir.scopes.iter().find(|s| s.name == warden.scope_ref);
+    WardenSoundnessWitness {
+        warden_target: warden.target.clone(),
+        flow_name: flow_name.to_string(),
+        scope_ref: warden.scope_ref.clone(),
+        scope_resolves: scope.is_some(),
+        targets_nonempty: scope.is_some_and(|s| !s.targets.is_empty()),
+        depth_ok: scope
+            .is_some_and(|s| s.depth.is_empty() || SCOPE_DEPTHS.contains(&s.depth.as_str())),
+        approver_present: scope.is_some_and(|s| !s.approver.trim().is_empty()),
+    }
+}
+
+/// §88.e — one WardenSoundness proof per `warden` block in the program.
+pub fn generate_warden_soundness_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm> {
+    let digest = artifact_digest(ir);
+    let mut wardens = Vec::new();
+    for flow in &ir.flows {
+        collect_warden_blocks(&flow.steps, &flow.name, &mut wardens);
+    }
+    wardens
+        .into_iter()
+        .map(|(flow_name, warden)| ProofTerm {
+            property: PropertyClass::WardenSoundness,
+            artifact_digest: digest.clone(),
+            witness: Witness::WardenSoundness(derive_warden_soundness_witness(
+                &flow_name, warden, ir,
+            )),
+            axon_version: axon_version.to_string(),
+        })
+        .collect()
+}
+
 /// §51.f — generate proofs across ALL property classes for `ir`. The
 /// `axon pcc prove` entry point. Concatenates every per-class
 /// generator (compliance / effects / capability-gate / resources /
@@ -2147,5 +2243,6 @@ pub fn generate_all_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm>
     proofs.extend(generate_cache_soundness_proofs(ir, axon_version));
     proofs.extend(generate_forge_soundness_proofs(ir, axon_version));
     proofs.extend(generate_savant_soundness_proofs(ir, axon_version));
+    proofs.extend(generate_warden_soundness_proofs(ir, axon_version));
     proofs
 }

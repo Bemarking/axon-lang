@@ -1244,7 +1244,8 @@ Body prose.
         // §Fase 83: 56 → 57 with `cors` (the named browser-origin policy).
         // §Fase 85: 57 → 58 with `cache` (the result-memoization policy).
         // §Fase 87: 58 → 60 with `savant` + `synth`.
-        assert_eq!(s.total, 60);
+        // §Fase 88: 60 → 62 with `warden` + `scope`.
+        assert_eq!(s.total, 62);
     }
 
     /// §Phase 5 — every MCP prompt shipped under
