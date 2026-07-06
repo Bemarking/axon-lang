@@ -16,10 +16,24 @@
 use axon_frontend::ir_generator::IRGenerator;
 use axon_frontend::lexer::Lexer;
 use axon_frontend::parser::{ParseError, Parser};
+use axon_frontend::type_checker::TypeChecker;
 
 fn parse(src: &str) -> axon_frontend::ast::Program {
     let tokens = Lexer::new(src, "<test>").tokenize().expect("lex");
     Parser::new(tokens).parse().expect("parse")
+}
+
+fn check_errors(src: &str) -> Vec<String> {
+    let prog = parse(src);
+    TypeChecker::new(&prog)
+        .check()
+        .iter()
+        .map(|e| e.message.clone())
+        .collect()
+}
+
+fn has_code(errs: &[String], code: &str) -> bool {
+    errs.iter().any(|e| e.contains(code))
 }
 
 fn try_parse(src: &str) -> Result<axon_frontend::ast::Program, ParseError> {
@@ -167,4 +181,75 @@ flow Audit() -> Unit {
     let w = first_warden(&prog);
     assert_eq!(w.scope_ref, "S");
     assert!(w.body.is_empty());
+}
+
+// ── §88.b — check_scope (own-field discipline) ───────────────────────────────
+
+#[test]
+fn well_formed_scope_is_check_clean() {
+    let errs = check_errors(SCOPE);
+    assert!(
+        errs.iter().all(|e| !e.contains("axon-T88")),
+        "well-formed scope must raise no §88 diagnostic: {errs:?}"
+    );
+}
+
+#[test]
+fn t884_empty_targets_allowlist() {
+    let src = "scope S { targets: [ ] depth: static_artifact approver: \"sec.lead\" }\n";
+    assert!(has_code(&check_errors(src), "axon-T884"));
+}
+
+#[test]
+fn t885_unknown_depth() {
+    let src = "scope S { targets: [ \"a\" ] depth: kernel_rootkit approver: \"sec.lead\" }\n";
+    assert!(has_code(&check_errors(src), "axon-T885"));
+}
+
+#[test]
+fn t885_valid_depths_are_clean() {
+    for depth in ["static_artifact", "memory_dump", "live_network"] {
+        let src = format!("scope S {{ targets: [ \"a\" ] depth: {depth} approver: \"x\" }}\n");
+        assert!(!has_code(&check_errors(&src), "axon-T885"), "depth={depth}");
+    }
+}
+
+#[test]
+fn t886_missing_approver() {
+    let src = "scope S { targets: [ \"a\" ] depth: static_artifact }\n";
+    assert!(has_code(&check_errors(src), "axon-T886"));
+}
+
+// ── §88.c — check_warden (authorization binding) ─────────────────────────────
+
+#[test]
+fn well_formed_warden_resolves_clean() {
+    // FULL: warden within a DECLARED scope → no §88 diagnostic.
+    let errs = check_errors(FULL);
+    assert!(
+        errs.iter().all(|e| !e.contains("axon-T88")),
+        "warden within a declared scope must be §88-clean: {errs:?}"
+    );
+}
+
+#[test]
+fn t887_undefined_scope() {
+    let src = r#"
+flow Audit() -> Unit {
+    warden(t) within Ghost { }
+}
+"#;
+    assert!(has_code(&check_errors(src), "axon-T887"), "undefined scope");
+}
+
+#[test]
+fn t887_within_resolves_to_non_scope() {
+    // `M` is a memory, not a scope.
+    let src = r#"
+memory M { store: persistent }
+flow Audit() -> Unit {
+    warden(t) within M { }
+}
+"#;
+    assert!(has_code(&check_errors(src), "axon-T887"), "wrong-kind scope ref");
 }

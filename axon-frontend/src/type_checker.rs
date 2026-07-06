@@ -114,6 +114,13 @@ const VALID_SYNTH_LANGUAGES: &[&str] = &["rust", "c", "python"];
 /// sub-agent must ratify before a synthesised tool runs) | `none`.
 const VALID_SYNTH_REVIEWS: &[&str] = &["required", "none"];
 
+/// §Fase 88.b — the closed `scope.depth:` catalog, ordered LEAST→MOST invasive.
+/// `static_artifact` (analyse an operator-provided binary/core/pcap — the safe
+/// default) ⊂ `memory_dump` (a supplied memory image) ⊂ `live_network` (live
+/// capture — the most-restricted, allowlist-bound, enterprise-only depth). A
+/// scope's declared depth is the CEILING it authorises.
+const VALID_SCOPE_DEPTHS: &[&str] = &["static_artifact", "memory_dump", "live_network"];
+
 /// §Fase 86.c — the closed `forge.mode:` catalog: Margaret Boden's three
 /// creativity types (*The Creative Mind*, 1990). Each maps to a distinct
 /// sampling-parameter profile at runtime (D86.3).
@@ -1646,10 +1653,11 @@ impl<'a> TypeChecker<'a> {
                 Declaration::Savant(n) => self.check_savant(n),
                 // §Fase 87.d — dynamic tool-synthesis policy discipline.
                 Declaration::Synth(n) => self.check_synth(n),
-                // §Fase 88.a — surface only; `check_scope` (targets non-empty +
-                // depth catalog + approver) lands in §88.c. Registered above so
-                // `warden … within <Scope>` resolution already works.
-                Declaration::Scope(_) => {}
+                // §Fase 88.b — the scope's own-field discipline (targets
+                // non-empty + depth catalog + approver). The `warden`-side
+                // authorization binding (scope resolution + target allowlist) is
+                // §88.c.
+                Declaration::Scope(n) => self.check_scope(n),
                 Declaration::Observable(n) => self.check_observable(n),
                 Declaration::Witness(n) => self.check_witness(n),
                 Declaration::Immune(n) => self.check_immune(n),
@@ -3904,6 +3912,92 @@ impl<'a> TypeChecker<'a> {
                 &node.loc,
             );
         }
+    }
+
+    /// §Fase 88.b — validate one `scope { … }` authorization policy's own
+    /// fields. The `warden`-side binding (the scope reference resolves + the
+    /// target is in this allowlist) is §88.c. Every diagnostic is a HARD error:
+    /// a scope governs an offensive-capable analysis, so an under-specified one
+    /// must never authorise anything.
+    fn check_scope(&mut self, node: &ScopeDefinition) {
+        // axon-T884 — a scope MUST declare a non-empty `targets:` allowlist. An
+        // empty allowlist is an unbounded authorization — the exact footgun §88
+        // forbids (a warden could then be pointed at anything).
+        if node.targets.is_empty() {
+            self.emit(
+                format!(
+                    "axon-T884 scope '{}' declares an empty `targets:` allowlist — a scope must \
+                     name the specific resources the operator authorises for analysis (an empty \
+                     allowlist would authorise nothing safely and everything dangerously)",
+                    node.name
+                ),
+                &node.loc,
+            );
+        }
+
+        // axon-T885 — `depth:` is a closed catalog (the analysis-invasiveness
+        // ceiling). A typo can never silently escalate to a more invasive depth.
+        if !node.depth.is_empty() && !is_valid(&node.depth, VALID_SCOPE_DEPTHS) {
+            self.emit(
+                format!(
+                    "axon-T885 unknown scope depth '{}' in scope '{}'. Valid (least→most \
+                     invasive): {}",
+                    node.depth,
+                    node.name,
+                    valid_list(VALID_SCOPE_DEPTHS)
+                ),
+                &node.loc,
+            );
+        }
+
+        // axon-T886 — a scope MUST name its `approver:` capability (segregation
+        // of duties, the `mandate` §21 model): who authorised this analysis. An
+        // unapproved scope is not an authorization.
+        if node.approver.trim().is_empty() {
+            self.emit(
+                format!(
+                    "axon-T886 scope '{}' declares no `approver:` — name the capability whose \
+                     holder authorised this analysis scope (e.g. `approver: requires \
+                     \"security.lead\"`)",
+                    node.name
+                ),
+                &node.loc,
+            );
+        }
+    }
+
+    /// §Fase 88.c — the `warden` authorization binding. The grammar already
+    /// forbids an omitted `within` clause (§88.a, fail-closed by construction);
+    /// here we enforce that the scope RESOLVES to a declared `scope`. The
+    /// target-in-allowlist + depth-ceiling enforcement is a RUNTIME check
+    /// (§88.h): the warden target is a program value whose analysed resource is
+    /// only known at runtime, so the allowlist match cannot be static — the
+    /// honest split (the frontend guarantees a real authorization scope exists;
+    /// the enterprise runtime guarantees the resource is inside it).
+    fn check_warden(&mut self, node: &WardenBlock, flow_name: &str) {
+        // axon-T887 — the `within <Scope>` must name a declared `scope`.
+        match self.symbols.lookup(&node.scope_ref) {
+            None => self.emit(
+                format!(
+                    "axon-T887 warden in flow '{flow_name}' references undefined scope '{}' — a \
+                     `warden(…) within <Scope>` must name a declared `scope` (fail-closed: with no \
+                     authorization scope there is no analysis)",
+                    node.scope_ref
+                ),
+                &node.loc,
+            ),
+            Some(sym) if sym.kind != "scope" => self.emit(
+                format!(
+                    "axon-T887 warden in flow '{flow_name}' `within {}` resolves to a {}, not a \
+                     `scope` authorization policy",
+                    node.scope_ref, sym.kind
+                ),
+                &node.loc,
+            ),
+            Some(_) => {}
+        }
+        // Walk the analysis body (find_exploits / fortify / emit + nested steps).
+        self.check_flow_steps(&node.body, flow_name);
     }
 
     /// §Fase 85.c — the cross-declaration cache laws, run after the
@@ -7735,6 +7829,9 @@ impl<'a> TypeChecker<'a> {
                 }
                 // §Fase 86 — Directed Creative Synthesis laws (T868–T872).
                 FlowStep::Forge(n) => self.check_forge(n, flow_name),
+                // §Fase 88.c — the warden authorization binding (scope resolves)
+                // + recurse into the analysis body.
+                FlowStep::Warden(n) => self.check_warden(n, flow_name),
                 // All other steps: no cross-reference checks needed
                 _ => {}
             }
