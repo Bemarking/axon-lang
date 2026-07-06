@@ -15,6 +15,7 @@ use crate::ir_nodes::{IRProgram, IRSessionStep};
 use super::effects;
 use super::proof_term::{
     AggregateSoundnessWitness, CallSoundnessCertificate, CapabilityContainmentWitness,
+    AuthorizationCoverageWitness,
     CapabilityIsolationWitness,
     ChannelEgressSoundnessWitness,
     ChannelDeliverySoundnessWitness, ComplianceCoverageWitness, CorsPolicyConsistencyWitness,
@@ -121,6 +122,56 @@ pub fn generate_compliance_coverage_proofs(ir: &IRProgram, axon_version: &str) -
             property: PropertyClass::ComplianceCoverage,
             artifact_digest: digest.clone(),
             witness: Witness::ComplianceCoverage(witness),
+            axon_version: axon_version.to_string(),
+        });
+    }
+    proofs
+}
+
+/// §89.c — derive an [`AuthorizationCoverageWitness`] for one endpoint. Pure +
+/// total. Shared with the checker's re-derivation path (D51.2): both the prover
+/// and the verifier compute coverage the SAME way, so the witnesses agree by
+/// construction, and a forged `authorized: true` is caught by recomputation.
+pub fn derive_authorization_coverage_witness(
+    ep: &crate::ir_nodes::IRAxonEndpoint,
+) -> AuthorizationCoverageWitness {
+    let dispatches = !ep.execute_flow.is_empty();
+    let has_requires = !ep.requires_capabilities.is_empty();
+    let has_shield = !ep.shield_ref.is_empty();
+    let has_compliance = !ep.compliance.is_empty();
+    let public = ep.public;
+    // The §89.b rule EXACTLY: covered by ≥1 discipline OR the explicit opt-out.
+    let authorized = has_requires || has_shield || has_compliance || public;
+    AuthorizationCoverageWitness {
+        endpoint_name: ep.name.clone(),
+        dispatches,
+        has_requires,
+        has_shield,
+        has_compliance,
+        public,
+        authorized,
+    }
+}
+
+/// §89.c — generate an AuthorizationCoverage proof for every DISPATCHING
+/// `axonendpoint` (non-empty `execute:` — a real trust boundary). A
+/// non-dispatching endpoint crosses no boundary → no proof (mirrors "no
+/// compliance → no compliance proof"). The doctrine `every_boundary_is_guarded`
+/// as an independently-verifiable, deploy-gated fact.
+pub fn generate_authorization_coverage_proofs(
+    ir: &IRProgram,
+    axon_version: &str,
+) -> Vec<ProofTerm> {
+    let digest = artifact_digest(ir);
+    let mut proofs = Vec::new();
+    for ep in &ir.endpoints {
+        if ep.execute_flow.is_empty() {
+            continue;
+        }
+        proofs.push(ProofTerm {
+            property: PropertyClass::AuthorizationCoverage,
+            artifact_digest: digest.clone(),
+            witness: Witness::AuthorizationCoverage(derive_authorization_coverage_witness(ep)),
             axon_version: axon_version.to_string(),
         });
     }
@@ -2244,5 +2295,6 @@ pub fn generate_all_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm>
     proofs.extend(generate_forge_soundness_proofs(ir, axon_version));
     proofs.extend(generate_savant_soundness_proofs(ir, axon_version));
     proofs.extend(generate_warden_soundness_proofs(ir, axon_version));
+    proofs.extend(generate_authorization_coverage_proofs(ir, axon_version));
     proofs
 }

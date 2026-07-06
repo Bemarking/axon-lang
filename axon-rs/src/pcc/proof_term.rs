@@ -274,6 +274,19 @@ pub enum PropertyClass {
     /// ungoverned offensive capability, so it gets a deploy-time re-derivation.
     /// The target-in-allowlist + depth-ceiling enforcement is runtime (§88.h).
     WardenSoundness,
+    /// §89.c — the doctrine `every_boundary_is_guarded` as an
+    /// independently-verifiable fact. For each DISPATCHING `axonendpoint`
+    /// (non-empty `execute:` — a real trust boundary), re-derives that it is
+    /// AUTHORIZED: covered by ≥1 discipline (a non-empty `requires:` OR
+    /// `shield:` OR `compliance:`) OR marked with the explicit, auditable
+    /// opt-out `public: true`. This makes the §89.b `axon-T890` type-check an
+    /// independently-verifiable proof — the verifier re-derives, from the IR
+    /// alone, that no boundary dispatches un-covered by silent omission (the
+    /// audit's Modo 1), never trusting the compiler that ran the check. A
+    /// stored/deployed IR whose stale proof dropped an endpoint's coverage is
+    /// REFUTED, and the §52 deploy gate rejects the bundle fail-closed. A
+    /// non-dispatching endpoint crosses no boundary → no proof.
+    AuthorizationCoverage,
 }
 
 /// §72.f — the closed period catalog for `budget` quotas. The checker's own
@@ -324,6 +337,7 @@ impl PropertyClass {
             PropertyClass::ForgeSoundness => "forge_soundness",
             PropertyClass::SavantSoundness => "savant_soundness",
             PropertyClass::WardenSoundness => "warden_soundness",
+            PropertyClass::AuthorizationCoverage => "authorization_coverage",
         }
     }
 }
@@ -923,6 +937,31 @@ pub struct WardenSoundnessWitness {
     pub approver_present: bool,
 }
 
+/// §89.c — witness for [`PropertyClass::AuthorizationCoverage`], one per
+/// DISPATCHING `axonendpoint`. The checker RE-DERIVES every field from the IR
+/// endpoint and rejects on disagreement (a forged witness claiming
+/// `authorized: true` for an uncovered endpoint is caught by recomputation).
+/// A verifying proof has `authorized == true`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthorizationCoverageWitness {
+    pub endpoint_name: String,
+    /// Non-empty `execute:` — the endpoint dispatches a flow, i.e. crosses a
+    /// trust boundary. Proofs are only emitted for dispatching endpoints, so a
+    /// verifying witness has this true.
+    pub dispatches: bool,
+    /// Non-empty `requires:` capability scope.
+    pub has_requires: bool,
+    /// Non-empty `shield:` reference.
+    pub has_shield: bool,
+    /// Non-empty `compliance:` set.
+    pub has_compliance: bool,
+    /// The explicit `public: true` authorization-coverage opt-out.
+    pub public: bool,
+    /// The derived verdict: covered by ≥1 discipline (`requires`/`shield`/
+    /// `compliance`) OR `public`. The property certified is that this is true.
+    pub authorized: bool,
+}
+
 /// The property-specific witness. Tagged so the JSON is self-describing
 /// + a future class adds a variant without ambiguity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -949,6 +988,7 @@ pub enum Witness {
     ForgeSoundness(ForgeSoundnessWitness),
     SavantSoundness(SavantSoundnessWitness),
     WardenSoundness(WardenSoundnessWitness),
+    AuthorizationCoverage(AuthorizationCoverageWitness),
 }
 
 impl Witness {
@@ -986,6 +1026,7 @@ impl Witness {
             Witness::ForgeSoundness(w) => &w.forge_name,
             Witness::SavantSoundness(w) => &w.savant_name,
             Witness::WardenSoundness(w) => &w.warden_target,
+            Witness::AuthorizationCoverage(w) => &w.endpoint_name,
         }
     }
 }

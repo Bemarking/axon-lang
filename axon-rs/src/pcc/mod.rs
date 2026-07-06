@@ -50,6 +50,8 @@ pub use generate::{
     derive_tool_call_soundness_witness, generate_all_proofs, generate_call_soundness_certificate,
     generate_capability_containment_proofs, generate_capability_isolation_proofs,
     generate_channel_egress_soundness_proofs, generate_compliance_coverage_proofs,
+    // §Fase 89.c — the every_boundary_is_guarded coverage obligation.
+    derive_authorization_coverage_witness, generate_authorization_coverage_proofs,
     generate_effect_row_soundness_proofs,
     generate_interruptible_session_soundness_proofs,
     generate_parked_residual_soundness_proofs,

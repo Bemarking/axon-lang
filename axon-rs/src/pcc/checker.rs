@@ -138,6 +138,9 @@ pub fn check_proof(proof: &ProofTerm, ir: &IRProgram) -> CheckOutcome {
         (PropertyClass::WardenSoundness, Witness::WardenSoundness(w)) => {
             check_warden_soundness(w, ir)
         }
+        (PropertyClass::AuthorizationCoverage, Witness::AuthorizationCoverage(w)) => {
+            check_authorization_coverage(w, ir)
+        }
         _ => CheckOutcome::UnknownProperty,
     }
 }
@@ -1273,6 +1276,46 @@ fn check_warden_soundness(
     if !actual.approver_present {
         return CheckOutcome::Refuted {
             reason: format!("axon-T886 scope '{}' names no approver", actual.scope_ref),
+        };
+    }
+    CheckOutcome::Verified
+}
+
+/// §89.c — independent checker for [`PropertyClass::AuthorizationCoverage`].
+/// Re-derives the endpoint's coverage from the IR alone and rejects on: a
+/// forged/stale witness (disagrees with re-derivation), an endpoint the
+/// artifact does not contain, or an UNAUTHORIZED boundary (dispatches but is
+/// neither covered nor `public: true` — the audit's Modo 1, `axon-T890`).
+fn check_authorization_coverage(
+    claimed: &super::proof_term::AuthorizationCoverageWitness,
+    ir: &IRProgram,
+) -> CheckOutcome {
+    let ep = match ir.endpoints.iter().find(|e| e.name == claimed.endpoint_name) {
+        Some(e) => e,
+        None => {
+            return CheckOutcome::Refuted {
+                reason: format!(
+                    "no axonendpoint '{}' in the artifact — forged or stale proof",
+                    claimed.endpoint_name
+                ),
+            }
+        }
+    };
+    let actual = super::generate::derive_authorization_coverage_witness(ep);
+    if actual != *claimed {
+        return CheckOutcome::Refuted {
+            reason: "witness disagrees with artifact re-derivation (forged or stale proof)"
+                .to_string(),
+        };
+    }
+    if !actual.authorized {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axon-T890 axonendpoint '{}' dispatches a flow but declares no authorization \
+                 coverage (no `requires:`/`shield:`/`compliance:`) and is not `public: true` \
+                 — an unguarded boundary (doctrine `every_boundary_is_guarded`)",
+                actual.endpoint_name
+            ),
         };
     }
     CheckOutcome::Verified
