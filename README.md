@@ -1,5 +1,5 @@
 <p align="center">
-  <strong>AXON</strong> <em>v2.3.0</em><br>
+  <strong>AXON</strong> <em>v2.43.0</em><br>
   The first formal cognitive language for AI — a 100% Rust + C23 native
   runtime with <strong>Cognitive I/O</strong>, real-time streaming,
   first-class HTTP endpoints, a four-pillar cognitive data plane, and
@@ -13,6 +13,7 @@
   <code>know</code> · <code>believe</code> · <code>speculate</code> · <code>doubt</code> · <code>par</code> · <code>hibernate</code><br>
   <code>dataspace</code> · <code>ingest</code> · <code>focus</code> · <code>associate</code> · <code>aggregate</code> · <code>explore</code><br>
   <code>deliberate</code> · <code>consensus</code> · <code>forge</code> · <code>agent</code> · <code>shield</code><br>
+  <code>savant</code> · <code>synth</code> · <code>warden</code> · <code>scope</code><br>
   <code>stream</code> · <code>effects</code> · <code>@contract_tool</code> · <code>@csp_tool</code><br>
   <code>pix</code> · <code>navigate</code> · <code>drill</code> · <code>trail</code> · <code>corpus</code><br>
   <code>psyche</code> · <code>ots</code><br>
@@ -28,13 +29,15 @@
   <code>immune</code> · <code>reflex</code> · <code>heal</code> ·
   <code>compliance</code><br>
   <code>component</code> · <code>view</code><br>
+  <!-- Enterprise I/O capabilities (Fases 80–85) -->
+  <code>cache</code> · <code>voice</code> · <code>shell</code> · <code>path rewrite</code> · <code>PASETO</code><br>
   <!-- NEW — Session-typed WebSocket dialogue (Fase 41, v2.3.0) -->
   <strong>Session types (v2.3.0):</strong>
   <code>socket</code> · <code>send T</code> · <code>receive T</code> · <code>select {ℓᵢ:…}</code> · <code>branch {ℓᵢ:…}</code> · <code>backpressure: credit(k)</code> · <code>reconnect: cognitive_state</code>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v2.3.0-informational" alt="Version">
+  <img src="https://img.shields.io/badge/version-v2.43.0-informational" alt="Version">
   <img src="https://img.shields.io/badge/status-production-brightgreen" alt="Status: Production">
   <img src="https://img.shields.io/badge/runtime-100%25%20Rust%20%2B%20C23-orange" alt="100% Rust + C23">
   <img src="https://img.shields.io/badge/streaming-SSE%20%7C%20NDJSON%20%7C%20WebSocket-brightgreen" alt="Streaming">
@@ -50,7 +53,7 @@
 
 > **Two repositories, two version lines.** This repo (`axon-lang`,
 > AGPL-3.0-or-later, public) ships the **language + runtime + compiler + 7 LLM
-> backends + Cognitive I/O + WebSocket session types** — currently **v2.3.0**.
+> backends + Cognitive I/O + WebSocket session types** — currently **v2.43.0**.
 > The commercial control plane (`axon-enterprise`, EULA, private) layers
 > multi-tenant identity / RBAC / SSO / metering / audit / vertical compliance
 > **on top of** this language via a pinned Cargo dependency — currently
@@ -4568,6 +4571,10 @@ know {
 | Forge      | `forge`      | Directed creative synthesis (Poincaré pipeline)      |
 | Agent      | `agent`      | Autonomous goal-seeking BDI cognitive system         |
 | Shield     | `shield`     | Compile-time IFC security (taint + capability)       |
+| Savant     | `savant`     | Long-horizon autonomous research orchestrator — budget-bounded, interruptible, fail-closed, provenance-witnessed (§Fase 87) |
+| Synth      | `synth`      | Dynamic tool-synthesis safety envelope — risk ceiling + WASM zero-trust sandbox + Coder/Reviewer consensus (§Fase 87) |
+| Warden     | `warden`     | Authorization-native adversarial security-analysis block — abduction over authorized evidence, emitting attested `Vulnerability` findings (§Fase 88) |
+| Scope      | `scope`      | Named authorization scope — signed envelope (targets allowlist + depth ceiling + approver) a `warden` MUST run within (§Fase 88) |
 | Stream     | `stream`     | Algebraic Effects and Free Monads                     |
 | Effects    | `effects`    | Algebraic effect rows for tool declarations          |
 | PIX        | `pix`        | Structured document index (navigable tree)           |
