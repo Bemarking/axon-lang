@@ -372,6 +372,10 @@ pub mod holograph;
 pub mod inference;
 pub mod synth;
 pub mod topology;
+// §Fase 88.d — the `WardenBackend` port + the OSS reference static analyzer
+// (attested `Vulnerability` findings; authorization + deny-by-default enforced;
+// paraconsistent finding-validator). The enterprise LLM engine mounts §88.f.
+pub mod warden;
 pub mod tool_validator;
 pub mod trace_export;
 pub mod trace_store;
