@@ -182,6 +182,9 @@ pub fn ir_flow_node_kind(node: &IRFlowNode) -> &'static str {
         IRFlowNode::Mutate(_) => "mutate",
         IRFlowNode::Purge(_) => "purge",
         IRFlowNode::Transact(_) => "transact",
+        // §Fase 88.a — the `warden` adversarial-analysis block. Same step_type
+        // string as `runner::extract_step_info` below (drift-gated).
+        IRFlowNode::Warden(_) => "warden",
         // §Fase 51.a — the `quant` cognitive block. Same step_type string as
         // `runner::extract_step_info` below (drift-gated).
         IRFlowNode::Quant(_) => "quant",

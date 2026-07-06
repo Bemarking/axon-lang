@@ -303,6 +303,8 @@ impl IRGenerator {
             Declaration::Savant(n) => ir.savants.push(self.visit_savant(n)),
             // §Fase 87.d — lower the `synth` tool-synthesis policy into the IR.
             Declaration::Synth(n) => ir.synths.push(self.visit_synth(n)),
+            // §Fase 88.a — lower the `scope` authorization policy into the IR.
+            Declaration::Scope(n) => ir.scopes.push(self.visit_scope(n)),
             // §Fase 80.g — `voice` never reaches the IR: the parser already
             // expanded it into ordinary ots/session/socket/upstream
             // declarations (in this same program), and THOSE are the
@@ -1038,6 +1040,14 @@ impl IRGenerator {
             }),
             // §Fase 51.a — lower the `quant` block; the body lowers recursively
             // (like `par` branches) so the nested flow-IR is preserved.
+            FlowStep::Warden(s) => IRFlowNode::Warden(crate::ir_nodes::IRWarden {
+                node_type: "warden",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
+                target: s.target.clone(),
+                scope_ref: s.scope_ref.clone(),
+                body: s.body.iter().map(|stmt| self.visit_flow_step(stmt)).collect(),
+            }),
             FlowStep::Quant(s) => IRFlowNode::Quant(crate::ir_nodes::IRQuant {
                 node_type: "quant",
                 source_line: s.loc.line,
@@ -1431,6 +1441,20 @@ impl IRGenerator {
                 .iter()
                 .map(Self::visit_savant_mandate)
                 .collect(),
+        }
+    }
+
+    /// §Fase 88.a — lower a `scope` authorization policy (surface only; the
+    /// checker owns catalog + non-empty + resolution validation).
+    fn visit_scope(&self, n: &ScopeDefinition) -> crate::ir_nodes::IRScope {
+        crate::ir_nodes::IRScope {
+            node_type: "scope",
+            source_line: n.loc.line,
+            source_column: n.loc.column,
+            name: n.name.clone(),
+            targets: n.targets.clone(),
+            depth: n.depth.clone(),
+            approver: n.approver.clone(),
         }
     }
 

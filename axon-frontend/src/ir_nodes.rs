@@ -135,6 +135,10 @@ pub struct IRProgram {
     /// `skip_serializing_if = empty` IR-SHA discipline as `savants`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub synths: Vec<IRSynth>,
+    /// §Fase 88.a — authorization-scope policies (compiled). Same
+    /// `skip_serializing_if = empty` IR-SHA discipline as `synths`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scopes: Vec<IRScope>,
     /// §Fase 23 — algebraic effect declarations (compiled).
     /// Each declared effect persists into IR so axon-rs can build the
     /// per-effect operation table at startup. The CPS state graph for
@@ -208,6 +212,7 @@ impl IRProgram {
             caches: Vec::new(),
             savants: Vec::new(),
             synths: Vec::new(),
+            scopes: Vec::new(),
             effects: Vec::new(),
         }
     }
@@ -971,6 +976,8 @@ pub enum IRFlowNode {
     Mutate(IRMutateStep),
     Purge(IRPurgeStep),
     Transact(IRTransactBlock),
+    /// §Fase 88.a — the `warden` adversarial security-analysis block.
+    Warden(IRWarden),
     /// §Fase 51.a — the `quant` cognitive block (Hilbert-space projection).
     Quant(IRQuant),
     /// §Fase 51.d.2 — the `yield` measurement point inside a `quant` block.
@@ -1497,6 +1504,34 @@ pub struct IRTransactBlock {
     pub node_type: &'static str,
     pub source_line: u32,
     pub source_column: u32,
+}
+
+/// §Fase 88.a — IR for the `warden` adversarial-analysis block. Carries the
+/// target, the mandatory `scope_ref`, and the recursively-lowered body so the
+/// enterprise engine (§88.f) can drive the analysis and §88.c can enforce the
+/// authorization discipline.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRWarden {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub target: String,
+    pub scope_ref: String,
+    /// Nested flow-body IR (recursively lowered).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub body: Vec<IRFlowNode>,
+}
+
+/// §Fase 88.a — IR for a `scope` authorization-policy declaration.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRScope {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub name: String,
+    pub targets: Vec<String>,
+    pub depth: String,
+    pub approver: String,
 }
 
 /// §Fase 51.a — IR for the `quant` cognitive block (Hilbert-space projection).

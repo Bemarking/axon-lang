@@ -571,6 +571,9 @@ fn extract_step_info(node: &IRFlowNode) -> (String, String, String) {
         IRFlowNode::Mutate(s) => (s.store_name.clone(), "mutate".to_string(), format!("Mutate: {}", s.store_name)),
         IRFlowNode::Purge(s) => (s.store_name.clone(), "purge".to_string(), format!("Purge: {}", s.store_name)),
         IRFlowNode::Transact(_) => ("transact".to_string(), "transact".to_string(), "Transact block".to_string()),
+        // §Fase 88.a — `warden` adversarial-analysis block. step_type "warden"
+        // matches `flow_plan::ir_flow_node_kind` (drift-gated).
+        IRFlowNode::Warden(s) => (s.target.clone(), "warden".to_string(), format!("Warden: {}", s.target)),
         // §Fase 51.a — `quant` cognitive block. step_type "quant" matches
         // `flow_plan::ir_flow_node_kind` (drift-gated).
         IRFlowNode::Quant(_) => ("quant".to_string(), "quant".to_string(), "Quant block".to_string()),

@@ -1110,6 +1110,11 @@ pub async fn dispatch_node(
         // simulator (§51.e) and the effect injection + `yield` measurement
         // (§51.d), and is hardware-accelerated only in the enterprise backend.
         IRFlowNode::Quant(node) => wire_integrations::run_quant(node, ctx).await,
+        // §Fase 88.a — the `warden` adversarial-analysis block. SURFACE only:
+        // emits the canonical `step_type: "warden"` wire shape but does NOT run
+        // the analysis — the real engine (`WardenBackend` port + reference, §88.d;
+        // enterprise abduction, §88.f) + the authorization gate land later.
+        IRFlowNode::Warden(node) => wire_integrations::run_warden(node, ctx).await,
         // §Fase 51.d.2 — the `yield` measurement point. SURFACE only: emits the
         // canonical `step_type: "yield"` wire shape. The actual amplitude
         // collapse + one-shot delimited continuation is the §51.e reference

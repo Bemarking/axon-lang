@@ -155,6 +155,9 @@ fn classify_node(node: &IRFlowNode) -> StepKind {
         // §Fase 51.a — the `quant` Hilbert-space projection block is cognitive
         // computation (variational / kernel-feature evaluation).
         IRFlowNode::Quant(_) => StepKind::Cognitive,
+        // §Fase 88.a — the `warden` adversarial-analysis block is cognitive
+        // (LLM abduction over authorized evidence).
+        IRFlowNode::Warden(_) => StepKind::Cognitive,
         // §Fase 51.d.2 — `yield` is the amplitude-collapse measurement point.
         IRFlowNode::Yield(_) => StepKind::Cognitive,
         // §Fase 52.c — `run <Flow>` is orchestration: it dispatches a declared
@@ -552,6 +555,7 @@ mod tests {
             caches: vec![],
             savants: vec![],
             synths: vec![],
+            scopes: vec![],
             effects: vec![],
         };
 
@@ -627,6 +631,7 @@ mod tests {
             caches: vec![],
             savants: vec![],
             synths: vec![],
+            scopes: vec![],
             effects: vec![],
         };
 
@@ -704,6 +709,7 @@ mod tests {
             caches: vec![],
             savants: vec![],
             synths: vec![],
+            scopes: vec![],
             effects: vec![],
         };
 

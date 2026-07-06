@@ -207,6 +207,10 @@ pub enum TokenType {
     // under a variational / kernel-feature map, and collapses back to classical
     // silicon. NOT a top-level declaration (lives inside a flow body, like `par`).
     Quant,
+    // §Fase 88 — `warden` adversarial-analysis block (flow-body, like `quant`)
+    // + `scope` authorization-policy declaration (top-level, like `cache`).
+    Warden,
+    Scope,
     // `observable` (§Fase 51.c.2) — a top-level Pauli-sum declaration
     // `M = Σ cₖ Pₖ` (real coeffs × Pauli strings ⇒ Hermitian by construction)
     // that a `quant` block measures against.
@@ -540,6 +544,10 @@ pub fn keyword_type(word: &str) -> TokenType {
         "savant" => TokenType::Savant,
         // `synth` (§Fase 87.d) — dynamic tool-synthesis policy.
         "synth" => TokenType::Synth,
+        // `warden` (§Fase 88.a) — adversarial security-analysis flow-body block.
+        "warden" => TokenType::Warden,
+        // `scope` (§Fase 88.a) — authorization-scope policy declaration.
+        "scope" => TokenType::Scope,
         // `quant` as a cognitive primitive (§Fase 51.a) — flow-body block.
         "quant" => TokenType::Quant,
         // `observable` (§Fase 51.c.2) — top-level Pauli-sum declaration.
@@ -644,6 +652,8 @@ pub fn is_declaration_keyword(tt: &TokenType) -> bool {
             | TokenType::Savant
             // §Fase 87.d — dynamic tool-synthesis policy
             | TokenType::Synth
+            // §Fase 88.a — the authorization-scope policy declaration
+            | TokenType::Scope
             // §Fase 51.c.2 — Pauli-sum observable declaration
             | TokenType::Observable
             // §Fase 69.a — Advantage-Witness declaration

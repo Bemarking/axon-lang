@@ -167,6 +167,13 @@ pub enum Declaration {
     /// disciplines the policy and ships a DENY-BY-DEFAULT reference; the real
     /// Extism/WASM executor is enterprise (§87.j).
     Synth(SynthDefinition),
+    /// §Fase 88.a — an authorization scope: the signed envelope (`targets`
+    /// allowlist + `depth` ceiling + `approver`) a `warden` adversarial-analysis
+    /// block MUST run `within`. The load-bearing safety construct that makes
+    /// warden a governed auditor, not a weapon: no in-scope authorization ⇒ no
+    /// analysis (fail-closed). Referenced by `warden(t) within <Scope>`
+    /// (docs/fase/fase_88_warden.md).
+    Scope(ScopeDefinition),
     /// §Fase 51.c.2 — a Pauli-sum observable `M = Σ cₖ Pₖ` that a `quant`
     /// block measures against (paper §3.2; plan D5).
     Observable(ObservableDefinition),
@@ -1940,6 +1947,12 @@ pub enum FlowStep {
     Mutate(MutateStep),
     Purge(PurgeStep),
     Transact(TransactBlock),
+    /// §Fase 88.a — `warden(<target>) within <Scope> { … }` adversarial
+    /// security-analysis block. A flow-body block (like `quant`): a target
+    /// reference + a mandatory `within <Scope>` authorization clause + a nested
+    /// body (`find_exploits()` → `list[Vulnerability]`, `fortify`). NOT a
+    /// top-level declaration.
+    Warden(WardenBlock),
     /// §Fase 51.a — `quant { … }` cognitive block (Hilbert-space projection).
     /// Carries an optional attribute header + a real nested body of flow steps
     /// (so §51.b's Continuous Type Invariant can scan it). Lives inside a flow
@@ -2666,6 +2679,57 @@ pub struct PurgeStep {
 }
 #[derive(Debug)]
 pub struct TransactBlock {
+    pub loc: Loc,
+}
+
+/// §Fase 88.a — `scope <Name> { targets:, depth:, approver: }` — the
+/// authorization scope a `warden` block runs `within`. The load-bearing safety
+/// construct (paper §5.2): it declares which resources may be analysed
+/// (`targets` allowlist), how invasively (`depth` ceiling), and who authorised
+/// it (`approver` capability). A `warden` with no resolvable in-scope
+/// authorization does not compile (fail-closed). Named + referenced, like
+/// `cache`/`cors`. **Unknown fields are a hard parse error** (D83.7): a scope
+/// governs an offensive-capable analysis, so a typo can never silently widen it.
+#[derive(Debug, Default)]
+pub struct ScopeDefinition {
+    pub name: String,
+    /// `targets: [ "<resource>", … ]` — the allowlist of resources the operator
+    /// owns/controls and authorises for analysis. Required + non-empty (§88.c
+    /// `axon-T88x`); a target outside this list is a typed rejection.
+    pub targets: Vec<String>,
+    /// `depth: static_artifact | memory_dump | live_network` — the MOST invasive
+    /// analysis depth this scope permits (the ceiling). Closed catalog, ordered
+    /// least→most invasive; empty ⇒ the safest default `static_artifact` (§88.c).
+    pub depth: String,
+    /// `approver: [requires] "<capability>"` — the capability whose holder
+    /// authorised this scope (segregation of duties, the `mandate` §21 model).
+    /// Required (§88.c).
+    pub approver: String,
+    pub loc: Loc,
+    /// Fase 14.b — leading comment trivia.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
+}
+
+/// §Fase 88.a — the `warden(<target>) within <Scope> { … }` adversarial
+/// security-analysis block. A flow-body block (like `quant`): it audits a
+/// `target` under a paraconsistent adversarial framing, emitting attested
+/// `Vulnerability` findings — but ONLY `within` a signed authorization `scope`.
+/// §88.a ships the SURFACE only; scope resolution + the depth/witness discipline
+/// is §88.c, and the real analysis engine is §88.d/f (enterprise).
+#[derive(Debug, Default)]
+pub struct WardenBlock {
+    /// `warden(<target>)` — a reference to the resource under analysis (a
+    /// let-bound value / declared target). §88.c checks it is within the scope's
+    /// `targets` allowlist.
+    pub target: String,
+    /// `within <Scope>` — the MANDATORY authorization scope reference. Empty is a
+    /// hard error (§88.c `axon-T88x`, fail-closed): no scope ⇒ no analysis.
+    pub scope_ref: String,
+    /// The nested flow-body statements (`find_exploits()`, `fortify`, `emit`),
+    /// parsed like `par`/`quant` branches so §88.c can walk them.
+    pub body: Vec<FlowStep>,
     pub loc: Loc,
 }
 

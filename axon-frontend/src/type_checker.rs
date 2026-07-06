@@ -1433,6 +1433,16 @@ impl<'a> TypeChecker<'a> {
                         n.loc.clone(),
                     ));
                 }
+                // §Fase 88.a — register the authorization scope so a
+                // `warden(t) within <Scope>` reference resolves (§88.c).
+                Declaration::Scope(n) => {
+                    registrations.push((
+                        n.name.clone(),
+                        "scope".into(),
+                        n.loc.line,
+                        n.loc.clone(),
+                    ));
+                }
                 // §Fase 51.c.2 — register the Pauli-sum observable so a
                 // `quant(observable: <Name>)` reference resolves to it.
                 Declaration::Observable(n) => {
@@ -1636,6 +1646,10 @@ impl<'a> TypeChecker<'a> {
                 Declaration::Savant(n) => self.check_savant(n),
                 // §Fase 87.d — dynamic tool-synthesis policy discipline.
                 Declaration::Synth(n) => self.check_synth(n),
+                // §Fase 88.a — surface only; `check_scope` (targets non-empty +
+                // depth catalog + approver) lands in §88.c. Registered above so
+                // `warden … within <Scope>` resolution already works.
+                Declaration::Scope(_) => {}
                 Declaration::Observable(n) => self.check_observable(n),
                 Declaration::Witness(n) => self.check_witness(n),
                 Declaration::Immune(n) => self.check_immune(n),

@@ -447,6 +447,9 @@ fn collect_store_accesses(steps: &[crate::ir_nodes::IRFlowNode], out: &mut Vec<S
             // §Fase 51.a — `quant` carries a nested flow body; descend so any
             // store op reachable inside it is still soundness-checked.
             N::Quant(q) => collect_store_accesses(&q.body, out),
+            // §Fase 88.a — `warden` carries a nested flow body; descend so any
+            // store op reachable inside it is still soundness-checked.
+            N::Warden(w) => collect_store_accesses(&w.body, out),
             // §Fase 51.d.2 — `yield` is a leaf (measurement value, no store op).
             N::Yield(_) => {}
             // §Fase 52.a — a `listen` handler body can contain store ops (a
@@ -659,6 +662,9 @@ fn collect_named_use_tool_calls<'a>(
             // §Fase 51.a — `quant` carries a nested flow body; descend so a
             // structured `use` inside it cannot escape soundness checking.
             N::Quant(q) => collect_named_use_tool_calls(&q.body, out),
+            // §Fase 88.a — `warden` carries a nested flow body; descend so a
+            // structured `use` inside it cannot escape soundness checking.
+            N::Warden(w) => collect_named_use_tool_calls(&w.body, out),
             // §Fase 51.d.2 — `yield` is a leaf (no nested body, no `use`).
             N::Yield(_) => {}
             // §Fase 52.a — a `listen` handler body can contain a `use <Tool>`;

@@ -250,6 +250,10 @@ fn attach_trivia_to_decl(decl: &mut Declaration, leading: Vec<Trivia>, trailing:
             n.leading_trivia = leading;
             n.trailing_trivia = trailing;
         }
+        Declaration::Scope(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
         Declaration::Observable(n) => {
             n.leading_trivia = leading;
             n.trailing_trivia = trailing;
@@ -496,6 +500,8 @@ const fn is_top_level_decl_kw_for_recovery(tt: &TokenType) -> bool {
             // §Fase 87.a/d — the autonomous research primitive + synth policy.
             | TokenType::Savant
             | TokenType::Synth
+            // §Fase 88.a — the authorization-scope policy declaration.
+            | TokenType::Scope
             | TokenType::AxonStore
             | TokenType::AxonEndpoint
             | TokenType::Resource
@@ -2087,6 +2093,9 @@ impl Parser {
             // ── §Fase 87.d — the dynamic tool-synthesis policy ──────────────
             TokenType::Synth => self.parse_synth().map(Declaration::Synth),
 
+            // ── §Fase 88.a — the authorization-scope policy declaration ─────
+            TokenType::Scope => self.parse_scope().map(Declaration::Scope),
+
             // ── §Fase 51.c.2 — Pauli-sum observable ────────────
             TokenType::Observable => self.parse_observable().map(Declaration::Observable),
 
@@ -2925,6 +2934,8 @@ impl Parser {
             TokenType::Mutate => self.parse_mutate_step(),
             TokenType::Purge => self.parse_store_where_step().map(|(loc, store_name, where_expr)| FlowStep::Purge(PurgeStep { store_name, where_expr, loc })),
             TokenType::Transact => self.parse_block_step("transact").map(|l| FlowStep::Transact(TransactBlock { loc: l })),
+            // §Fase 88.a — the `warden` adversarial-analysis block.
+            TokenType::Warden => self.parse_warden().map(FlowStep::Warden),
             // §Fase 51.a — the `quant` cognitive block (Hilbert-space projection).
             TokenType::Quant => self.parse_quant().map(FlowStep::Quant),
             // §Fase 51.d.2 — the `yield` measurement point.
@@ -4029,6 +4040,96 @@ impl Parser {
     /// (`encoding = amplitude`, `effect = quant_sim`). The body is parsed into
     /// real nested `FlowStep`s — like `par` branches — so §51.b's Continuous
     /// Type Invariant scans actual AST rather than skipped tokens.
+    /// §Fase 88.a — parse `warden(<target>) within <Scope> { <body> }`. The
+    /// `within <Scope>` clause is MANDATORY at the grammar level (fail-closed by
+    /// construction: a scopeless warden cannot be written); §88.c checks the
+    /// scope RESOLVES + the target is in its allowlist.
+    fn parse_warden(&mut self) -> Result<WardenBlock, ParseError> {
+        let tok = self.consume(TokenType::Warden)?;
+        // `(<target>)` — the resource under analysis.
+        self.consume(TokenType::LParen)?;
+        let target = self.consume_any_ident_or_kw()?.value;
+        self.consume(TokenType::RParen)?;
+        // `within <Scope>` — MANDATORY. Omitting it is a hard parse error.
+        self.consume(TokenType::Within)?;
+        let scope_ref = self.consume(TokenType::Identifier)?.value;
+        let mut block = WardenBlock {
+            target,
+            scope_ref,
+            body: Vec::new(),
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+        };
+        // Body: real nested flow steps (like `quant`/`par`).
+        self.consume(TokenType::LBrace)?;
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            block.body.push(self.parse_flow_step()?);
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(block)
+    }
+
+    /// §Fase 88.a — parse `scope <Name> { targets: [ … ], depth: <ident>,
+    /// approver: [requires] "<cap>" }`. Flat key:value block (the `cache` shape).
+    /// Catalog + non-empty validation is §88.c. Unknown fields are a hard error
+    /// (D83.7): a scope governs an offensive-capable analysis.
+    fn parse_scope(&mut self) -> Result<ScopeDefinition, ParseError> {
+        let tok = self.consume(TokenType::Scope)?;
+        let name = self.consume(TokenType::Identifier)?.value;
+        let mut node = ScopeDefinition {
+            name,
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+            ..Default::default()
+        };
+        self.consume(TokenType::LBrace)?;
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            let key = self.consume_any_ident_or_kw()?.value;
+            self.consume(TokenType::Colon)?;
+            match key.as_str() {
+                "targets" => {
+                    self.consume(TokenType::LBracket)?;
+                    while !self.check(TokenType::RBracket) && !self.check(TokenType::Eof) {
+                        let t = if self.check(TokenType::StringLit) {
+                            self.consume(TokenType::StringLit)?.value
+                        } else {
+                            self.consume_any_ident_or_kw()?.value
+                        };
+                        node.targets.push(t);
+                        if self.check(TokenType::Comma) {
+                            self.advance();
+                        }
+                    }
+                    self.consume(TokenType::RBracket)?;
+                }
+                "depth" => node.depth = self.consume_any_ident_or_kw()?.value,
+                "approver" => {
+                    // Optional `requires` sugar before the capability string.
+                    if self.current().value == "requires" {
+                        self.advance();
+                    }
+                    node.approver = self.consume(TokenType::StringLit)?.value;
+                }
+                other => {
+                    return Err(self.error(&format!(
+                        "unknown scope field `{other}` in scope `{}` — expected \
+                         `targets` / `depth` / `approver`",
+                        node.name
+                    )))
+                }
+            }
+            if self.check(TokenType::Comma) {
+                self.consume(TokenType::Comma)?;
+            }
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(node)
+    }
+
     fn parse_quant(&mut self) -> Result<QuantBlock, ParseError> {
         let tok = self.current().clone();
         self.advance(); // consume `quant`

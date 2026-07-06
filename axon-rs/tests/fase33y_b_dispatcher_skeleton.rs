@@ -529,6 +529,18 @@ fn transact_node() -> IRFlowNode {
     })
 }
 
+// §Fase 88.a — the `warden` adversarial security-analysis block.
+fn warden_node() -> IRFlowNode {
+    IRFlowNode::Warden(axon::ir_nodes::IRWarden {
+        node_type: "warden",
+        source_line: 0,
+        source_column: 0,
+        target: String::new(),
+        scope_ref: String::new(),
+        body: Vec::new(),
+    })
+}
+
 // §Fase 51.a — the `quant` cognitive block (Hilbert-space projection).
 fn quant_node() -> IRFlowNode {
     IRFlowNode::Quant(IRQuant {
@@ -569,7 +581,7 @@ fn yield_node() -> IRFlowNode {
 /// 33.y.j reached 45/45 graduation, ShimReason became dead weight; the
 /// kind slug (single source of truth via `ir_flow_node_kind`) is all
 /// the drift gate needs.
-fn all_47_pairs() -> Vec<(IRFlowNode, &'static str)> {
+fn all_48_pairs() -> Vec<(IRFlowNode, &'static str)> {
     vec![
         (step_node(), "step"),
         (probe_node(), "probe"),
@@ -620,6 +632,8 @@ fn all_47_pairs() -> Vec<(IRFlowNode, &'static str)> {
         (quant_node(), "quant"),
         // §Fase 51.d.2 — the 47th variant.
         (yield_node(), "yield"),
+        // §Fase 88.a — the 48th variant.
+        (warden_node(), "warden"),
     ]
 }
 
@@ -643,11 +657,11 @@ fn fresh_ctx() -> (DispatchCtx, mpsc::UnboundedReceiver<axon::flow_execution_eve
 // ────────────────────────────────────────────────────────────────────
 
 #[test]
-fn cartesian_product_has_exactly_47_entries() {
+fn cartesian_product_has_exactly_48_entries() {
     assert_eq!(
-        all_47_pairs().len(),
-        47,
-        "33.y.b drift gate: the IRFlowNode catalog must cover all 47 \
+        all_48_pairs().len(),
+        48,
+        "33.y.b drift gate: the IRFlowNode catalog must cover all 48 \
          variants (§Fase 51.a `quant` + §Fase 51.d.2 `yield`). Adding a 48th \
          IRFlowNode variant fails the dispatch_node compile (forcing a new arm) \
          AND requires updating this drift gate factory + pair list."
@@ -691,6 +705,8 @@ const GRADUATED_VARIANTS: &[&str] = &[
     "quant",
     // §Fase 51.d.2 — the `yield` measurement point (47th).
     "yield",
+    // §Fase 88.a — the `warden` adversarial-analysis block (48th).
+    "warden",
 ];
 
 /// Pure-shape graduated variants (33.y.c) — strict "(stub)" + 1 token.
@@ -771,11 +787,14 @@ const LAMBDA_TOOLS_GRADUATED: &[&str] = &["lambda_data_apply", "use_tool"];
 /// an algebraic-effect block, D9) which asserts only `tokens_emitted == 0`.
 /// §Fase 51.d.2 adds `yield` (the measurement point) to the same surface-only
 /// bucket — `run_yield` likewise returns `Completed { tokens_emitted: 0 }`.
-const QUANT_GRADUATED: &[&str] = &["quant", "yield"];
+/// §Fase 88.a adds `warden` — `run_warden` is surface-only with the identical
+/// outcome shape (canonical `step_type: "warden"` wire shape + `Completed {
+/// tokens_emitted: 0 }`); the real analysis lands in §88.d/f.
+const QUANT_GRADUATED: &[&str] = &["quant", "yield", "warden"];
 
 #[tokio::test]
 async fn every_ir_flow_node_routes_to_its_labeled_handler() {
-    let pairs = all_47_pairs();
+    let pairs = all_48_pairs();
     for (node, expected_kind) in pairs {
         // The kind slug from `ir_flow_node_kind` is the single source
         // of truth (eliminates the ShimReason::slug duplication that
@@ -921,17 +940,17 @@ async fn every_ir_flow_node_routes_to_its_labeled_handler() {
 /// `dispatch_node` compile (exhaustive match) AND requires growing
 /// this set + a new entry in one of the sub-catalogs below.
 #[test]
-fn graduated_variants_set_size_pinned_47_of_47() {
+fn graduated_variants_set_size_pinned_48_of_48() {
     assert_eq!(
         GRADUATED_VARIANTS.len(),
-        47,
-        "47 / 47 graduated. All IRFlowNode variants have a NAMED \
+        48,
+        "48 / 48 graduated. All IRFlowNode variants have a NAMED \
          async handler in dispatch_node; `legacy_shim` retired in \
          33.y.l. Composition: 6 pure-shape (33.y.c) + 6 orchestration \
          (33.y.d) + 2 parallel/algebraic (33.y.e) + 10 cognitive \
          (33.y.f) + 6 algebraic handlers (33.y.g) + 10 wire \
          integrations (33.y.h) + 3 PIX (33.y.i) + 2 Lambda+UseTool \
-         (33.y.j) + 2 quant+yield (§51.a/§51.d.2) = 47 variants total."
+         (33.y.j) + 3 quant+yield+warden (§51.a/§51.d.2/§88.a) = 48 variants total."
     );
     assert_eq!(PURE_SHAPE_GRADUATED.len(), 6);
     assert_eq!(ORCHESTRATION_GRADUATED.len(), 6);
@@ -942,7 +961,7 @@ fn graduated_variants_set_size_pinned_47_of_47() {
     assert_eq!(WIRE_INTEGRATIONS_GRADUATED.len(), 10);
     assert_eq!(PIX_GRADUATED.len(), 3);
     assert_eq!(LAMBDA_TOOLS_GRADUATED.len(), 2);
-    assert_eq!(QUANT_GRADUATED.len(), 2);
+    assert_eq!(QUANT_GRADUATED.len(), 3);
 
     // Sum check — the partition is exhaustive (no variant in
     // multiple groups; no variant missing).
@@ -957,8 +976,8 @@ fn graduated_variants_set_size_pinned_47_of_47() {
         + LAMBDA_TOOLS_GRADUATED.len()
         + QUANT_GRADUATED.len();
     assert_eq!(
-        total, 47,
-        "partition sum check: all 10 sub-catalogs must cover exactly 47 variants"
+        total, 48,
+        "partition sum check: all 10 sub-catalogs must cover exactly 48 variants"
     );
 }
 
@@ -968,7 +987,7 @@ fn graduated_variants_set_size_pinned_47_of_47() {
 
 #[tokio::test]
 async fn dispatch_node_honors_cancel_flag_at_entry() {
-    let pairs = all_47_pairs();
+    let pairs = all_48_pairs();
     for (node, kind) in pairs {
         let (tx, _rx) = mpsc::unbounded_channel();
         let cancel = CancellationFlag::new();
@@ -998,7 +1017,7 @@ async fn dispatch_node_honors_cancel_flag_at_entry() {
 
 #[test]
 fn flow_plan_kind_returns_non_empty_slug_for_all_45_variants() {
-    let pairs = all_47_pairs();
+    let pairs = all_48_pairs();
     let mut seen = std::collections::HashSet::new();
     for (node, expected_kind) in pairs {
         let kind = ir_flow_node_kind(&node);
@@ -1017,7 +1036,7 @@ fn flow_plan_kind_returns_non_empty_slug_for_all_45_variants() {
              be 1-to-1 with IRFlowNode variants",
         );
     }
-    assert_eq!(seen.len(), 47, "slugs cover all 47 variants exactly once");
+    assert_eq!(seen.len(), 48, "slugs cover all 48 variants exactly once");
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -1073,7 +1092,7 @@ fn dispatch_error_variants_constructible_from_public_surface() {
 
 #[tokio::test]
 async fn dispatch_node_does_not_panic_for_any_variant() {
-    let pairs = all_47_pairs();
+    let pairs = all_48_pairs();
     for (node, kind) in pairs {
         let (mut ctx, _rx) = fresh_ctx();
         // If this `await` panics for any variant we've shipped a

@@ -1278,6 +1278,40 @@ pub async fn run_quant(
     })
 }
 
+/// §Fase 88.a — the `warden(<target>) within <Scope> { … }` adversarial
+/// security-analysis block. Wire shape: `step_type: "warden"`.
+///
+/// SURFACE ONLY: the OSS dispatcher recognizes the block and emits the canonical
+/// start/complete wire shape (recording the target + scope reference so an
+/// observer sees the authorization binding) but does NOT run the analysis. The
+/// real work — resolving the signed `scope`, ingesting authorized evidence,
+/// abductive adversarial analysis, and emitting attested `Vulnerability`
+/// findings — is the `WardenBackend` port + reference engine (§88.d) and the
+/// enterprise engine (§88.f), all behind the §88.c authorization gate.
+pub async fn run_warden(
+    node: &crate::ir_nodes::IRWarden,
+    ctx: &mut DispatchCtx,
+) -> Result<NodeOutcome, DispatchError> {
+    if ctx.cancel.is_cancelled() {
+        return Err(DispatchError::UpstreamCancelled);
+    }
+    let step_index = ctx.step_counter;
+    ctx.step_counter += 1;
+
+    emit_step_start(ctx, "Warden", step_index, "warden")?;
+    // Record the authorization binding (target + scope) for downstream observers.
+    // No analysis happens here in §88.a.
+    ctx.let_bindings
+        .insert("__warden_scope".to_string(), node.scope_ref.clone());
+    emit_step_complete(ctx, "Warden", step_index, "", 0)?;
+
+    Ok(NodeOutcome::Completed {
+        output: String::new(),
+        tokens_emitted: 0,
+        step_index,
+    })
+}
+
 // ────────────────────────────────────────────────────────────────────
 //  Yield (§Fase 51.d.2 — quant measurement point, surface only)
 // ────────────────────────────────────────────────────────────────────
