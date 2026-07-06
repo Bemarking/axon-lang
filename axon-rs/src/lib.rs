@@ -361,6 +361,10 @@ pub mod cache_runtime;
 // Boden profiles, NCD novelty (the computable Kolmogorov-novelty proxy),
 // best-of-N selection, and fail-closed verification.
 pub mod forge;
+// §Fase 87.e — the `HolographBackend` port + the OSS reference HRR codec
+// (circular-convolution binding via a self-contained radix-2 FFT), the
+// `savant` long-horizon memory-compression layer (paper §5).
+pub mod holograph;
 pub mod tool_validator;
 pub mod trace_export;
 pub mod trace_store;
