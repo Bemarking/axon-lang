@@ -287,6 +287,20 @@ pub enum PropertyClass {
     /// REFUTED, and the §52 deploy gate rejects the bundle fail-closed. A
     /// non-dispatching endpoint crosses no boundary → no proof.
     AuthorizationCoverage,
+    /// §90.b — the doctrine `every_requirement_is_grantable`, the completeness
+    /// dual of `AuthorizationCoverage`. §89 proved every boundary DECLARES a
+    /// guard; §90 proves every declared guard is SATISFIABLE. Given a grantable
+    /// authority catalog (RBAC colon perms ∪ reserved dotted caps ∪
+    /// SA-grantable — supplied by the deploy environment, since pure OSS has no
+    /// authority system), re-derives the whole-program `requires:` set from the
+    /// IR, RE-PROJECTS the catalog through `π` (`auth_scope::build_grantable_set`
+    /// — re-checking that no two authorities fracture into one capability), and
+    /// certifies `requires ⊆ π(catalog)`. A `requires: [x]` whose `x` no
+    /// authority grants is a DEAD boundary — declarable but never satisfiable
+    /// (`axon-T891`), the dual of the §89 Modo-2 dead permission. A
+    /// stored/deployed IR whose stale proof admitted a dead requirement is
+    /// REFUTED and the §52 deploy gate rejects the bundle fail-closed.
+    CapabilityGrantability,
 }
 
 /// §72.f — the closed period catalog for `budget` quotas. The checker's own
@@ -338,6 +352,7 @@ impl PropertyClass {
             PropertyClass::SavantSoundness => "savant_soundness",
             PropertyClass::WardenSoundness => "warden_soundness",
             PropertyClass::AuthorizationCoverage => "authorization_coverage",
+            PropertyClass::CapabilityGrantability => "capability_grantability",
         }
     }
 }
@@ -962,6 +977,30 @@ pub struct AuthorizationCoverageWitness {
     pub authorized: bool,
 }
 
+/// §90.b — witness for [`PropertyClass::CapabilityGrantability`], one per
+/// program. The checker RE-DERIVES `required` from the IR endpoints, RE-BUILDS
+/// the grantable set from `authorities` through `π`, and rejects on: a forged
+/// `required` (disagrees with the IR), a FRACTURED catalog (two authorities
+/// project to one capability), an UNPROJECTABLE authority, or a DEAD
+/// requirement (`required ⊄ π(authorities)`, `axon-T891`). A verifying proof
+/// has `all_grantable == true`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CapabilityGrantabilityWitness {
+    /// The distinct `requires:` capability scopes across DISPATCHING endpoints,
+    /// sorted. The requirement set the law quantifies over.
+    pub required: Vec<String>,
+    /// The RAW authority catalog the grantable set is built from (RBAC colon
+    /// perms ∪ reserved dotted caps ∪ SA-grantable), sorted. Carried in the
+    /// witness because pure OSS has no authority system — the catalog is
+    /// supplied by the deploy environment (enterprise RBAC), and the checker
+    /// re-projects it rather than trusting a pre-computed grantable list.
+    pub authorities: Vec<String>,
+    /// Derived: `build_grantable_set(authorities)` is clean (no fracture, no
+    /// unprojectable) AND every `required` ∈ the projected grantable set. The
+    /// property certified is that this is true.
+    pub all_grantable: bool,
+}
+
 /// The property-specific witness. Tagged so the JSON is self-describing
 /// + a future class adds a variant without ambiguity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -989,6 +1028,7 @@ pub enum Witness {
     SavantSoundness(SavantSoundnessWitness),
     WardenSoundness(WardenSoundnessWitness),
     AuthorizationCoverage(AuthorizationCoverageWitness),
+    CapabilityGrantability(CapabilityGrantabilityWitness),
 }
 
 impl Witness {
@@ -1027,6 +1067,8 @@ impl Witness {
             Witness::SavantSoundness(w) => &w.savant_name,
             Witness::WardenSoundness(w) => &w.warden_target,
             Witness::AuthorizationCoverage(w) => &w.endpoint_name,
+            // §90.b — program-wide property, no single named subject.
+            Witness::CapabilityGrantability(_) => "<program>",
         }
     }
 }

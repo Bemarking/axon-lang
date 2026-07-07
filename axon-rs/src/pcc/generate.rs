@@ -15,7 +15,7 @@ use crate::ir_nodes::{IRProgram, IRSessionStep};
 use super::effects;
 use super::proof_term::{
     AggregateSoundnessWitness, CallSoundnessCertificate, CapabilityContainmentWitness,
-    AuthorizationCoverageWitness,
+    AuthorizationCoverageWitness, CapabilityGrantabilityWitness,
     CapabilityIsolationWitness,
     ChannelEgressSoundnessWitness,
     ChannelDeliverySoundnessWitness, ComplianceCoverageWitness, CorsPolicyConsistencyWitness,
@@ -153,6 +153,45 @@ pub fn derive_authorization_coverage_witness(
     }
 }
 
+/// §90.b — derive the whole-program [`CapabilityGrantabilityWitness`] given the
+/// grantable authority catalog (RBAC colon perms ∪ reserved dotted caps ∪
+/// SA-grantable). Collects the distinct `requires:` scopes across DISPATCHING
+/// endpoints, re-projects the catalog through `π`, and records whether the
+/// namespace is clean AND every requirement is grantable. The manifest is an
+/// INPUT because pure OSS has no authority system — the enterprise supplies its
+/// live RBAC catalog at generation time; the independent checker re-derives all
+/// of this from the IR + the witness's own `authorities`.
+pub fn derive_capability_grantability_witness(
+    ir: &IRProgram,
+    authorities: &[String],
+) -> CapabilityGrantabilityWitness {
+    use std::collections::BTreeSet;
+    let required: Vec<String> = ir
+        .endpoints
+        .iter()
+        .filter(|e| !e.execute_flow.is_empty())
+        .flat_map(|e| e.requires_capabilities.iter().cloned())
+        .collect::<BTreeSet<String>>()
+        .into_iter()
+        .collect();
+    let mut authorities_sorted: Vec<String> =
+        authorities.iter().cloned().collect::<BTreeSet<String>>().into_iter().collect();
+    authorities_sorted.sort();
+
+    let grantable = crate::auth_scope::build_grantable_set(authorities_sorted.iter());
+    let all_grantable = grantable.is_clean()
+        && matches!(
+            crate::auth_scope::check_grantable(&required, &grantable.caps),
+            crate::auth_scope::GrantabilityVerdict::Grantable
+        );
+
+    CapabilityGrantabilityWitness {
+        required,
+        authorities: authorities_sorted,
+        all_grantable,
+    }
+}
+
 /// §89.c — generate an AuthorizationCoverage proof for every DISPATCHING
 /// `axonendpoint` (non-empty `execute:` — a real trust boundary). A
 /// non-dispatching endpoint crosses no boundary → no proof (mirrors "no
@@ -176,6 +215,36 @@ pub fn generate_authorization_coverage_proofs(
         });
     }
     proofs
+}
+
+/// §90.b — emit the whole-program [`PropertyClass::CapabilityGrantability`]
+/// proof, GIVEN the grantable authority catalog. One proof per program (like
+/// `CacheSoundness`). Emitted only when the program has ≥1 dispatching endpoint
+/// declaring a `requires:` — a program with no capability requirements has no
+/// grantability obligation. The enterprise supplies its live RBAC catalog
+/// (`authorities`); a pure-OSS `axon pcc prove` without a catalog does not emit
+/// this class (no authority system to check against).
+pub fn generate_capability_grantability_proofs(
+    ir: &IRProgram,
+    authorities: &[String],
+    axon_version: &str,
+) -> Vec<ProofTerm> {
+    let has_requirement = ir
+        .endpoints
+        .iter()
+        .any(|e| !e.execute_flow.is_empty() && !e.requires_capabilities.is_empty());
+    if !has_requirement {
+        return Vec::new();
+    }
+    vec![ProofTerm {
+        property: PropertyClass::CapabilityGrantability,
+        artifact_digest: artifact_digest(ir),
+        witness: Witness::CapabilityGrantability(derive_capability_grantability_witness(
+            ir,
+            authorities,
+        )),
+        axon_version: axon_version.to_string(),
+    }]
 }
 
 /// §51.b — derive an [`EffectRowSoundnessWitness`] for one tool's

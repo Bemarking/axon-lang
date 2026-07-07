@@ -141,6 +141,9 @@ pub fn check_proof(proof: &ProofTerm, ir: &IRProgram) -> CheckOutcome {
         (PropertyClass::AuthorizationCoverage, Witness::AuthorizationCoverage(w)) => {
             check_authorization_coverage(w, ir)
         }
+        (PropertyClass::CapabilityGrantability, Witness::CapabilityGrantability(w)) => {
+            check_capability_grantability(w, ir)
+        }
         _ => CheckOutcome::UnknownProperty,
     }
 }
@@ -1316,6 +1319,81 @@ fn check_authorization_coverage(
                  — an unguarded boundary (doctrine `every_boundary_is_guarded`)",
                 actual.endpoint_name
             ),
+        };
+    }
+    CheckOutcome::Verified
+}
+
+/// §90.b — independent checker for [`PropertyClass::CapabilityGrantability`]
+/// (doctrine `every_requirement_is_grantable`). Re-derives the whole-program
+/// `requires:` set from the IR (rejecting a forged witness), RE-PROJECTS the
+/// witness's authority catalog through `π` (rejecting a fractured namespace or
+/// an unprojectable authority — never trusting a pre-computed grantable list),
+/// and rejects a DEAD requirement (`required ⊄ π(catalog)`, `axon-T891`) — the
+/// dual of the §89 Modo-2 dead permission.
+fn check_capability_grantability(
+    claimed: &super::proof_term::CapabilityGrantabilityWitness,
+    ir: &IRProgram,
+) -> CheckOutcome {
+    use std::collections::BTreeSet;
+    // (1) Re-derive `required` from the IR — a forged witness that dropped a
+    // dead requirement (to fake `all_grantable`) disagrees here.
+    let required: Vec<String> = ir
+        .endpoints
+        .iter()
+        .filter(|e| !e.execute_flow.is_empty())
+        .flat_map(|e| e.requires_capabilities.iter().cloned())
+        .collect::<BTreeSet<String>>()
+        .into_iter()
+        .collect();
+    if required != claimed.required {
+        return CheckOutcome::Refuted {
+            reason: "requires-set disagrees with artifact re-derivation (forged or stale proof)"
+                .to_string(),
+        };
+    }
+    // (2) Re-project the catalog. A fracture (two authorities → one capability)
+    // or an unprojectable authority makes the manifest itself unsound — reject
+    // fail-closed rather than certify against a broken grantable set.
+    let grantable = crate::auth_scope::build_grantable_set(claimed.authorities.iter());
+    if !grantable.collisions.is_empty() {
+        let (a, b, cap) = &grantable.collisions[0];
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "fractured capability namespace: authorities '{a}' and '{b}' both project to \
+                 '{cap}' — the grantable set is ambiguous (doctrine \
+                 `every_requirement_is_grantable`)"
+            ),
+        };
+    }
+    if !grantable.unprojectable.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "authority '{}' does not project to a valid capability slug — malformed catalog",
+                grantable.unprojectable[0]
+            ),
+        };
+    }
+    // (3) The law: requires ⊆ π(catalog). A dead requirement is axon-T891.
+    match crate::auth_scope::check_grantable(&required, &grantable.caps) {
+        crate::auth_scope::GrantabilityVerdict::Grantable => {}
+        crate::auth_scope::GrantabilityVerdict::Ungrantable { ungrantable, .. } => {
+            return CheckOutcome::Refuted {
+                reason: format!(
+                    "axon-T891 `requires: [{}]` is not grantable — no authority in the catalog \
+                     grants it (a dead boundary, declarable but never satisfiable; doctrine \
+                     `every_requirement_is_grantable`)",
+                    ungrantable.join(", ")
+                ),
+            };
+        }
+    }
+    // (4) The witness's own verdict must agree with the re-derivation.
+    if !claimed.all_grantable {
+        return CheckOutcome::Refuted {
+            reason: "witness claims all_grantable=false but re-derivation found every requirement \
+                     grantable (forged or stale proof)"
+                .to_string(),
         };
     }
     CheckOutcome::Verified

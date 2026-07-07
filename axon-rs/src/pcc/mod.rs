@@ -52,6 +52,8 @@ pub use generate::{
     generate_channel_egress_soundness_proofs, generate_compliance_coverage_proofs,
     // §Fase 89.c — the every_boundary_is_guarded coverage obligation.
     derive_authorization_coverage_witness, generate_authorization_coverage_proofs,
+    // §Fase 90.b — the every_requirement_is_grantable obligation (the dual).
+    derive_capability_grantability_witness, generate_capability_grantability_proofs,
     generate_effect_row_soundness_proofs,
     generate_interruptible_session_soundness_proofs,
     generate_parked_residual_soundness_proofs,
@@ -63,7 +65,8 @@ pub use generate::{
     derive_cors_policy_consistency_witness, generate_cors_policy_consistency_proofs,
 };
 pub use proof_term::{
-    CallSoundnessCertificate, CapabilityContainmentWitness, CapabilityIsolationWitness,
+    CallSoundnessCertificate, CapabilityContainmentWitness, CapabilityGrantabilityWitness,
+    CapabilityIsolationWitness,
     ChannelEgressSoundnessWitness,
     ComplianceCoverageWitness,
     CorsPolicyConsistencyWitness,
@@ -2915,5 +2918,99 @@ mod tests {
             CheckOutcome::Refuted { reason } => assert!(reason.contains("disagrees"), "{reason}"),
             other => panic!("expected Refuted (forgery), got {other:?}"),
         }
+    }
+
+    // ── §Fase 90.b — CapabilityGrantability (every_requirement_is_grantable) ──
+
+    /// A representative RBAC catalog (colon) + the reserved dotted caps —
+    /// the grantable authority manifest the enterprise supplies.
+    fn catalog() -> Vec<String> {
+        [
+            "flow:execute", "flow:deploy", "tenant:update", "secret:read", "secret:write",
+            "warden:execute", "tech:dispatch", "tech:approve", "daemon:run",
+            "store.platform_read", "store.platform_write",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+    }
+
+    #[test]
+    fn grantability_verifies_when_requires_projects_from_the_catalog() {
+        let mut ir = empty_ir();
+        // requires the DOTTED `flow.execute` — grantable because the catalog
+        // has the colon `flow:execute`, which π projects to it.
+        ir.endpoints
+            .push(endpoint_requires("Deploy", "DeployFlow", &["flow.execute"]));
+        let proofs = generate_capability_grantability_proofs(&ir, &catalog(), VERSION);
+        assert_eq!(proofs.len(), 1, "one whole-program grantability proof");
+        assert_eq!(proofs[0].property.slug(), "capability_grantability");
+        assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
+    }
+
+    #[test]
+    fn grantability_refutes_the_briefs_dead_requirement() {
+        // Kivi brief #55: `requires: [tenant.write]` — the catalog has
+        // `tenant:update`, NOT `tenant:write`. A dead boundary → axon-T891.
+        let mut ir = empty_ir();
+        ir.endpoints
+            .push(endpoint_requires("Write", "WriteFlow", &["tenant.write"]));
+        let proofs = generate_capability_grantability_proofs(&ir, &catalog(), VERSION);
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("axon-T891"), "{reason}");
+                assert!(reason.contains("tenant.write"), "{reason}");
+            }
+            other => panic!("expected Refuted (dead requirement), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn grantability_refutes_a_fractured_catalog() {
+        // If the catalog gained a `store:platform_read` colon perm it would
+        // collide with the reserved dotted `store.platform_read` under π.
+        let mut ir = empty_ir();
+        ir.endpoints
+            .push(endpoint_requires("Plat", "PlatFlow", &["store.platform_read"]));
+        let mut authorities = catalog();
+        authorities.push("store:platform_read".to_string());
+        let proofs = generate_capability_grantability_proofs(&ir, &authorities, VERSION);
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("fractured"), "{reason}");
+                assert!(reason.contains("store.platform_read"), "{reason}");
+            }
+            other => panic!("expected Refuted (fracture), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn grantability_refutes_a_forged_requires_set() {
+        // Forge: drop the dead requirement from the witness to fake
+        // all_grantable. The checker re-derives `required` from the IR and
+        // catches the disagreement.
+        let mut ir = empty_ir();
+        ir.endpoints
+            .push(endpoint_requires("Write", "WriteFlow", &["tenant.write"]));
+        let mut proofs = generate_capability_grantability_proofs(&ir, &catalog(), VERSION);
+        if let Witness::CapabilityGrantability(ref mut w) = proofs[0].witness {
+            w.required = Vec::new();
+            w.all_grantable = true;
+        }
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => assert!(reason.contains("disagrees"), "{reason}"),
+            other => panic!("expected Refuted (forged requires-set), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn grantability_emits_no_proof_without_requirements() {
+        // A program whose dispatching endpoints declare no `requires:` has
+        // no grantability obligation.
+        let mut ir = empty_ir();
+        ir.endpoints
+            .push(endpoint_requires("Public", "PublicFlow", &[]));
+        let proofs = generate_capability_grantability_proofs(&ir, &catalog(), VERSION);
+        assert!(proofs.is_empty(), "no requires → no grantability proof");
     }
 }
