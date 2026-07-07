@@ -1,5 +1,5 @@
 <p align="center">
-  <strong>AXON</strong> <em>v2.44.0</em><br>
+  <strong>AXON</strong> <em>v2.45.0</em><br>
   The first formal cognitive language for AI — a 100% Rust + C23 native
   runtime with <strong>Cognitive I/O</strong>, real-time streaming,
   first-class HTTP endpoints, a four-pillar cognitive data plane, and
@@ -37,7 +37,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v2.44.0-informational" alt="Version">
+  <img src="https://img.shields.io/badge/version-v2.45.0-informational" alt="Version">
   <img src="https://img.shields.io/badge/status-production-brightgreen" alt="Status: Production">
   <img src="https://img.shields.io/badge/runtime-100%25%20Rust%20%2B%20C23-orange" alt="100% Rust + C23">
   <img src="https://img.shields.io/badge/streaming-SSE%20%7C%20NDJSON%20%7C%20WebSocket-brightgreen" alt="Streaming">
@@ -53,7 +53,7 @@
 
 > **Two repositories, two version lines.** This repo (`axon-lang`,
 > AGPL-3.0-or-later, public) ships the **language + runtime + compiler + 7 LLM
-> backends + Cognitive I/O + WebSocket session types** — currently **v2.44.0**.
+> backends + Cognitive I/O + WebSocket session types** — currently **v2.45.0**.
 > The commercial control plane (`axon-enterprise`, EULA, private) layers
 > multi-tenant identity / RBAC / SSO / metering / audit / vertical compliance
 > **on top of** this language via a pinned Cargo dependency — currently

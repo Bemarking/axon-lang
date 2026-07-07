@@ -1,6 +1,6 @@
 [package]
 name = "axon-lang"
-version = "2.44.0"
+version = "2.45.0"
 authors = ["AXON Project", "Bemarking AI S.A.S."]
 edition = "2021"
 rust-version = "1.95"
@@ -26,7 +26,7 @@ path = "src/main.rs"
 # without dragging tokio/axum/sqlx/aws. Path is used for in-tree builds;
 # `version` makes the dep cargo-publishable (crates.io requires non-path
 # deps to carry a version specifier).
-axon-frontend = { path = "../axon-frontend", version = "=1.36.0" }
+axon-frontend = { path = "../axon-frontend", version = "=1.37.0" }
 clap = { version = "4.5", features = ["derive", "env"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "rustls-tls", "stream"] }
 serde = { version = "1", features = ["derive"] }
