@@ -114,5 +114,6 @@ proves the requirement is grantable, or it does not deploy.
 ## See also
 
 - `axon://logic/every_boundary_is_guarded` — the sister law (declare the guard); this one proves the guard is openable.
+- `axon://logic/every_granted_authority_projects` — the converse quantifier at the principal: the key that is actually cut must turn the lock (the dead-authority closure).
 - `axon://logic/no_unwitnessed_advantage` — the same honest-compiler reflex applied to advantage claims.
 - `axon://primitives/scope` — the mandatory authorization envelope a `warden` runs within.

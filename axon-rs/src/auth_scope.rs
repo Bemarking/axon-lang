@@ -262,6 +262,64 @@ pub fn project_permission(perm: &str) -> Result<Capability, ProjectionError> {
     Capability::parse(&candidate).ok_or_else(|| ProjectionError::NotProjectable(perm.to_string()))
 }
 
+/// The image of `π` over a HELD authority set, with the authorities that
+/// did not project surfaced explicitly — never silently dropped.
+///
+/// §Fase 93.a (`every_granted_authority_projects`). [`build_grantable_set`]
+/// serves the *catalog* side of the law (deploy gate: is a requirement
+/// satisfiable by ANY authority?). This serves the *principal* side: given
+/// the permissions a principal actually holds (built-in role expansion ∪
+/// DB-resolved custom-role rows ∪ machine grants), what capability set do
+/// they project to — and which held authorities were unprojectable? A
+/// verify-time caller that swallowed projection failures would turn a
+/// tampered or legacy `role_permissions` row into a silent authority gap,
+/// indistinguishable from a revocation; surfacing `dropped` lets the
+/// runtime degrade per-item WITH a witness (structured log), the
+/// boot-hydrate self-heal posture applied to authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectedSet {
+    /// The canonical (dotted) projection of every projectable input.
+    pub capabilities: BTreeSet<Capability>,
+    /// `(authority, why)` for every input that did not project.
+    pub dropped: Vec<(String, ProjectionError)>,
+}
+
+impl ProjectedSet {
+    /// True iff every held authority projected — the healthy state.
+    pub fn is_total(&self) -> bool {
+        self.dropped.is_empty()
+    }
+}
+
+/// `π` lifted to a SET of held authorities — total over any input, with
+/// explicit drops (the dual of [`build_grantable_set`], which serves the
+/// catalog; this serves the principal). Duplicate authorities are
+/// idempotent; the image is a set. Unlike `build_grantable_set` this does
+/// NOT collision-check: on the principal side two held authorities
+/// projecting to one capability is harmless (the principal holds it
+/// either way); fracture detection belongs to the catalog gate.
+pub fn project_permission_set<I, S>(authorities: I) -> ProjectedSet
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut capabilities: BTreeSet<Capability> = BTreeSet::new();
+    let mut dropped: Vec<(String, ProjectionError)> = Vec::new();
+    for auth in authorities {
+        let auth = auth.as_ref();
+        match project_permission(auth) {
+            Ok(cap) => {
+                capabilities.insert(cap);
+            }
+            Err(e) => dropped.push((auth.to_string(), e)),
+        }
+    }
+    ProjectedSet {
+        capabilities,
+        dropped,
+    }
+}
+
 /// The grantable capability set built from an authority catalog, PLUS
 /// any collisions surfaced during projection. A collision means two
 /// distinct authorities projected to the *same* capability — a fractured
@@ -649,6 +707,54 @@ mod tests {
             }
             _ => panic!("expected Ungrantable — tenant.write is not grantable"),
         }
+    }
+
+    // ── §Fase 93.a — `π` lifted to held-authority sets ──────────────
+
+    #[test]
+    fn project_set_is_total_over_a_clean_held_set() {
+        // The principal side of the law: built-in expansion + custom-role
+        // rows + an already-dotted reserved cap all project, no drops.
+        let p = project_permission_set(vec![
+            "tenant:update",
+            "secret:write",
+            "store.platform_read",
+        ]);
+        assert!(p.is_total());
+        assert!(p.capabilities.contains(&Capability::parse("tenant.update").unwrap()));
+        assert!(p.capabilities.contains(&Capability::parse("secret.write").unwrap()));
+        assert!(p.capabilities.contains(&Capability::parse("store.platform_read").unwrap()));
+    }
+
+    #[test]
+    fn project_set_surfaces_drops_instead_of_swallowing() {
+        // A tampered/legacy role_permissions row must degrade WITH a
+        // witness — the verify-time caller logs `dropped`, never
+        // silently narrows authority.
+        let p = project_permission_set(vec!["tenant:update", "a:b:c", "Bad-Key"]);
+        assert!(!p.is_total());
+        assert_eq!(p.capabilities.len(), 1);
+        assert_eq!(p.dropped.len(), 2);
+        assert_eq!(p.dropped[0].0, "a:b:c");
+        assert_eq!(p.dropped[1].0, "Bad-Key");
+    }
+
+    #[test]
+    fn project_set_is_idempotent_and_collision_tolerant() {
+        // Duplicates are idempotent, and — unlike the catalog gate — a
+        // colon perm and its dotted twin held TOGETHER are harmless on
+        // the principal side (the principal holds the capability either
+        // way); the image is simply the set.
+        let p = project_permission_set(vec!["flow:execute", "flow:execute", "flow.execute"]);
+        assert!(p.is_total());
+        assert_eq!(p.capabilities.len(), 1);
+    }
+
+    #[test]
+    fn project_set_of_empty_is_empty_and_total() {
+        let p = project_permission_set(Vec::<&str>::new());
+        assert!(p.is_total());
+        assert!(p.capabilities.is_empty());
     }
 
     #[test]

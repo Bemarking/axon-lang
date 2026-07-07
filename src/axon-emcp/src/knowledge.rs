@@ -1376,6 +1376,9 @@ Body prose.
             (ReferenceKind::Logic, "every_requirement_is_grantable"),
             // §Fase 92 — delegation is attenuation: grants ⊆ minter, TTL-bounded, depth-1.
             (ReferenceKind::Logic, "authority_only_attenuates"),
+            // §Fase 93 — every granted authority projects (the dead-authority
+            // closure: the converse quantifier of every_requirement_is_grantable).
+            (ReferenceKind::Logic, "every_granted_authority_projects"),
             (ReferenceKind::Compliance, "hipaa"),
             (ReferenceKind::Compliance, "gdpr"),
             (ReferenceKind::Compliance, "pci_dss"),
@@ -1419,7 +1422,7 @@ Body prose.
         );
         assert_eq!(
             cat.reference_count_of(ReferenceKind::Logic),
-            13,
+            14,
             "logic family count drift"
         );
         assert_eq!(
