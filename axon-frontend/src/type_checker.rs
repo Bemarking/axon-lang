@@ -711,6 +711,10 @@ pub struct TypeChecker<'a> {
     /// drops; kept SEPARATE so the §38 store proof (which matches the bare
     /// column-type name) is unaffected. Cleared between flows.
     current_flow_param_spellings: std::collections::BTreeMap<String, String>,
+    /// §Fase 92.b — the mint bindings seen so far in the CURRENT flow's
+    /// walk (source order), for the `axon-T896` never-persisted law.
+    /// Cleared between flows.
+    current_mint_bindings: std::collections::HashSet<String>,
     /// §Fase 74.g — every channel/topic `emit`ted to anywhere in the
     /// program (all flow bodies + daemon listener bodies, nested). Built
     /// once in `check`. A daemon `listen`er on a channel NOT in this set has
@@ -936,6 +940,7 @@ impl<'a> TypeChecker<'a> {
             ext_scan_categories: std::collections::HashSet::new(),
             json_lens_fields: std::collections::HashMap::new(),
             current_flow_param_spellings: std::collections::BTreeMap::new(),
+            current_mint_bindings: std::collections::HashSet::new(),
             emitted_channels: std::collections::HashSet::new(),
         }
     }
@@ -968,6 +973,7 @@ impl<'a> TypeChecker<'a> {
             ext_scan_categories: std::collections::HashSet::new(),
             json_lens_fields: std::collections::HashMap::new(),
             current_flow_param_spellings: std::collections::BTreeMap::new(),
+            current_mint_bindings: std::collections::HashSet::new(),
             emitted_channels: std::collections::HashSet::new(),
         }
     }
@@ -1414,6 +1420,16 @@ impl<'a> TypeChecker<'a> {
                 Declaration::Cors(n) => {
                     registrations.push((n.name.clone(), "cors".into(), n.loc.line, n.loc.clone()));
                 }
+                // §Fase 92.a — register the ephemeral-credential contract so
+                // a `mint <Credential>` reference resolves to it (axon-T895).
+                Declaration::Credential(n) => {
+                    registrations.push((
+                        n.name.clone(),
+                        "credential".into(),
+                        n.loc.line,
+                        n.loc.clone(),
+                    ));
+                }
                 // §Fase 85.a — register the named cache policy so a
                 // `tool.cache:` / `retrieve.cache:` reference resolves to it.
                 Declaration::Cache(n) => {
@@ -1647,6 +1663,9 @@ impl<'a> TypeChecker<'a> {
                 Declaration::Voice(n) => self.check_voice(n),
                 Declaration::Cors(n) => self.check_cors(n),
                 Declaration::Cache(n) => self.check_cache(n),
+                // §Fase 92.a — the credential contract's own-field laws
+                // (non-empty grants T893, TTL bounds T894).
+                Declaration::Credential(n) => self.check_credential(n),
                 // §Fase 87.b — own-field validation (domain, mandates, cognition
                 // catalogs). Ref resolution (memory backend) + §72 budget binding
                 // + §79 interruptibility land in §87.c.
@@ -2702,6 +2721,9 @@ impl<'a> TypeChecker<'a> {
             self.current_flow_params
                 .insert(param.name.clone(), param.type_expr.name.clone());
         }
+        // §Fase 92.b — one flow's mint bindings never leak into another's
+        // T896 scan.
+        self.current_mint_bindings.clear();
         // §Fase 73.e — capture the FULL type spelling (incl. the generic the
         // bare map above drops) so the `Json<T>` lens can resolve `T`.
         self.current_flow_param_spellings.clear();
@@ -3544,6 +3566,56 @@ impl<'a> TypeChecker<'a> {
     /// (cross-declaration checks — the undefined-reference check on
     /// `axonendpoint.cors:` and the cross-method path-consistency check —
     /// live in [`Self::check_axonendpoint`] and
+    /// §Fase 92.a — the credential contract's own-field laws. Slug validity
+    /// already ran at parse (the `requires:` grammar); here: a contract that
+    /// grants nothing is dead (`axon-T893`), and the TTL must be a parseable
+    /// duration, > 0, and ≤ the closed 24h ceiling (`axon-T894` — an
+    /// "ephemeral" credential that outlives a day is a §81 service account
+    /// wearing a costume). The mint-time attenuation law
+    /// (`grants ⊆ capabilities(minter)`) is the runtime's half.
+    fn check_credential(&mut self, node: &crate::ast::CredentialDefinition) {
+        if node.grants.is_empty() {
+            self.emit(
+                format!(
+                    "axon-T893 credential '{}' declares no `grants:` — a credential that \
+                     grants nothing can never authorize anything. Declare at least one \
+                     capability slug (e.g. `grants: [chat.invoke]`).",
+                    node.name
+                ),
+                &node.loc,
+            );
+        }
+        const MAX_CREDENTIAL_TTL_SECS: u64 = 86_400; // 24h — the ephemeral ceiling
+        match crate::duration_literal_to_secs(&node.ttl) {
+            None => self.emit(
+                format!(
+                    "axon-T894 credential '{}' has an invalid `ttl:` '{}' — expected a \
+                     duration literal like `15m`, `900s`, `1h` (required field).",
+                    node.name, node.ttl
+                ),
+                &node.loc,
+            ),
+            Some(0) => self.emit(
+                format!(
+                    "axon-T894 credential '{}' has a zero-length `ttl:` '{}' — a bearer \
+                     that is born expired can never authorize anything.",
+                    node.name, node.ttl
+                ),
+                &node.loc,
+            ),
+            Some(secs) if secs > MAX_CREDENTIAL_TTL_SECS => self.emit(
+                format!(
+                    "axon-T894 credential '{}' declares `ttl: {}` ({secs}s), above the \
+                     24h ephemeral ceiling — a long-lived machine identity is the §81 \
+                     service-account surface, not an ephemeral credential.",
+                    node.name, node.ttl
+                ),
+                &node.loc,
+            ),
+            Some(_) => {}
+        }
+    }
+
     /// [`Self::check_cors_cross_method_consistency`] respectively).
     fn check_cors(&mut self, node: &CorsDefinition) {
         // axon-T854 — origin glob shape: exact literal, or a single
@@ -7716,6 +7788,26 @@ impl<'a> TypeChecker<'a> {
                     // proof (axon-T803 NOT-NULL omission + axon-T804
                     // unknown field + axon-T802 value-type mismatch).
                     self.run_38e_persist_proof(&n.store_name, &n.fields, &n.loc);
+                    // §Fase 92.b — a mint binding must never enter a store
+                    // (axon-T896): credentials are shown once, not persisted.
+                    for (col, value) in &n.fields {
+                        for binding in self.current_mint_bindings.clone() {
+                            if value == &binding
+                                || value.contains(&format!("${{{binding}}}"))
+                                || value.contains(&format!("${binding}"))
+                            {
+                                self.emit(
+                                    format!(
+                                        "axon-T896 the mint binding '{binding}' flows into \
+                                         `persist` field '{col}' in flow '{flow_name}' — a \
+                                         minted credential is shown ONCE and never enters a \
+                                         store. Return it to the caller instead.",
+                                    ),
+                                    &n.loc,
+                                );
+                            }
+                        }
+                    }
                 }
                 FlowStep::Retrieve(n) => {
                     self.check_store_ref(&n.store_name, flow_name, &n.loc);
@@ -7815,6 +7907,34 @@ impl<'a> TypeChecker<'a> {
                 }
                 FlowStep::ForIn(n) => {
                     self.check_flow_steps(&n.body, flow_name);
+                }
+                // §Fase 92.b — `mint <Credential> as <binding>`: the
+                // reference must resolve to a declared `credential`
+                // (axon-T895); the binding is tracked for the T896
+                // never-persisted law (walk order = source order, so a
+                // textually-earlier persist can't see a later binding —
+                // consistent with the flow's data-flow direction).
+                FlowStep::Mint(n) => {
+                    match self.symbols.lookup(&n.credential_ref) {
+                        None => self.emit(
+                            format!(
+                                "axon-T895 undefined credential '{}' in flow '{}' — `mint` \
+                                 requires a declared `credential {{ ttl: grants: }}` contract",
+                                n.credential_ref, flow_name
+                            ),
+                            &n.loc,
+                        ),
+                        Some(sym) if sym.kind != "credential" => self.emit(
+                            format!(
+                                "axon-T895 '{}' is a {}, not a credential (referenced by \
+                                 `mint` in flow '{}')",
+                                n.credential_ref, sym.kind, flow_name
+                            ),
+                            &n.loc,
+                        ),
+                        _ => {}
+                    }
+                    self.current_mint_bindings.insert(n.binding.clone());
                 }
                 // §λ-L-E Fase 13 — Mobile typed channel reductions
                 FlowStep::Emit(n) => self.check_emit(n),

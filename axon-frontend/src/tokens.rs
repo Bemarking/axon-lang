@@ -211,6 +211,14 @@ pub enum TokenType {
     // + `scope` authorization-policy declaration (top-level, like `cache`).
     Warden,
     Scope,
+    // §Fase 92 — `credential`: a named ephemeral-credential contract
+    // (top-level, the `cors`/`scope` shape): TTL-bounded, capability-
+    // attenuated (`authority_only_attenuates` — grants ⊆ the minter's own
+    // capabilities at mint). `mint <Credential> as <binding>` is the flow
+    // verb that mints one; the binding receives the raw bearer (shown
+    // once, never persisted).
+    Credential,
+    Mint,
     // `observable` (§Fase 51.c.2) — a top-level Pauli-sum declaration
     // `M = Σ cₖ Pₖ` (real coeffs × Pauli strings ⇒ Hermitian by construction)
     // that a `quant` block measures against.
@@ -548,6 +556,10 @@ pub fn keyword_type(word: &str) -> TokenType {
         "warden" => TokenType::Warden,
         // `scope` (§Fase 88.a) — authorization-scope policy declaration.
         "scope" => TokenType::Scope,
+        // `credential` (§Fase 92.a) — ephemeral-credential contract declaration.
+        "credential" => TokenType::Credential,
+        // `mint` (§Fase 92.b) — the credential-minting flow verb.
+        "mint" => TokenType::Mint,
         // `quant` as a cognitive primitive (§Fase 51.a) — flow-body block.
         "quant" => TokenType::Quant,
         // `observable` (§Fase 51.c.2) — top-level Pauli-sum declaration.

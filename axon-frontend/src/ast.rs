@@ -174,6 +174,13 @@ pub enum Declaration {
     /// analysis (fail-closed). Referenced by `warden(t) within <Scope>`
     /// (docs/fase/fase_88_warden.md).
     Scope(ScopeDefinition),
+    /// §Fase 92.a — a named ephemeral-credential contract: TTL-bounded,
+    /// capability-attenuated bearer minting (`authority_only_attenuates` —
+    /// grants ⊆ the minter's own capabilities at mint, TTL ≤ the closed
+    /// ceiling). Declared once (the `cors`/`scope` shape), referenced by the
+    /// `mint <Credential> as <binding>` flow verb
+    /// (docs/fase/fase_92_ephemeral_visitor_credentials.md).
+    Credential(CredentialDefinition),
     /// §Fase 51.c.2 — a Pauli-sum observable `M = Σ cₖ Pₖ` that a `quant`
     /// block measures against (paper §3.2; plan D5).
     Observable(ObservableDefinition),
@@ -611,6 +618,34 @@ pub struct CorsDefinition {
     /// JS may read beyond the CORS-safelisted set. Free-form strings, same
     /// rationale as `allow_headers`.
     pub expose_headers: Vec<String>,
+    pub loc: Loc,
+    /// Fase 14.b — leading comment trivia.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
+}
+
+/// §Fase 92.a — `credential <Name> { ttl: grants: }`: a named
+/// ephemeral-credential contract. `mint <Name> as <binding>` (§92.b) mints
+/// a TTL-bounded bearer carrying exactly `grants` — and the runtime law
+/// (`authority_only_attenuates`) admits the mint only when
+/// `grants ⊆ capabilities(minter)`. An unknown field in a `credential { }`
+/// block is a HARD PARSE ERROR (the §83 posture — this is security
+/// surface; a typo'd field must not silently produce a permissive
+/// contract).
+#[derive(Debug, Default)]
+pub struct CredentialDefinition {
+    pub name: String,
+    /// The bearer's lifetime — a duration literal (`"15m"`, `"900s"`),
+    /// REQUIRED. Validated by `axon-T894`: parseable, > 0, and ≤ the closed
+    /// 24h ceiling (an "ephemeral" credential that lives for days is a
+    /// service account wearing a costume — §81 covers that shape).
+    pub ttl: String,
+    /// The capability slugs the minted bearer carries — REQUIRED,
+    /// non-empty (`axon-T893`), each a dotted slug per
+    /// `is_valid_capability_slug` (the `requires:` grammar). Attenuation
+    /// (`⊆ minter`) is the runtime/mint-time half of the law.
+    pub grants: Vec<String>,
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia.
     pub leading_trivia: Vec<crate::tokens::Trivia>,
@@ -1955,6 +1990,9 @@ pub enum FlowStep {
     DaemonStep(DaemonStepNode),
     /// §λ-L-E Fase 13 — π-calculus output prefix `c⟨v⟩.P` (Chan-Output / Chan-Mobility).
     Emit(EmitStatement),
+    /// §Fase 92.b — `mint <Credential> as <binding>`: ephemeral-credential
+    /// minting (attenuated, TTL-bounded; `authority_only_attenuates`).
+    Mint(MintStep),
     /// §λ-L-E Fase 13 — capability extrusion (Publish-Ext, paper §4.3).
     Publish(PublishStatement),
     /// §λ-L-E Fase 13 — dual of publish (dynamic typed handle import).
@@ -2908,6 +2946,18 @@ pub struct ChannelDefinition {
 pub struct EmitStatement {
     pub channel_ref: String,
     pub value_ref: String,
+    pub loc: Loc,
+}
+
+/// §Fase 92.b — `mint <Credential> as <binding>`: the flow-step verb that
+/// mints a declared ephemeral `credential` at runtime. The binding
+/// receives the raw bearer string (shown once — the type checker forbids
+/// it from flowing into a `persist` payload, `axon-T896`: credentials do
+/// not enter stores). Undeclared credential reference = `axon-T895`.
+#[derive(Debug)]
+pub struct MintStep {
+    pub credential_ref: String,
+    pub binding: String,
     pub loc: Loc,
 }
 

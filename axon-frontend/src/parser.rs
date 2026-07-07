@@ -238,6 +238,10 @@ fn attach_trivia_to_decl(decl: &mut Declaration, leading: Vec<Trivia>, trailing:
             n.leading_trivia = leading;
             n.trailing_trivia = trailing;
         }
+        Declaration::Credential(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
         Declaration::Cache(n) => {
             n.leading_trivia = leading;
             n.trailing_trivia = trailing;
@@ -2096,6 +2100,9 @@ impl Parser {
             // ── §Fase 88.a — the authorization-scope policy declaration ─────
             TokenType::Scope => self.parse_scope().map(Declaration::Scope),
 
+            // ── §Fase 92.a — the ephemeral-credential contract ──────────────
+            TokenType::Credential => self.parse_credential().map(Declaration::Credential),
+
             // ── §Fase 51.c.2 — Pauli-sum observable ────────────
             TokenType::Observable => self.parse_observable().map(Declaration::Observable),
 
@@ -2930,6 +2937,8 @@ impl Parser {
             TokenType::Daemon => self.parse_flow_step_simple("daemon").map(|l| FlowStep::DaemonStep(DaemonStepNode { daemon_ref: l.1, loc: l.0 })),
             // §λ-L-E Fase 13 — Mobile typed channels (paper §3.1, §3.2, §4.3)
             TokenType::Emit => self.parse_emit_step(),
+            // §Fase 92.b — `mint <Credential> as <binding>` (ephemeral credential).
+            TokenType::Mint => self.parse_mint_step(),
             TokenType::Publish => self.parse_publish_step(),
             TokenType::Discover => self.parse_discover_step(),
             TokenType::Persist => self.parse_persist_step(),
@@ -7105,6 +7114,60 @@ impl Parser {
         Ok(node)
     }
 
+    /// §Fase 92.a — parse `credential Name { ttl: grants: }`. Strict
+    /// closed-catalog (unknown field is a hard error, the §83 D83.7
+    /// discipline — a credential contract governs AUTHORITY, so a typo can
+    /// never silently produce a permissive contract). `grants:` slugs are
+    /// validated at parse time with the same closed grammar as
+    /// `axonendpoint requires:`; the cross-field laws (non-empty grants,
+    /// TTL bounds) are §92.a type-checker territory (`axon-T893`/`T894`).
+    fn parse_credential(&mut self) -> Result<CredentialDefinition, ParseError> {
+        let tok = self.consume(TokenType::Credential)?;
+        let name = self.consume(TokenType::Identifier)?.value;
+        let mut node = CredentialDefinition {
+            name,
+            loc: Loc { line: tok.line, column: tok.column },
+            ..Default::default()
+        };
+        self.consume(TokenType::LBrace)?;
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            let key = self.consume_any_ident_or_kw()?.value;
+            self.consume(TokenType::Colon)?;
+            match key.as_str() {
+                "ttl" => node.ttl = self.consume(TokenType::Duration)?.value,
+                "grants" => {
+                    let bracket_tok = self.current().clone();
+                    let items = self.parse_bracketed_dot_identifiers()?;
+                    for slug in &items {
+                        if !is_valid_capability_slug(slug) {
+                            return Err(ParseError {
+                                message: format!(
+                                    "Invalid capability slug '{slug}' in credential '{}' \
+                                     `grants:`. Capability slugs must match \
+                                     ^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$ — dot-separated \
+                                     lowercase identifiers starting with a letter. Examples: \
+                                     `chat.invoke`, `flow.execute`.",
+                                    node.name
+                                ),
+                                line: bracket_tok.line,
+                                column: bracket_tok.column,
+                                ..Default::default()
+                            });
+                        }
+                    }
+                    node.grants = items;
+                }
+                other => return Err(self.error(&format!("unknown credential field `{other}`"))),
+            }
+            // Optional comma between fields.
+            if self.check(TokenType::Comma) {
+                self.consume(TokenType::Comma)?;
+            }
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(node)
+    }
+
     /// §Fase 85.a — parse `cache Name { backend:, ttl:, key:, default:,
     /// apply_to_effects:, invalidate_on: }`. Strict closed-catalog (unknown
     /// field is a hard error, the §83 D83.7 discipline — a cache governs
@@ -9087,6 +9150,26 @@ impl Parser {
         Ok(FlowStep::Emit(EmitStatement {
             channel_ref: channel,
             value_ref: value,
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+        }))
+    }
+
+    /// §Fase 92.b — parse `mint <Credential> as <binding>`. The credential
+    /// reference must resolve to a declared `credential` (`axon-T895`,
+    /// type-checker); the binding is a fresh flow-scoped name receiving the
+    /// raw bearer string. Both tokens are required — a `mint` with no
+    /// binding would mint authority into the void.
+    fn parse_mint_step(&mut self) -> Result<FlowStep, ParseError> {
+        let tok = self.consume(TokenType::Mint)?;
+        let credential_ref = self.consume(TokenType::Identifier)?.value;
+        self.consume(TokenType::As)?;
+        let binding = self.consume(TokenType::Identifier)?.value;
+        Ok(FlowStep::Mint(MintStep {
+            credential_ref,
+            binding,
             loc: Loc {
                 line: tok.line,
                 column: tok.column,

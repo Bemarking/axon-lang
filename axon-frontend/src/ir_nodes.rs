@@ -124,6 +124,12 @@ pub struct IRProgram {
     /// `skip_serializing_if = empty` IR-SHA discipline as `cors_policies`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub caches: Vec<IRCache>,
+    /// §Fase 92.a — ephemeral-credential contracts (`credential { ttl:
+    /// grants: }`), minted at runtime by the `mint` flow verb under the
+    /// attenuation law (`authority_only_attenuates`). Same
+    /// `skip_serializing_if = empty` IR-SHA discipline.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub credentials: Vec<IRCredential>,
     /// §Fase 87.a — long-horizon autonomous research primitives (compiled). Each
     /// carries its domain, cognition params, memory binding, compute budget and
     /// mandates so the enterprise engine (§87.h+) can drive the active-inference
@@ -210,6 +216,7 @@ impl IRProgram {
             upstreams: Vec::new(),
             cors_policies: Vec::new(),
             caches: Vec::new(),
+            credentials: Vec::new(),
             savants: Vec::new(),
             synths: Vec::new(),
             scopes: Vec::new(),
@@ -977,6 +984,8 @@ pub enum IRFlowNode {
     DaemonStep(IRDaemonStepNode),
     /// §λ-L-E Fase 13 — π-calc output prefix (Chan-Output / Chan-Mobility).
     Emit(IREmit),
+    /// §Fase 92.b — ephemeral-credential minting (attenuated, TTL-bounded).
+    Mint(IRMintStep),
     /// §λ-L-E Fase 13 — capability extrusion (Publish-Ext).
     Publish(IRPublish),
     /// §λ-L-E Fase 13 — dual of publish (typed handle import).
@@ -2305,6 +2314,37 @@ pub struct IREmit {
     pub channel_ref: String,
     pub value_ref: String,
     pub value_is_channel: bool,
+}
+
+/// §Fase 92.a — compiled `credential` contract. The TTL is carried as
+/// SECONDS (converted at lowering from the duration literal) so every
+/// consumer — the OSS minter port, the enterprise PASETO minter, the
+/// deploy gate — shares one arithmetic-ready representation.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRCredential {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub name: String,
+    /// The bearer lifetime in seconds (from the `ttl:` duration literal;
+    /// `0` = unparseable, rejected by `axon-T894` before the IR ships).
+    pub ttl_secs: u64,
+    /// The capability slugs the minted bearer carries (validated dotted
+    /// slugs; non-empty per `axon-T893`).
+    pub grants: Vec<String>,
+}
+
+/// §Fase 92.b — compiled `mint <Credential> as <binding>` step. The runtime
+/// resolves the contract, enforces the attenuation law
+/// (`grants ⊆ capabilities(minter)`, fail-closed), mints via the
+/// `CredentialMinter` port, and binds the raw bearer under `binding`.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRMintStep {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub credential_ref: String,
+    pub binding: String,
 }
 
 /// Compiled publish step — capability extrusion (Publish-Ext, paper §4.3).

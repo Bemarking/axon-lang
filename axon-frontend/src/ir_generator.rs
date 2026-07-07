@@ -299,6 +299,8 @@ impl IRGenerator {
             Declaration::Upstream(n) => ir.upstreams.push(self.visit_upstream(n)),
             Declaration::Cors(n) => ir.cors_policies.push(self.visit_cors(n)),
             Declaration::Cache(n) => ir.caches.push(self.visit_cache(n)),
+            // §Fase 92.a — lower the ephemeral-credential contract.
+            Declaration::Credential(n) => ir.credentials.push(self.visit_credential(n)),
             // §Fase 87.a — lower the `savant` orchestrator into the IR.
             Declaration::Savant(n) => ir.savants.push(self.visit_savant(n)),
             // §Fase 87.d — lower the `synth` tool-synthesis policy into the IR.
@@ -665,6 +667,14 @@ impl IRGenerator {
                 requires_context: s.requires_context,
                 now_tz: s.now_tz.clone(),
                 body: Vec::new(),
+            }),
+            // §Fase 92.b — `mint <Credential> as <binding>`.
+            FlowStep::Mint(s) => IRFlowNode::Mint(crate::ir_nodes::IRMintStep {
+                node_type: "mint",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
+                credential_ref: s.credential_ref.clone(),
+                binding: s.binding.clone(),
             }),
             FlowStep::Probe(s) => IRFlowNode::Probe(IRProbe {
                 node_type: "probe",
@@ -2051,6 +2061,24 @@ impl IRGenerator {
             allow_credentials: n.allow_credentials,
             max_age: n.max_age.clone(),
             expose_headers: n.expose_headers.clone(),
+        }
+    }
+
+    /// §Fase 92.a — lower an ephemeral-credential contract. The duration
+    /// literal converts to SECONDS here (one arithmetic-ready
+    /// representation for every consumer); an unparseable literal lowers
+    /// to `0`, which `axon-T894` rejects before the IR ships.
+    fn visit_credential(
+        &self,
+        n: &crate::ast::CredentialDefinition,
+    ) -> crate::ir_nodes::IRCredential {
+        crate::ir_nodes::IRCredential {
+            node_type: "credential",
+            source_line: n.loc.line,
+            source_column: n.loc.column,
+            name: n.name.clone(),
+            ttl_secs: crate::duration_literal_to_secs(&n.ttl).unwrap_or(0),
+            grants: n.grants.clone(),
         }
     }
 

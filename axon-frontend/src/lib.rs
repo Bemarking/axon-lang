@@ -105,3 +105,25 @@ pub mod voice_desugar;
 // §Fase 84 — Remote Hands: the pure, shared argv-template classifier + risk
 // catalog used by BOTH the type-checker and the runtime dispatcher (D84.1).
 pub mod technician;
+
+/// §Fase 92.a — convert a duration literal (the lexer's `Duration` token
+/// shape: digits + one of `s`/`ms`/`m`/`h`/`d`) into whole seconds. Pure,
+/// total over the token grammar; `None` for anything else (a malformed
+/// literal is `axon-T894` at the type-check layer). `ms` floors to whole
+/// seconds — a sub-second credential TTL is `0` and rejected by the same
+/// law. Shared by the IR lowering and the type checker so the two can
+/// never disagree about what a `ttl:` means.
+pub fn duration_literal_to_secs(literal: &str) -> Option<u64> {
+    let t = literal.trim();
+    let split = t.find(|c: char| !c.is_ascii_digit())?;
+    let (digits, suffix) = t.split_at(split);
+    let n: u64 = digits.parse().ok()?;
+    match suffix {
+        "s" => Some(n),
+        "ms" => Some(n / 1000),
+        "m" => n.checked_mul(60),
+        "h" => n.checked_mul(3600),
+        "d" => n.checked_mul(86_400),
+        _ => None,
+    }
+}
