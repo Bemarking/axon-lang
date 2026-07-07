@@ -573,6 +573,9 @@ fn collect_store_accesses(steps: &[crate::ir_nodes::IRFlowNode], out: &mut Vec<S
             N::Warden(w) => collect_store_accesses(&w.body, out),
             // §Fase 51.d.2 — `yield` is a leaf (measurement value, no store op).
             N::Yield(_) => {}
+            // §Fase 92.b — `mint` is a leaf effect (no store op by
+            // construction — axon-T896 forbids its binding from entering one).
+            N::Mint(_) => {}
             // §Fase 52.a — a `listen` handler body can contain store ops (a
             // daemon cleaner that `persist`s); descend so they're soundness-
             // checked, like the quant body above.
@@ -788,6 +791,8 @@ fn collect_named_use_tool_calls<'a>(
             N::Warden(w) => collect_named_use_tool_calls(&w.body, out),
             // §Fase 51.d.2 — `yield` is a leaf (no nested body, no `use`).
             N::Yield(_) => {}
+            // §Fase 92.b — `mint` is a leaf (no nested body, no `use`).
+            N::Mint(_) => {}
             // §Fase 52.a — a `listen` handler body can contain a `use <Tool>`;
             // descend so it is soundness-checked.
             N::Listen(l) => collect_named_use_tool_calls(&l.body, out),
@@ -1999,6 +2004,117 @@ pub fn generate_temporal_context_soundness_proofs(
     }
 }
 
+// ── §Fase 92.d — CredentialAttenuation ───────────────────────────────────────
+
+/// §92.d — recursively collect every `mint` site from a flow-IR body
+/// (recursing through the container variants, the §91.c walk shape).
+fn collect_mint_sites(
+    flow_name: &str,
+    nodes: &[axon_frontend::ir_nodes::IRFlowNode],
+    out: &mut Vec<(String, String, String)>,
+) {
+    use axon_frontend::ir_nodes::IRFlowNode;
+    for node in nodes {
+        match node {
+            IRFlowNode::Mint(m) => out.push((
+                flow_name.to_string(),
+                m.credential_ref.clone(),
+                m.binding.clone(),
+            )),
+            IRFlowNode::Conditional(c) => {
+                collect_mint_sites(flow_name, &c.then_body, out);
+                collect_mint_sites(flow_name, &c.else_body, out);
+            }
+            IRFlowNode::ForIn(f) => collect_mint_sites(flow_name, &f.body, out),
+            IRFlowNode::Par(p) => {
+                for branch in &p.branches {
+                    collect_mint_sites(flow_name, branch, out);
+                }
+            }
+            IRFlowNode::Listen(l) => collect_mint_sites(flow_name, &l.body, out),
+            IRFlowNode::Warden(w) => collect_mint_sites(flow_name, &w.body, out),
+            IRFlowNode::Quant(q) => collect_mint_sites(flow_name, &q.body, out),
+            _ => {}
+        }
+    }
+}
+
+/// §92.d — the compile-time contract laws, re-stated by the checker
+/// (D51.2): non-empty valid-slug grants (`axon-T893`) + TTL ∈ (0, 24h]
+/// seconds (`axon-T894`). Mirror of the frontend's
+/// `is_valid_capability_slug` shape law.
+fn credential_contract_ok(c: &axon_frontend::ir_nodes::IRCredential) -> bool {
+    let slug_ok = |s: &str| {
+        !s.is_empty()
+            && s.split('.').all(|seg| {
+                let mut ch = seg.chars();
+                matches!(ch.next(), Some('a'..='z'))
+                    && ch.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+            })
+    };
+    !c.grants.is_empty()
+        && c.grants.iter().all(|g| slug_ok(g))
+        && c.ttl_secs > 0
+        && c.ttl_secs <= 86_400
+}
+
+/// §92.d — re-derive the whole-program credential-attenuation witness.
+/// `None` when the program declares no `credential` and no `mint` — no
+/// contract → no proof (the standing convention).
+pub fn derive_credential_attenuation_witness(
+    ir: &IRProgram,
+) -> Option<super::proof_term::CredentialAttenuationWitness> {
+    let contracts: Vec<(String, u64, Vec<String>)> = ir
+        .credentials
+        .iter()
+        .map(|c| (c.name.clone(), c.ttl_secs, c.grants.clone()))
+        .collect();
+    let mut mints: Vec<(String, String, String)> = Vec::new();
+    for flow in &ir.flows {
+        collect_mint_sites(&flow.name, &flow.steps, &mut mints);
+    }
+    if contracts.is_empty() && mints.is_empty() {
+        return None;
+    }
+    let declared: std::collections::HashSet<&str> =
+        ir.credentials.iter().map(|c| c.name.as_str()).collect();
+    let mut unresolved_mints: Vec<String> = Vec::new();
+    for (_, cred_ref, _) in &mints {
+        if !declared.contains(cred_ref.as_str()) && !unresolved_mints.contains(cred_ref) {
+            unresolved_mints.push(cred_ref.clone());
+        }
+    }
+    let invalid_contracts: Vec<String> = ir
+        .credentials
+        .iter()
+        .filter(|c| !credential_contract_ok(c))
+        .map(|c| c.name.clone())
+        .collect();
+    Some(super::proof_term::CredentialAttenuationWitness {
+        contracts,
+        mints,
+        unresolved_mints,
+        invalid_contracts,
+    })
+}
+
+/// §92.d — generate the (at most one) CredentialAttenuation proof for
+/// `ir`. Program-wide, so this is a Vec of length 0 or 1.
+pub fn generate_credential_attenuation_proofs(
+    ir: &IRProgram,
+    axon_version: &str,
+) -> Vec<ProofTerm> {
+    match derive_credential_attenuation_witness(ir) {
+        Some(witness) => vec![ProofTerm {
+            property: PropertyClass::CredentialAttenuation,
+            artifact_digest: artifact_digest(ir),
+            witness: Witness::CredentialAttenuation(witness),
+            axon_version: axon_version.to_string(),
+        }],
+        None => Vec::new(),
+    }
+}
+
 // ── §Fase 84.c — TechnicianCommandSafety ─────────────────────────────────────
 
 /// §84.c — does this IR session-step sequence contain a reachable
@@ -2467,5 +2583,6 @@ pub fn generate_all_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm>
     proofs.extend(generate_warden_soundness_proofs(ir, axon_version));
     proofs.extend(generate_authorization_coverage_proofs(ir, axon_version));
     proofs.extend(generate_temporal_context_soundness_proofs(ir, axon_version));
+    proofs.extend(generate_credential_attenuation_proofs(ir, axon_version));
     proofs
 }

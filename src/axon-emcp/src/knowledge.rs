@@ -1245,7 +1245,8 @@ Body prose.
         // §Fase 85: 57 → 58 with `cache` (the result-memoization policy).
         // §Fase 87: 58 → 60 with `savant` + `synth`.
         // §Fase 88: 60 → 62 with `warden` + `scope`.
-        assert_eq!(s.total, 62);
+        // §Fase 92: 62 → 64 with `credential` + `mint`.
+        assert_eq!(s.total, 64);
     }
 
     /// §Phase 5 — every MCP prompt shipped under
@@ -1373,6 +1374,8 @@ Body prose.
             (ReferenceKind::Logic, "every_boundary_is_guarded"),
             // §Fase 90 — every declared guard is satisfiable (the completeness dual).
             (ReferenceKind::Logic, "every_requirement_is_grantable"),
+            // §Fase 92 — delegation is attenuation: grants ⊆ minter, TTL-bounded, depth-1.
+            (ReferenceKind::Logic, "authority_only_attenuates"),
             (ReferenceKind::Compliance, "hipaa"),
             (ReferenceKind::Compliance, "gdpr"),
             (ReferenceKind::Compliance, "pci_dss"),
@@ -1416,7 +1419,7 @@ Body prose.
         );
         assert_eq!(
             cat.reference_count_of(ReferenceKind::Logic),
-            12,
+            13,
             "logic family count drift"
         );
         assert_eq!(

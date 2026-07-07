@@ -541,6 +541,15 @@ pub async fn run_streaming_via_dispatcher(
     // SSE completion envelope.
     ctx.default_now_tz = ir.contexts.first().and_then(|c| c.now_tz.clone());
     ctx.temporal = temporal_state;
+    // §Fase 92.c — the compiled `credential` contracts, so a `mint` resolves
+    // its ttl/grants at dispatch. (The minter PORT is injected by the caller
+    // that owns one — the enterprise executor; absent => mint fails closed.)
+    ctx.credentials = std::sync::Arc::new(
+        ir.credentials
+            .iter()
+            .map(|c| (c.name.clone(), c.clone()))
+            .collect(),
+    );
 
     // §Fase 37.b (D1, D4) — The Request Binding Contract. Seed the
     // flow's declared parameters from the parsed request body BEFORE

@@ -472,6 +472,9 @@ fn ir_flow_node_catalog_pin_45_variants() {
             IRFlowNode::Listen(_) => "listen",
             IRFlowNode::DaemonStep(_) => "daemon_step",
             IRFlowNode::Emit(_) => "emit",
+            // §Fase 92 — `mint <Credential> as <binding>` (ephemeral
+            // credential minting; wire_integrations::run_mint).
+            IRFlowNode::Mint(_) => "mint",
             IRFlowNode::Publish(_) => "publish",
             IRFlowNode::Discover(_) => "discover",
             IRFlowNode::Persist(_) => "persist",
@@ -529,6 +532,7 @@ fn ir_flow_node_catalog_pin_45_variants() {
         "listen",
         "daemon_step",
         "emit",
+        "mint",
         "publish",
         "discover",
         "persist",
@@ -544,11 +548,12 @@ fn ir_flow_node_catalog_pin_45_variants() {
 
     assert_eq!(
         CATALOG.len(),
-        49,
+        50,
         "33.y D1 totality invariant: the IRFlowNode closed catalog \
-         has exactly 49 variants (§88 added `warden`). The dispatcher's \
-         exhaustive match must cover all 49 — adding a 50th requires \
-         updating both the dispatcher AND this anchor in lockstep."
+         has exactly 50 variants (§88 added `warden`; §92 added `mint`). \
+         The dispatcher's exhaustive match must cover all 50 — adding a \
+         51st requires updating both the dispatcher AND this anchor in \
+         lockstep."
     );
 
     // Unused-variable suppression for `kind_for` — the function

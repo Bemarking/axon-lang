@@ -54,6 +54,8 @@ const EXPECTED: &[(&str, ExampleTopic)] = &[
     ("axonendpoint_rest", ExampleTopic::Endpoints),
     // §Fase 83.a — the named, referenced browser-origin policy.
     ("cors_named_origin_policy", ExampleTopic::Endpoints),
+    // §Fase 92 — the ephemeral widget credential (credential + mint + cors).
+    ("widget_ephemeral_credential", ExampleTopic::Endpoints),
     // Memory (1)
     ("memory_scopes", ExampleTopic::Memory),
     // Validation (2)

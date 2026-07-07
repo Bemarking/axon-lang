@@ -163,6 +163,9 @@ fn classify_node(node: &IRFlowNode) -> StepKind {
         // §Fase 52.c — `run <Flow>` is orchestration: it dispatches a declared
         // flow whose own cost is attributed to that flow, not to this step.
         IRFlowNode::Run(_) => StepKind::Control,
+        // §Fase 92.c — `mint` is a pure effect (no model call, no store I/O):
+        // classify as Control alongside the other non-cognitive verbs.
+        IRFlowNode::Mint(_) => StepKind::Control,
     }
 }
 
@@ -553,6 +556,7 @@ mod tests {
             upstreams: vec![],
             cors_policies: vec![],
             caches: vec![],
+            credentials: vec![],
             savants: vec![],
             synths: vec![],
             scopes: vec![],
@@ -629,6 +633,7 @@ mod tests {
             upstreams: vec![],
             cors_policies: vec![],
             caches: vec![],
+            credentials: vec![],
             savants: vec![],
             synths: vec![],
             scopes: vec![],
@@ -707,6 +712,7 @@ mod tests {
             upstreams: vec![],
             cors_policies: vec![],
             caches: vec![],
+            credentials: vec![],
             savants: vec![],
             synths: vec![],
             scopes: vec![],

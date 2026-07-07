@@ -84,6 +84,7 @@ fn nonstreaming_persist_failure_is_surfaced_not_swallowed() {
         None, // §Fase 24.g.2 — llm_chat_path
             None, // §Fase 72.c — budget (test: unbudgeted)
         None, // §Fase 74.f — event_outbox (test: in-process emit)
+        None, // §Fase 92.c — credential minter (test: none)
     )
     .expect("the server runner returns Ok (a flow-level failure is reported in the metrics, not as an Err)");
 
@@ -162,6 +163,7 @@ axonendpoint GreetEndpoint { public: true
         None, // §Fase 24.g.2 — llm_chat_path
             None, // §Fase 72.c — budget (test: unbudgeted)
         None, // §Fase 74.f — event_outbox (test: in-process emit)
+        None, // §Fase 92.c — credential minter (test: none)
     )
     .expect("run");
 

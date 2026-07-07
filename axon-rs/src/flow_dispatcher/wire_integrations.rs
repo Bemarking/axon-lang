@@ -44,7 +44,7 @@
 use crate::flow_dispatcher::{DispatchCtx, DispatchError, NodeOutcome};
 use crate::flow_execution_event::{now_ms, FlowExecutionEvent};
 use crate::ir_nodes::{
-    IRConsensusBlock, IRDeliberateBlock, IRDiscover, IREmit, IRMutateStep,
+    IRConsensusBlock, IRDeliberateBlock, IRDiscover, IREmit, IRMintStep, IRMutateStep,
     IRPersistStep, IRPublish, IRPurgeStep, IRQuant, IRRetrieveStep, IRTransactBlock, IRYield,
 };
 use crate::store::audit_chain::StoreMutationKind;
@@ -1345,6 +1345,110 @@ pub async fn run_yield(
 
     Ok(NodeOutcome::Completed {
         output: String::new(),
+        tokens_emitted: 0,
+        step_index,
+    })
+}
+
+// ────────────────────────────────────────────────────────────────────
+//  Mint (§Fase 92.c — ephemeral-credential minting)
+// ────────────────────────────────────────────────────────────────────
+
+/// §Fase 92.c — `mint <Credential> as <binding>`. Wire shape:
+/// `step_type: "mint"`.
+///
+/// The attenuation law (`authority_only_attenuates`) is enforced TWICE,
+/// fail-closed: here at the handler when the dispatch carries a capability
+/// context (`ctx.held_capabilities`, the §35.j bearer claims), and again
+/// inside the [`crate::credential_minter::CredentialMinter`] port (so an
+/// implementation is safe standalone). No port configured + a reached
+/// `mint` = a loud `MissingDependency` — never a silent stub (§86 lesson).
+///
+/// The raw bearer goes ONLY into `ctx.let_bindings` under the declared
+/// binding (the flow decides what to return); the wire audit carries a
+/// SUMMARY, never the token — the runtime half of the `axon-T896`
+/// credentials-are-shown-once law.
+pub async fn run_mint(
+    node: &IRMintStep,
+    ctx: &mut DispatchCtx,
+) -> Result<NodeOutcome, DispatchError> {
+    if ctx.cancel.is_cancelled() {
+        return Err(DispatchError::UpstreamCancelled);
+    }
+    let step_index = ctx.step_counter;
+    ctx.step_counter += 1;
+
+    emit_step_start(ctx, &node.credential_ref, step_index, "mint")?;
+
+    // Fail-closed port resolution FIRST (no silent stub) — an environment
+    // with no minter configured (CLI, tests without wiring) gets the
+    // honest "missing dependency", not a misleading contract error.
+    let minter = ctx
+        .credential_minter
+        .clone()
+        .ok_or(DispatchError::MissingDependency {
+            name: "credential_minter",
+        })?;
+
+    // The compiled contract. A miss here means a stale/hand-edited IR
+    // bypassed compile-time `axon-T895` — refuse loudly.
+    let Some(contract) = ctx.credentials.get(&node.credential_ref).cloned() else {
+        return Err(DispatchError::BackendError {
+            name: "credential_minter".to_string(),
+            message: format!(
+                "undeclared credential '{}' reached dispatch — the compile-time \
+                 axon-T895 check did not run over this IR (stale or hand-edited \
+                 artifact)",
+                node.credential_ref
+            ),
+        });
+    };
+
+    // Handler-side attenuation when the request carries capabilities.
+    if let Some(caps) = &ctx.held_capabilities {
+        let missing: Vec<String> = contract
+            .grants
+            .iter()
+            .filter(|g| !caps.iter().any(|c| c == *g))
+            .cloned()
+            .collect();
+        if !missing.is_empty() {
+            return Err(DispatchError::BackendError {
+                name: "credential_minter".to_string(),
+                message: format!(
+                    "attenuation violated (authority_only_attenuates): the request \
+                     bearer does not hold {missing:?} — credential '{}' can only be \
+                     minted by a principal that already holds every grant",
+                    contract.name
+                ),
+            });
+        }
+    }
+
+    let minted = minter
+        .mint(crate::credential_minter::MintRequest {
+            credential_name: contract.name.clone(),
+            grants: contract.grants.clone(),
+            ttl_secs: contract.ttl_secs,
+            tenant: ctx.tenant_id.clone(),
+            minter_capabilities: ctx.held_capabilities.clone(),
+        })
+        .map_err(|e| DispatchError::BackendError {
+            name: "credential_minter".to_string(),
+            message: format!("mint of credential '{}' refused: {e}", contract.name),
+        })?;
+
+    // The raw bearer: binding ONLY — never the wire audit (see fn docs).
+    ctx.let_bindings.insert(node.binding.clone(), minted.token);
+
+    let summary = format!(
+        "credential '{}' minted (ttl {}s, grants {:?})",
+        contract.name, contract.ttl_secs, contract.grants
+    );
+    emit_step_complete(ctx, &node.credential_ref, step_index, &summary, 0)?;
+
+    Ok(NodeOutcome::Completed {
+        output: summary,
         tokens_emitted: 0,
         step_index,
     })

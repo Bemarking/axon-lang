@@ -65,10 +65,13 @@ pub use generate::{
     derive_cors_policy_consistency_witness, generate_cors_policy_consistency_proofs,
     // §Fase 91.c — the time_is_an_explicit_input cognitive obligation.
     derive_temporal_context_soundness_witness, generate_temporal_context_soundness_proofs,
+    // §Fase 92.d — the authority_only_attenuates static obligation.
+    derive_credential_attenuation_witness, generate_credential_attenuation_proofs,
 };
 pub use proof_term::{
     CallSoundnessCertificate, CapabilityContainmentWitness, CapabilityGrantabilityWitness,
     CapabilityIsolationWitness,
+    CredentialAttenuationWitness,
     ChannelEgressSoundnessWitness,
     ComplianceCoverageWitness,
     CorsPolicyConsistencyWitness,
@@ -2704,6 +2707,107 @@ mod tests {
             proofs
                 .iter()
                 .any(|p| p.property == PropertyClass::TemporalContextSoundness),
+            "self-contained → registered in the default generation set"
+        );
+    }
+
+    // ── §Fase 92.d — CredentialAttenuation ───────────────────────────────
+
+    const CREDENTIAL_PROGRAM: &str = "credential WidgetSession {\n\
+             ttl: 15m\n\
+             grants: [chat.invoke]\n\
+         }\n\
+         flow Bootstrap() -> Unit {\n\
+             mint WidgetSession as tok\n\
+             step S { ask: \"hi\" }\n\
+         }\n";
+
+    #[test]
+    fn credential_attenuation_round_trips_and_verifies() {
+        let ir = ir_from_source(CREDENTIAL_PROGRAM);
+        let proofs = super::generate::generate_credential_attenuation_proofs(&ir, "test");
+        assert_eq!(proofs.len(), 1, "one whole-program proof when a contract exists");
+        assert_eq!(proofs[0].property, PropertyClass::CredentialAttenuation);
+        if let Witness::CredentialAttenuation(ref w) = proofs[0].witness {
+            assert_eq!(
+                w.contracts,
+                vec![("WidgetSession".to_string(), 900, vec!["chat.invoke".to_string()])]
+            );
+            assert_eq!(
+                w.mints,
+                vec![(
+                    "Bootstrap".to_string(),
+                    "WidgetSession".to_string(),
+                    "tok".to_string()
+                )]
+            );
+            assert!(w.unresolved_mints.is_empty());
+            assert!(w.invalid_contracts.is_empty());
+        } else {
+            panic!("expected a CredentialAttenuation witness");
+        }
+        assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
+    }
+
+    #[test]
+    fn credential_less_program_carries_no_attenuation_proof() {
+        let ir = ir_from_source("flow Chat() -> Unit { step S { ask: \"hi\" } }\n");
+        assert!(
+            super::generate::generate_credential_attenuation_proofs(&ir, "test").is_empty(),
+            "no contract → no proof"
+        );
+    }
+
+    #[test]
+    fn credential_attenuation_refutes_an_unresolved_mint() {
+        // Hand-craft an IR (bypassing compile-time axon-T895) where the mint
+        // names a contract that doesn't exist.
+        let mut ir = ir_from_source(CREDENTIAL_PROGRAM);
+        ir.credentials.clear();
+        let proofs = super::generate::generate_credential_attenuation_proofs(&ir, "test");
+        assert_eq!(proofs.len(), 1);
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => assert!(reason.contains("T895"), "{reason}"),
+            other => panic!("expected Refuted (unresolved mint), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn credential_attenuation_refutes_an_ill_formed_contract() {
+        // Hand-craft an IR with a TTL above the ephemeral ceiling
+        // (bypassing compile-time axon-T894).
+        let mut ir = ir_from_source(CREDENTIAL_PROGRAM);
+        ir.credentials[0].ttl_secs = 7 * 86_400;
+        let proofs = super::generate::generate_credential_attenuation_proofs(&ir, "test");
+        assert_eq!(proofs.len(), 1);
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => assert!(reason.contains("T894"), "{reason}"),
+            other => panic!("expected Refuted (ill-formed contract), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn credential_attenuation_refutes_a_forged_witness() {
+        let ir = ir_from_source(CREDENTIAL_PROGRAM);
+        let mut proofs = super::generate::generate_credential_attenuation_proofs(&ir, "test");
+        if let Witness::CredentialAttenuation(ref mut w) = proofs[0].witness {
+            // Forge: claim a broader grant set than the artifact declares.
+            w.contracts[0].2.push("tenant.update".to_string());
+        }
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => assert!(reason.contains("disagrees"), "{reason}"),
+            other => panic!("expected Refuted (forgery), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn credential_attenuation_rides_generate_all_proofs() {
+        let ir = ir_from_source(CREDENTIAL_PROGRAM);
+        let proofs = super::generate::generate_all_proofs(&ir, "test");
+        assert!(
+            proofs
+                .iter()
+                .any(|p| p.property == PropertyClass::CredentialAttenuation),
             "self-contained → registered in the default generation set"
         );
     }

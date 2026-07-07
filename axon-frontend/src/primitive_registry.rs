@@ -641,6 +641,22 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         summary: "A named authorization scope — the signed envelope (`targets` allowlist + `depth` ceiling + `approver`) a `warden` analysis MUST run `within`. The load-bearing safety construct that makes adversarial analysis a governed, auditable, fail-closed capability rather than an unscoped weapon.",
         doc_status: DocStatus::Documented,
     },
+    PrimitiveInfo {
+        name: "credential",
+        category: "operators",
+        top_level: true,
+        since: "Fase 92",
+        summary: "A named ephemeral-credential contract — `ttl:` (≤ 24h, axon-T894) + `grants:` (dotted capability slugs, axon-T893). `mint <Name> as <binding>` mints a TTL-bounded bearer carrying exactly the grants, admitted only when grants ⊆ capabilities(minter) — `authority_only_attenuates`, the delegation dual of the enterprise service account.",
+        doc_status: DocStatus::Documented,
+    },
+    PrimitiveInfo {
+        name: "mint",
+        category: "wire",
+        top_level: false,
+        since: "Fase 92",
+        summary: "The credential-minting flow verb — `mint <Credential> as <binding>` mints a declared ephemeral contract at runtime (fail-closed without a minter port) and binds the raw bearer, shown once and never persisted (axon-T896).",
+        doc_status: DocStatus::Documented,
+    },
     // §Fase 6.d — `logic` was registered in 6.a as an operators
     // primitive but has NO parser production (the lexer recognises
     // the `logic` keyword token; no `parse_logic` exists; the
@@ -752,9 +768,11 @@ mod tests {
         // primitive) + `synth` (the dynamic tool-synthesis policy) → 58→60.
         // §Fase 88 added `warden` (the adversarial security-analysis block) +
         // `scope` (the authorization-scope policy) → 60→62.
+        // §Fase 92 added `credential` (the ephemeral-credential contract) +
+        // `mint` (the minting flow verb) → 62→64.
         assert_eq!(
             PRIMITIVE_REGISTRY.len(),
-            62,
+            64,
             "PRIMITIVE_REGISTRY count drift — add/remove the primitive intentionally + update this assertion"
         );
     }
@@ -859,6 +877,8 @@ mod tests {
             // §Fase 88 — the adversarial security-analysis block + its
             // authorization-scope policy.
             "warden", "scope",
+            // §Fase 92 — the ephemeral-credential contract + its minting verb.
+            "credential", "mint",
         ]
         .into_iter()
         .collect();
@@ -882,13 +902,14 @@ mod tests {
         // §Fase 85: 57 → 58 with `cache`.
         // §Fase 87: 58 → 60 with `savant` + `synth`.
         // §Fase 88: 60 → 62 with `warden` + `scope`.
-        assert_eq!(s.total, 62);
+        // §Fase 92: 62 → 64 with `credential` + `mint`.
+        assert_eq!(s.total, 64);
         assert_eq!(s.documented + s.pending, s.total);
         // §Fase 6.d achieves **100% coverage** — every entry in the
         // registry has a `.md` and a passing drift-gated canonical
         // program. Pending count is 0; any future drop is a
         // regression the gate catches.
-        assert_eq!(s.documented, 62);
+        assert_eq!(s.documented, 64);
         assert_eq!(s.pending, 0);
     }
 

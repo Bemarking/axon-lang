@@ -175,6 +175,9 @@ pub fn ir_flow_node_kind(node: &IRFlowNode) -> &'static str {
         IRFlowNode::Listen(_) => "listen",
         IRFlowNode::DaemonStep(_) => "daemon_step",
         IRFlowNode::Emit(_) => "emit",
+        // §Fase 92.b — ephemeral-credential minting. Same step_type string
+        // as `runner::extract_step_info` (drift-gated).
+        IRFlowNode::Mint(_) => "mint",
         IRFlowNode::Publish(_) => "publish",
         IRFlowNode::Discover(_) => "discover",
         IRFlowNode::Persist(_) => "persist",

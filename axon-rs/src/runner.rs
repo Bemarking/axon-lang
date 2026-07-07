@@ -560,6 +560,8 @@ fn extract_step_info(node: &IRFlowNode) -> (String, String, String) {
         IRFlowNode::Refine(s) => (s.target.clone(), "refine".to_string(), format!("Refine: {}", s.target)),
         IRFlowNode::Weave(s) => ("weave".to_string(), "weave".to_string(), format!("Weave {} sources into {}", s.sources.len(), s.target)),
         IRFlowNode::UseTool(s) => (s.tool_name.clone(), "use_tool".to_string(), format!("Use tool: {}", s.tool_name)),
+        // §Fase 92.b — ephemeral-credential minting (dispatcher-routed).
+        IRFlowNode::Mint(s) => (s.credential_ref.clone(), "mint".to_string(), format!("Mint credential: {} as {}", s.credential_ref, s.binding)),
         IRFlowNode::Remember(s) => (s.memory_target.clone(), "remember".to_string(), format!("Remember: {}", s.expression)),
         IRFlowNode::Recall(s) => (s.memory_source.clone(), "recall".to_string(), format!("Recall: {}", s.query)),
         IRFlowNode::Conditional(s) => (s.condition.clone(), "conditional".to_string(), format!("If: {}", s.condition)),
@@ -1377,7 +1379,10 @@ fn structural_dispatch_enabled() -> bool {
 /// until §65.C threads the per-tenant key through `DispatchCtx`.
 fn routes_through_dispatcher(node: &crate::ir_nodes::IRFlowNode) -> bool {
     use crate::ir_nodes::IRFlowNode as N;
-    matches!(node, N::Navigate(_) | N::Drill(_) | N::Trail(_))
+    // §Fase 92.c — `mint` MUST route to its real dispatcher handler: an LLM
+    // fallthrough would HALLUCINATE a bearer token. On a path with no minter
+    // port the handler fails CLOSED (MissingDependency) — the honest outcome.
+    matches!(node, N::Navigate(_) | N::Drill(_) | N::Trail(_) | N::Mint(_))
 }
 
 /// §Fase 65.A/B — run a pure-effect structural verb (navigate / drill / trail)
@@ -3190,6 +3195,14 @@ async fn collect_via_dispatcher(
     // in-process buffer behavior (byte-identical to pre-§74).
     event_bus: Option<std::sync::Arc<crate::runtime::channels::TypedEventBus>>,
     event_outbox: Option<std::sync::Arc<dyn crate::event_outbox::EventOutbox>>,
+    // §Fase 92.c — the compiled `credential` contracts (from `ir.credentials`)
+    // + the minter port. `None` minter ⇒ a reached `mint` fails CLOSED with
+    // `MissingDependency` (no silent stub); the enterprise executor injects
+    // its PASETO minter (§92.g) the same way it injects the event outbox.
+    credentials: std::sync::Arc<
+        std::collections::HashMap<String, crate::ir_nodes::IRCredential>,
+    >,
+    credential_minter: Option<std::sync::Arc<dyn crate::credential_minter::CredentialMinter>>,
 ) -> CollectedRun {
     use crate::flow_dispatcher::{dispatch_node, DispatchCtx, NodeOutcome};
     use crate::flow_execution_event::FlowExecutionEvent;
@@ -3236,6 +3249,9 @@ async fn collect_via_dispatcher(
     }
     // §Fase 91.b — the frame-level declared zone; a step's own `now:` overrides.
     ctx.default_now_tz = default_now_tz;
+    // §Fase 92.c — the credential contracts + (optionally) the minter port.
+    ctx.credentials = credentials;
+    ctx.credential_minter = credential_minter;
 
     // §Fase 65.E.3 — share the audit-record sink so we can read the per-step
     // anchor breaches AFTER the walk (the `drop(ctx)` below releases the ctx's
@@ -3449,6 +3465,13 @@ pub fn execute_server_flow(
     // durably instead of buffering in-process. `None` for every other caller
     // (HTTP, CLI, tests) ⇒ pre-§74 in-process `emit` behavior.
     event_outbox: Option<std::sync::Arc<dyn crate::event_outbox::EventOutbox>>,
+    // §Fase 92.c — the ephemeral-credential minter port behind the `mint`
+    // flow verb. `Some` only when the deployment owns a minter (the
+    // enterprise executor injects its PASETO minter, §92.g — the same
+    // injection shape as `event_outbox`); `None` for every other caller
+    // (HTTP, CLI, tests) ⇒ a reached `mint` fails CLOSED with a loud
+    // missing-dependency error, never a silent stub (§86 lesson).
+    credential_minter: Option<std::sync::Arc<dyn crate::credential_minter::CredentialMinter>>,
 ) -> Result<ServerRunnerMetrics, String> {
     let mut target_run = None;
     for run in &ir.runs {
@@ -3741,6 +3764,15 @@ pub fn execute_server_flow(
                         )
                     }),
                     event_outbox.clone(),
+                    // §Fase 92.c — the compiled credential contracts + the
+                    // minter port (None ⇒ mint fails closed).
+                    std::sync::Arc::new(
+                        ir.credentials
+                            .iter()
+                            .map(|c| (c.name.clone(), c.clone()))
+                            .collect(),
+                    ),
+                    credential_minter.clone(),
                 )
                 .await
             });
@@ -4767,6 +4799,7 @@ flow Recall(q: Text) -> Text {
             None,
             None, // §Fase 72.c — budget (test: unbudgeted)
             None, // §Fase 74.f — event outbox (test: no durable sink)
+            None, // §Fase 92.c — credential minter (test: none)
         )
         .expect("flow runs");
 
@@ -4845,6 +4878,8 @@ flow Recall(q: Text) -> Text {
             None, // §Fase 72.c — budget (test: unbudgeted)
             None, // §Fase 74.f — event bus (test: no durable sink)
             None, // §Fase 74.f — event outbox (test: no durable sink)
+            std::sync::Arc::new(std::collections::HashMap::new()), // §Fase 92.c — credentials
+            None, // §Fase 92.c — credential minter (test: none)
         )
         .await;
 
@@ -4887,6 +4922,7 @@ flow Echo(p: Text) -> Text {
             None,
             None, // budget
             None, // outbox
+            None, // §Fase 92.c — credential minter (test: none)
         )
         .expect("flow runs");
         assert!(metrics.success, "the flow runs");
@@ -4922,6 +4958,7 @@ flow Learn(tenant_id: Text, session_id_generic: Text) -> Text {
             &ir, "Learn", "stub", "learn.axon", None, Some(&payload),
             &std::collections::HashMap::new(), &std::collections::HashMap::new(),
             None, None, None, None, None,
+            None, // §Fase 92.c — credential minter (test: none)
         )
         .expect("flow runs");
         assert!(metrics.success);
@@ -4973,6 +5010,7 @@ flow Producer(tenant_id: Text) -> Text {
             None, // §Fase 72.c — budget (unbudgeted)
             // §Fase 74.f — inject the durable outbox (the enterprise daemon path).
             Some(probe.clone() as std::sync::Arc<dyn EventOutbox>),
+            None, // §Fase 92.c — credential minter (test: none)
         )
         .expect("flow runs");
 

@@ -1,0 +1,72 @@
+---
+name: authority_only_attenuates
+title: "Delegation is attenuation — authority flows down, never up (§Fase 92)"
+summary: "The law governing ephemeral-credential minting (`credential` + `mint`, §92): a principal may mint a bearer carrying ONLY capabilities it itself holds (`grants ⊆ capabilities(minter)`), only for less time than its own horizon (TTL ≤ the 24h ephemeral ceiling, axon-T894), and the minted bearer cannot mint further (depth-1, structural). Enforced at three layers, all fail-closed: compile (axon-T893/T894/T895 + the never-persisted law axon-T896), verify/deploy (the CredentialAttenuation proof re-derives every contract + mint site from the IR; the enterprise gate additionally requires every grant be GRANTABLE — the §90 composition), and mint time (the dispatch handler AND the CredentialMinter port both check the subset law against the request's bearer claims; no capability context ⇒ refuse). The completion of the authority story: §89 proved every boundary is guarded, §90 proved every guard is satisfiable, §92 proves handed-down authority is only ever a SUBSET, briefly."
+---
+
+# Delegation is attenuation
+
+The canonical adopter scenario: a SaaS embeds a chat widget on any
+third-party origin. The widget needs identity — but every existing
+bearer is wrong for a browser: a service account (§81) is long-lived
+and broad; a user JWT belongs to a person. What the widget needs is
+a **slice** of the backend's authority: `[chat.invoke]`, for fifteen
+minutes, and nothing else.
+
+> **The law.** A mint is admitted only when
+> `grants ⊆ capabilities(minter)`. The bearer's lifetime is bounded
+> by a closed ceiling (24h — `axon-T894`). The minted principal
+> holds no mint authority (depth 1, structural). Authority flows
+> DOWN the delegation chain — never up, never sideways.
+
+## Three layers, all fail-closed
+
+1. **Compile.** A contract that grants nothing is dead
+   (`axon-T893`); a TTL that is unparseable, zero, or above the
+   ephemeral ceiling is rejected (`axon-T894`); a `mint` of an
+   undeclared contract is rejected (`axon-T895`); a mint binding
+   flowing into a `persist` payload is rejected (`axon-T896` —
+   credentials are shown once, never stored).
+2. **Verify/deploy.** The `CredentialAttenuation` proof re-derives
+   every contract + mint site from the compiled IR — a stale or
+   hand-edited artifact that smuggles a ghost mint or a
+   week-long "ephemeral" credential is REFUTED before it mounts.
+   The enterprise deploy gate composes with §90: every declared
+   grant must be *grantable* (`⊆ π(authority catalog)`) — you
+   cannot deploy a flow that mints dead capabilities.
+3. **Mint time.** The dispatch handler checks
+   `grants ⊆ held_capabilities` when the request carries a bearer;
+   the `CredentialMinter` port re-checks independently (safe
+   standalone) and REFUSES when there is no capability context to
+   attenuate from. No minter port configured ⇒ a loud
+   missing-dependency error — never a silent stub, never a
+   hallucinated token.
+
+## Why attenuation, not issuance
+
+An issuance API ("create a token with scopes X") is an amplification
+hazard: whoever reaches it mints arbitrary authority. Attenuation
+inverts the posture — the mint site can only ever hand down a subset
+of what it provably holds, so the worst a compromised bootstrap flow
+can leak is its own authority, time-boxed. Combined with the §72
+budget (per-visitor cost attribution) and §83 `cors` (the
+browser-origin half), the widget scenario is expressible end-to-end
+in typed, PCC-attested source.
+
+## Relation to the other laws
+
+- **The third act of the authority story**:
+  [`every_boundary_is_guarded`](axon://logic/every_boundary_is_guarded)
+  (§89 — every boundary declares a guard) →
+  [`every_requirement_is_grantable`](axon://logic/every_requirement_is_grantable)
+  (§90 — every guard is satisfiable) → **this law** (§92 — authority
+  can be handed down, but only attenuated, only briefly, only
+  provably).
+- The §81 service account is the long-lived dual: admin-minted
+  machine identity with catalog grants. `credential` deliberately
+  cannot reach that shape (the 24h ceiling) — a credential that
+  outlives a day is a service account wearing a costume.
+
+The honest test: if a piece of code can produce a bearer whose
+authority exceeds what that code itself was granted, your delegation
+is amplification. AXON rejects that program.

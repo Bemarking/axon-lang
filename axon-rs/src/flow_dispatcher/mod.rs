@@ -282,6 +282,17 @@ pub struct DispatchCtx {
     /// §67.c side-channel discipline; the lock is never held across an
     /// `.await`).
     pub temporal: std::sync::Arc<std::sync::Mutex<crate::temporal_context::TemporalState>>,
+    /// §Fase 92.c — the ephemeral-credential minter port behind the `mint`
+    /// flow verb. `None` (the `new` default) ⇒ a reached `mint` fails CLOSED
+    /// with `MissingDependency` — never a silent stub. The enterprise
+    /// executor injects its PASETO minter (§92.g); tests use
+    /// `credential_minter::InMemoryMinter`.
+    pub credential_minter: Option<std::sync::Arc<dyn crate::credential_minter::CredentialMinter>>,
+    /// §Fase 92.c — the compiled `credential` contracts by name (from
+    /// `ir.credentials`), set by the plan builders like `mdn_corpora`.
+    /// Empty for a credential-less program.
+    pub credentials:
+        std::sync::Arc<std::collections::HashMap<String, crate::ir_nodes::IRCredential>>,
     pub cancel: CancellationFlag,
     pub tx: mpsc::UnboundedSender<FlowExecutionEvent>,
     pub enforcement_summaries: Arc<
@@ -504,6 +515,8 @@ impl DispatchCtx {
             temporal: std::sync::Arc::new(std::sync::Mutex::new(
                 crate::temporal_context::TemporalState::default(),
             )),
+            credential_minter: None,
+            credentials: std::sync::Arc::new(std::collections::HashMap::new()),
             cancel,
             tx,
             enforcement_summaries: Arc::new(Mutex::new(HashMap::new())),
@@ -1109,6 +1122,8 @@ pub async fn dispatch_node(
         IRFlowNode::ComputeApply(node) => algebraic_handlers::run_compute_apply(node, ctx).await,
         IRFlowNode::Listen(node) => algebraic_handlers::run_listen(node, ctx).await,
         IRFlowNode::DaemonStep(node) => algebraic_handlers::run_daemon_step(node, ctx).await,
+        // §Fase 92.c — ephemeral-credential minting (attenuated, fail-closed).
+        IRFlowNode::Mint(node) => wire_integrations::run_mint(node, ctx).await,
         // §Fase 33.y.h — π-calc typed channels (Fase 13).
         IRFlowNode::Emit(node) => wire_integrations::run_emit(node, ctx).await,
         IRFlowNode::Publish(node) => wire_integrations::run_publish(node, ctx).await,

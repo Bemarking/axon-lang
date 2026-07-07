@@ -147,6 +147,9 @@ pub fn check_proof(proof: &ProofTerm, ir: &IRProgram) -> CheckOutcome {
         (PropertyClass::TemporalContextSoundness, Witness::TemporalContextSoundness(w)) => {
             check_temporal_context_soundness(w, ir)
         }
+        (PropertyClass::CredentialAttenuation, Witness::CredentialAttenuation(w)) => {
+            check_credential_attenuation(w, ir)
+        }
         _ => CheckOutcome::UnknownProperty,
     }
 }
@@ -998,6 +1001,54 @@ fn check_cors_policy_consistency(
                 "axon-T857 axonendpoints sharing a path disagree on `cors:` \
                  (endpoint_a, endpoint_b) pairs: {:?}",
                 actual.cross_method_conflicts
+            ),
+        };
+    }
+    CheckOutcome::Verified
+}
+
+/// §92.d — independent checker for [`PropertyClass::CredentialAttenuation`].
+/// Re-derives the whole-program witness (contracts + recursive mint walk)
+/// and rejects on ANY of: a forged/stale witness, a mint of an undeclared
+/// contract (`axon-T895`, re-derived), or an ill-formed contract — empty/
+/// invalid grants (`axon-T893`) or a TTL outside the (0, 24h] ephemeral
+/// ceiling (`axon-T894`). The dynamic attenuation law
+/// (`grants ⊆ capabilities(minter)`) is enforced fail-closed at mint time
+/// (§92.c) — data-dependent, so it is deliberately NOT claimed here.
+fn check_credential_attenuation(
+    claimed: &super::proof_term::CredentialAttenuationWitness,
+    ir: &IRProgram,
+) -> CheckOutcome {
+    let actual = match super::generate::derive_credential_attenuation_witness(ir) {
+        Some(w) => w,
+        None => {
+            return CheckOutcome::Refuted {
+                reason: "no credential contract exists in this artifact (no `credential` \
+                         declarations, no `mint` sites) — forged or stale proof"
+                    .to_string(),
+            }
+        }
+    };
+    if actual != *claimed {
+        return CheckOutcome::Refuted {
+            reason: "witness disagrees with artifact re-derivation (forged or stale proof)"
+                .to_string(),
+        };
+    }
+    if !actual.unresolved_mints.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axon-T895 `mint` reference(s) do not resolve to a declared `credential`: {:?}",
+                actual.unresolved_mints
+            ),
+        };
+    }
+    if !actual.invalid_contracts.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axon-T893/axon-T894 ill-formed credential contract(s) (empty/invalid \
+                 grants, or TTL outside the (0, 24h] ephemeral ceiling): {:?}",
+                actual.invalid_contracts
             ),
         };
     }

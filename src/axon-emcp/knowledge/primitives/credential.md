@@ -1,0 +1,96 @@
+---
+name: credential
+summary: A named ephemeral-credential contract — TTL-bounded, capability-attenuated bearer minting for anonymous surfaces (chat widgets, visitor sessions).
+category: operators
+top_level: true
+since: Fase 92
+grammar: |
+  credential <Name> {
+      ttl:    <duration>                # required — bearer lifetime, > 0 and ≤ 24h (axon-T894)
+      grants: [<cap.slug>, ...]         # required, non-empty — dotted capability slugs (axon-T893)
+  }
+  # inside a flow body:
+  mint <Name> as <binding>              # mints a bearer; binding = the raw token (shown once)
+  # An unknown field in a `credential { }` block is a HARD PARSE ERROR
+  # (the `cors` posture) — this is authority surface; a typo'd field
+  # must never silently produce a permissive contract.
+---
+
+# `credential`
+
+`credential` declares **an ephemeral-credential contract**: the
+capabilities a short-lived bearer carries (`grants:`) and how long
+it lives (`ttl:`). The `mint` flow verb (§92.b) turns the contract
+into a real bearer at runtime — the canonical shape for a **chat
+widget on any origin**: the SaaS backend's bootstrap flow mints a
+minutes-TTL token scoped to exactly `[chat.invoke]`, the browser
+presents it, and every other capability stays out of hostile
+territory.
+
+This is the **delegation dual** of the enterprise service account
+(§81): a service account is long-lived, admin-minted machine
+identity; a credential is short-lived, flow-minted, per-visitor
+identity. The pairing law is the doctrine
+`axon://logic/authority_only_attenuates`:
+
+> Delegation is attenuation. A mint is admitted only when
+> `grants ⊆ capabilities(minter)` — authority flows DOWN, never up.
+> The minted bearer cannot mint further (depth-1, structural).
+
+## The three-layer law
+
+1. **Compile** — grants are validated dotted slugs and non-empty
+   (`axon-T893`); the TTL parses, is positive, and respects the
+   24h ephemeral ceiling (`axon-T894` — longer-lived machine
+   identity is the §81 surface, not this one).
+2. **Verify/deploy** — the `CredentialAttenuation` proof re-derives
+   the contract laws + every `mint` reference from the IR
+   (`axon-T895` for a ghost contract), so a stale or hand-edited
+   artifact is refuted before it mounts. The enterprise deploy gate
+   additionally checks every grant is *grantable* (the §90
+   composition — you cannot deploy a flow that mints dead
+   capabilities).
+3. **Mint (runtime, fail-closed)** — the dispatch handler AND the
+   `CredentialMinter` port both enforce `grants ⊆
+   capabilities(minter)` against the request's bearer claims. No
+   minter port configured ⇒ a reached `mint` is a loud
+   missing-dependency error, never a silent stub.
+
+## The bearer is shown ONCE
+
+The raw token lands in the flow binding and nowhere else: the wire
+audit carries a summary (never the token), and the type checker
+rejects a mint binding flowing into a `persist` payload
+(**`axon-T896`** — credentials do not enter stores). Return it to
+the caller; don't warehouse it.
+
+## Example
+
+```axon
+credential WidgetSession {
+    ttl:    15m
+    grants: [chat.invoke]
+}
+
+flow BootstrapWidget() -> Unit {
+    mint WidgetSession as tok
+    step Compose {
+        ask: "Compose the widget bootstrap payload carrying ${tok}."
+    }
+}
+```
+
+## What this primitive is NOT
+
+- **Not a session.** No server state per visitor — the token IS the
+  state (the enterprise mints stateless PASETO `v4.local`; a
+  per-tenant epoch bump revokes every outstanding bearer within the
+  auth-cache TTL).
+- **Not an API key / service account.** Dies in minutes; cannot be
+  listed or rotated — mint another, or bump the epoch.
+- **Not a delegation chain.** Depth 1 by construction; an ephemeral
+  principal holds no mint authority.
+
+See also: `axon://logic/authority_only_attenuates` (the doctrine),
+`axonendpoint` (`requires:` gates the minted bearer's calls), `cors`
+(the browser-origin half of the widget scenario).

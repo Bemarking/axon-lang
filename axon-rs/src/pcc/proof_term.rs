@@ -312,6 +312,18 @@ pub enum PropertyClass {
     /// dies. Program-wide, 0-or-1 proof (the `cors`/`cache` shape); a program
     /// with no `now:` declarations has no temporal contract → no proof.
     TemporalContextSoundness,
+    /// §92.d — the STATIC half of the doctrine `authority_only_attenuates`
+    /// (§92): every `mint` resolves to a declared `credential` contract
+    /// (`axon-T895`, re-derived), and every declared contract is
+    /// well-formed — non-empty valid-slug `grants:` (`axon-T893`) and a
+    /// TTL in `(0, 24h]` (`axon-T894`). Belt-and-suspenders against a
+    /// stored/hand-edited IR whose compile-time proof has gone stale: a
+    /// contract that grants nothing, outlives the ephemeral ceiling, or a
+    /// mint of a ghost contract is refuted BEFORE deploy. The DYNAMIC half
+    /// of the law (`grants ⊆ capabilities(minter)`) is data-dependent and
+    /// enforced fail-closed at mint time (§92.c handler + port).
+    /// Program-wide, 0-or-1 proof; no `credential`/`mint` → no proof.
+    CredentialAttenuation,
 }
 
 /// §72.f — the closed period catalog for `budget` quotas. The checker's own
@@ -365,6 +377,7 @@ impl PropertyClass {
             PropertyClass::AuthorizationCoverage => "authorization_coverage",
             PropertyClass::CapabilityGrantability => "capability_grantability",
             PropertyClass::TemporalContextSoundness => "temporal_context_soundness",
+            PropertyClass::CredentialAttenuation => "credential_attenuation",
         }
     }
 }
@@ -1037,6 +1050,28 @@ pub struct TemporalContextSoundnessWitness {
     pub unknown_zones: Vec<String>,
 }
 
+/// §92.d — witness for [`PropertyClass::CredentialAttenuation`].
+///
+/// Program-wide (the `cors`/`temporal` shape). The checker RE-DERIVES every
+/// field from the IR's `credentials` + the flows' step trees (recursing
+/// through the nesting variants) and rejects the proof if the witness
+/// disagrees (D51.2). A verifying proof has both violation lists empty.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CredentialAttenuationWitness {
+    /// `(name, ttl_secs, grants)` for every declared `credential`,
+    /// declaration order.
+    pub contracts: Vec<(String, u64, Vec<String>)>,
+    /// `(flow, credential_ref, binding)` for every `mint`, walk order.
+    pub mints: Vec<(String, String, String)>,
+    /// Mint references that do not resolve to a declared contract
+    /// (`axon-T895`, re-derived). Empty for a verifying proof.
+    pub unresolved_mints: Vec<String>,
+    /// Contracts violating the compile laws (`axon-T893`/`T894`,
+    /// re-derived): empty grants, an invalid grant slug, or a TTL outside
+    /// `(0, 86400]` seconds. Empty for a verifying proof.
+    pub invalid_contracts: Vec<String>,
+}
+
 /// The property-specific witness. Tagged so the JSON is self-describing
 /// + a future class adds a variant without ambiguity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1066,6 +1101,7 @@ pub enum Witness {
     AuthorizationCoverage(AuthorizationCoverageWitness),
     CapabilityGrantability(CapabilityGrantabilityWitness),
     TemporalContextSoundness(TemporalContextSoundnessWitness),
+    CredentialAttenuation(CredentialAttenuationWitness),
 }
 
 impl Witness {
@@ -1108,6 +1144,8 @@ impl Witness {
             Witness::CapabilityGrantability(_) => "<program>",
             // §91.c — program-wide property, no single named subject.
             Witness::TemporalContextSoundness(_) => "<program>",
+            // §92.d — program-wide property, no single named subject.
+            Witness::CredentialAttenuation(_) => "<program>",
         }
     }
 }

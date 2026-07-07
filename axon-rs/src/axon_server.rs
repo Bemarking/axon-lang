@@ -2271,6 +2271,10 @@ fn server_execute(
         // per-tenant Postgres outbox is the enterprise supervisor's concern);
         // `emit` keeps its in-process behavior here.
         None,
+        // §Fase 92.c — the OSS HTTP path owns no credential minter (the
+        // PASETO minter is the enterprise executor's concern); a reached
+        // `mint` fails closed with a loud missing-dependency error.
+        None,
     )?;
 
     // Count anchors from IR
