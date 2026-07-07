@@ -1371,6 +1371,8 @@ Body prose.
             (ReferenceKind::Logic, "delivery_is_a_kept_promise"),
             // §Fase 89 — every dispatching boundary is covered or explicitly public.
             (ReferenceKind::Logic, "every_boundary_is_guarded"),
+            // §Fase 90 — every declared guard is satisfiable (the completeness dual).
+            (ReferenceKind::Logic, "every_requirement_is_grantable"),
             (ReferenceKind::Compliance, "hipaa"),
             (ReferenceKind::Compliance, "gdpr"),
             (ReferenceKind::Compliance, "pci_dss"),
@@ -1414,7 +1416,7 @@ Body prose.
         );
         assert_eq!(
             cat.reference_count_of(ReferenceKind::Logic),
-            11,
+            12,
             "logic family count drift"
         );
         assert_eq!(
