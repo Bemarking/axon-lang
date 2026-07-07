@@ -224,7 +224,7 @@ async fn fuzz_run_step_never_panics_random_input() {
             confidence_floor: None,
             navigate_ref: String::new(),
             apply_ref: String::new(),
-            requires_context: None,            body: Vec::new(),
+            requires_context: None,            now_tz: None,            body: Vec::new(),
         };
         let (mut ctx, _rx) = fresh_ctx();
         let outcome = run_step(&s, &mut ctx).await;
@@ -373,7 +373,7 @@ async fn fuzz_random_cancel_timing_across_all_handlers() {
                     confidence_floor: None,
                     navigate_ref: String::new(),
                     apply_ref: String::new(),
-                    requires_context: None,                    body: Vec::new(),
+                    requires_context: None,                    now_tz: None,                    body: Vec::new(),
                 };
                 run_step(&s, &mut ctx).await
             }
@@ -489,7 +489,7 @@ async fn fuzz_random_policy_pairings_across_handlers() {
                     confidence_floor: None,
                     navigate_ref: String::new(),
                     apply_ref: String::new(),
-                    requires_context: None,                    body: Vec::new(),
+                    requires_context: None,                    now_tz: None,                    body: Vec::new(),
                 };
                 run_step(&s, &mut ctx).await
             }
@@ -600,7 +600,7 @@ async fn fuzz_chained_steps_step_counter_monotone() {
                 confidence_floor: None,
                 navigate_ref: String::new(),
                 apply_ref: String::new(),
-                requires_context: None,                body: Vec::new(),
+                requires_context: None,                now_tz: None,                body: Vec::new(),
             };
             match run_step(&s, &mut ctx).await {
                 Ok(NodeOutcome::Completed { step_index, .. }) => {

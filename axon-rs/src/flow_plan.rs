@@ -786,7 +786,7 @@ mod tests {
             confidence_floor: None,
             navigate_ref: String::new(),
             apply_ref: String::new(),
-            requires_context: None,            body: vec![],
+            requires_context: None,            now_tz: None,            body: vec![],
         });
         assert_eq!(ir_flow_node_kind(&n), "step");
     }
@@ -900,7 +900,7 @@ mod tests {
             confidence_floor: None,
             navigate_ref: String::new(),
             apply_ref: String::new(),
-            requires_context: None,            body: vec![],
+            requires_context: None,            now_tz: None,            body: vec![],
         });
         // Pinned drift assertion: the canonical "step" kind is
         // what `runner.rs::extract_step_info` produces for

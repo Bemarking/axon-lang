@@ -92,6 +92,7 @@ fn exec_result(epistemic: Vec<EpistemicEnvelope>) -> ServerExecutionResult {
         blame_attribution: None,
         epistemic_envelopes: epistemic,
         error: None,
+        temporal_context: None,
     }
 }
 
@@ -110,6 +111,7 @@ fn complete_envelope(epistemic: Vec<EpistemicEnvelope>) -> CompleteEnvelope {
         runtime_warnings: Vec::new(),
         step_audit_records: Vec::new(),
         epistemic_envelopes: epistemic,
+        temporal_context: None,
     }
 }
 

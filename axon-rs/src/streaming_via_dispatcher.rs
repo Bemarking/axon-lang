@@ -148,6 +148,14 @@ pub async fn run_streaming_via_dispatcher(
     runtime_warnings: std::sync::Arc<
         tokio::sync::Mutex<Vec<crate::runtime_warnings::RuntimeWarning>>,
     >,
+    // §Fase 91.b — external temporal side-channel (the same discipline as
+    // the three above): the dispatcher's per-step `now:` renders populate
+    // THIS shared state, so the SSE `axon.complete` envelope can carry the
+    // run's temporal record (`captured_utc` + `tzdb_version` + zones) at
+    // §55.c parity with the sync `FlowEnvelope.temporal_context`.
+    temporal_state: std::sync::Arc<
+        std::sync::Mutex<crate::temporal_context::TemporalState>,
+    >,
     // §Fase 35.j (Pillar IV) — the capability slugs the request
     // carries (the JWT bearer's `capabilities` claim). `Some` activates
     // the store handlers' runtime capability re-check; `None` defers to
@@ -525,6 +533,14 @@ pub async fn run_streaming_via_dispatcher(
     // §Fase 35.j — thread the request's held capabilities into the
     // dispatcher so the store handlers can re-check gated stores.
     ctx.held_capabilities = held_capabilities;
+    // §Fase 91.b — the frame-level declared cognitive timezone (the program's
+    // first `context` declaration's `now:` — the same first-context convention
+    // `compose_system_prompt_public` uses). A step's own `now:` overrides it.
+    // The caller's shared temporal state replaces the ctx's fresh internal Arc
+    // (the §33.z.c external-side-channel discipline) so the record reaches the
+    // SSE completion envelope.
+    ctx.default_now_tz = ir.contexts.first().and_then(|c| c.now_tz.clone());
+    ctx.temporal = temporal_state;
 
     // §Fase 37.b (D1, D4) — The Request Binding Contract. Seed the
     // flow's declared parameters from the parsed request body BEFORE
@@ -756,6 +772,9 @@ mod tests {
             enforcement,
             audit,
             warnings,
+            std::sync::Arc::new(std::sync::Mutex::new(
+                crate::temporal_context::TemporalState::default(),
+            )), // §Fase 91.b — temporal side-channel (test: fresh)
             None,
             None,
             std::collections::HashMap::new(),
@@ -811,6 +830,9 @@ mod tests {
             enforcement,
             audit,
             warnings,
+            std::sync::Arc::new(std::sync::Mutex::new(
+                crate::temporal_context::TemporalState::default(),
+            )), // §Fase 91.b — temporal side-channel (test: fresh)
             None,
             None,
             std::collections::HashMap::new(),
@@ -874,6 +896,9 @@ mod tests {
             enforcement,
             audit,
             warnings,
+            std::sync::Arc::new(std::sync::Mutex::new(
+                crate::temporal_context::TemporalState::default(),
+            )), // §Fase 91.b — temporal side-channel (test: fresh)
             None,
             None,
             std::collections::HashMap::new(),
@@ -919,6 +944,9 @@ mod tests {
             enforcement,
             audit,
             warnings,
+            std::sync::Arc::new(std::sync::Mutex::new(
+                crate::temporal_context::TemporalState::default(),
+            )), // §Fase 91.b — temporal side-channel (test: fresh)
             None,
             None,
             std::collections::HashMap::new(),

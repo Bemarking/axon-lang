@@ -384,6 +384,9 @@ pub mod tracer;
 pub mod version_diff;
 pub mod webhook_delivery;
 pub mod webhooks;
+/// §Fase 91.b — declared cognitive time: the runtime half of `now:` (one
+/// capture per run, deterministic prompt line, envelope record).
+pub mod temporal_context;
 /// §Fase 71.b — the runtime for the `window` temporal execution guard
 /// (timezone-aware `is_in_window` / `next_window_open` via chrono-tz).
 pub mod window;

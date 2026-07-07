@@ -1898,6 +1898,107 @@ pub fn generate_cors_policy_consistency_proofs(ir: &IRProgram, axon_version: &st
     }
 }
 
+// ── §Fase 91.c — TemporalContextSoundness ────────────────────────────────────
+
+/// §91.c — recursively collect every step-level `now:` declaration from a
+/// flow-IR body, recursing through the container variants that carry nested
+/// bodies (Conditional / ForIn / Par / Listen / Warden / Quant).
+fn collect_step_now_declarations(
+    nodes: &[axon_frontend::ir_nodes::IRFlowNode],
+    out: &mut Vec<(String, String, String)>,
+) {
+    use axon_frontend::ir_nodes::IRFlowNode;
+    for node in nodes {
+        match node {
+            IRFlowNode::Step(s) => {
+                if let Some(tz) = &s.now_tz {
+                    out.push(("step".to_string(), s.name.clone(), tz.clone()));
+                }
+            }
+            IRFlowNode::Conditional(c) => {
+                collect_step_now_declarations(&c.then_body, out);
+                collect_step_now_declarations(&c.else_body, out);
+            }
+            IRFlowNode::ForIn(f) => collect_step_now_declarations(&f.body, out),
+            IRFlowNode::Par(p) => {
+                for branch in &p.branches {
+                    collect_step_now_declarations(branch, out);
+                }
+            }
+            IRFlowNode::Listen(l) => collect_step_now_declarations(&l.body, out),
+            IRFlowNode::Warden(w) => collect_step_now_declarations(&w.body, out),
+            IRFlowNode::Quant(q) => collect_step_now_declarations(&q.body, out),
+            _ => {}
+        }
+    }
+}
+
+/// §91.c — the IANA SHAPE law (`axon-T892`, the §91.a frontend check
+/// re-stated by the checker per D51.2): `"UTC"`, or `Area/Location` with no
+/// leading/trailing slash.
+fn now_zone_shape_ok(zone: &str) -> bool {
+    let t = zone.trim();
+    t == "UTC" || (t.contains('/') && !t.starts_with('/') && !t.ends_with('/'))
+}
+
+/// §91.c — re-derive the whole-program temporal-context witness. `None` when
+/// the program declares no `now:` anywhere — no temporal contract → no proof
+/// (the standing convention).
+pub fn derive_temporal_context_soundness_witness(
+    ir: &IRProgram,
+) -> Option<super::proof_term::TemporalContextSoundnessWitness> {
+    let mut declarations: Vec<(String, String, String)> = Vec::new();
+    for c in &ir.contexts {
+        if let Some(tz) = &c.now_tz {
+            declarations.push(("context".to_string(), c.name.clone(), tz.clone()));
+        }
+    }
+    for flow in &ir.flows {
+        collect_step_now_declarations(&flow.steps, &mut declarations);
+    }
+    if declarations.is_empty() {
+        return None;
+    }
+    let mut format_violations: Vec<String> = Vec::new();
+    let mut unknown_zones: Vec<String> = Vec::new();
+    for (_, _, zone) in &declarations {
+        if !now_zone_shape_ok(zone) {
+            if !format_violations.contains(zone) {
+                format_violations.push(zone.clone());
+            }
+        } else if crate::window::parse_tz(zone).is_none() {
+            // Shape-valid but not in this build's tz database — the failure
+            // the zero-dep frontend CANNOT catch (§71.a split); §91.b fails
+            // closed at runtime, this proof catches it at verify/deploy.
+            if !unknown_zones.contains(zone) {
+                unknown_zones.push(zone.clone());
+            }
+        }
+    }
+    Some(super::proof_term::TemporalContextSoundnessWitness {
+        declarations,
+        format_violations,
+        unknown_zones,
+    })
+}
+
+/// §91.c — generate the (at most one) TemporalContextSoundness proof for
+/// `ir`. Program-wide, so this is a Vec of length 0 or 1.
+pub fn generate_temporal_context_soundness_proofs(
+    ir: &IRProgram,
+    axon_version: &str,
+) -> Vec<ProofTerm> {
+    match derive_temporal_context_soundness_witness(ir) {
+        Some(witness) => vec![ProofTerm {
+            property: PropertyClass::TemporalContextSoundness,
+            artifact_digest: artifact_digest(ir),
+            witness: Witness::TemporalContextSoundness(witness),
+            axon_version: axon_version.to_string(),
+        }],
+        None => Vec::new(),
+    }
+}
+
 // ── §Fase 84.c — TechnicianCommandSafety ─────────────────────────────────────
 
 /// §84.c — does this IR session-step sequence contain a reachable
@@ -2365,5 +2466,6 @@ pub fn generate_all_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm>
     proofs.extend(generate_savant_soundness_proofs(ir, axon_version));
     proofs.extend(generate_warden_soundness_proofs(ir, axon_version));
     proofs.extend(generate_authorization_coverage_proofs(ir, axon_version));
+    proofs.extend(generate_temporal_context_soundness_proofs(ir, axon_version));
     proofs
 }

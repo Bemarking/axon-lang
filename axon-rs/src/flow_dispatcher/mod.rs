@@ -270,6 +270,18 @@ pub struct DispatchCtx {
     /// (the `DispatchCtx::new` default) ⇒ no anchor checking, unchanged.
     pub anchors: std::sync::Arc<Vec<crate::ir_nodes::IRAnchor>>,
     pub system_prompt: String,
+    /// §Fase 91.b — the frame-level declared cognitive timezone: the program's
+    /// first `context` declaration's `now:` (the same first-context convention
+    /// `flow_plan::compose_system_prompt_public` uses for the frame itself).
+    /// A step's own `now:` overrides it. `None` (the `new` default) ⇒ only
+    /// step-level declarations inject.
+    pub default_now_tz: Option<String>,
+    /// §Fase 91.b — shared per-run temporal state: ONE lazily-captured instant
+    /// + the zones actually rendered. `Arc<Mutex>` so `par` branches share the
+    /// capture and the collector reads the final state after the walk (the
+    /// §67.c side-channel discipline; the lock is never held across an
+    /// `.await`).
+    pub temporal: std::sync::Arc<std::sync::Mutex<crate::temporal_context::TemporalState>>,
     pub cancel: CancellationFlag,
     pub tx: mpsc::UnboundedSender<FlowExecutionEvent>,
     pub enforcement_summaries: Arc<
@@ -488,6 +500,10 @@ impl DispatchCtx {
             context_budget: crate::conversation::ContextWindow::new().max_chars,
             anchors: std::sync::Arc::new(Vec::new()),
             system_prompt: system_prompt.into(),
+            default_now_tz: None,
+            temporal: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::temporal_context::TemporalState::default(),
+            )),
             cancel,
             tx,
             enforcement_summaries: Arc::new(Mutex::new(HashMap::new())),
@@ -1270,7 +1286,7 @@ mod tests {
             confidence_floor: None,
             navigate_ref: String::new(),
             apply_ref: String::new(),
-            requires_context: None,            body: Vec::new(),
+            requires_context: None,            now_tz: None,            body: Vec::new(),
         };
         let node = IRFlowNode::Step(step);
 

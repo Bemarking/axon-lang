@@ -63,6 +63,8 @@ pub use generate::{
     derive_upstream_projection_witness, generate_upstream_projection_soundness_proofs,
     // §Fase 83.c — the whole-program CORS-reference/consistency obligation.
     derive_cors_policy_consistency_witness, generate_cors_policy_consistency_proofs,
+    // §Fase 91.c — the time_is_an_explicit_input cognitive obligation.
+    derive_temporal_context_soundness_witness, generate_temporal_context_soundness_proofs,
 };
 pub use proof_term::{
     CallSoundnessCertificate, CapabilityContainmentWitness, CapabilityGrantabilityWitness,
@@ -73,7 +75,8 @@ pub use proof_term::{
     EffectRowSoundnessWitness, InterruptibleSessionSoundnessWitness, ParkedResidualSoundnessWitness,
     ProofBundle, ProofTerm,
     PropertyClass, ResourceBoundsWitness,
-    ShieldHaltGuaranteeWitness, ToolCallSoundnessWitness, UpstreamProjectionSoundnessWitness,
+    ShieldHaltGuaranteeWitness, TemporalContextSoundnessWitness, ToolCallSoundnessWitness,
+    UpstreamProjectionSoundnessWitness,
     Witness, CALL_INTERRUPT_CAUSES,
     MAX_RETRIES, VALID_BREACH_POLICIES, VALID_SIGN_ALGORITHMS,
 };
@@ -2600,6 +2603,109 @@ mod tests {
             CheckOutcome::Refuted { reason } => assert!(reason.contains("T857"), "{reason}"),
             other => panic!("expected Refuted (cross-method conflict), got {other:?}"),
         }
+    }
+
+    // ── §Fase 91.c — TemporalContextSoundness ────────────────────────────
+
+    const TEMPORAL_PROGRAM: &str = "context Scheduling { now: \"UTC\" }\n\
+         flow Plan() -> Unit {\n\
+             step Triage { now: \"America/Bogota\" ask: \"slots\" }\n\
+             step Confirm { ask: \"confirm\" }\n\
+         }\n";
+
+    #[test]
+    fn temporal_context_soundness_round_trips_and_verifies() {
+        let ir = ir_from_source(TEMPORAL_PROGRAM);
+        let proofs =
+            super::generate::generate_temporal_context_soundness_proofs(&ir, "test");
+        assert_eq!(proofs.len(), 1, "one whole-program proof when a temporal contract exists");
+        assert_eq!(proofs[0].property, PropertyClass::TemporalContextSoundness);
+        if let Witness::TemporalContextSoundness(ref w) = proofs[0].witness {
+            assert_eq!(
+                w.declarations,
+                vec![
+                    ("context".to_string(), "Scheduling".to_string(), "UTC".to_string()),
+                    ("step".to_string(), "Triage".to_string(), "America/Bogota".to_string()),
+                ]
+            );
+            assert!(w.format_violations.is_empty());
+            assert!(w.unknown_zones.is_empty());
+        } else {
+            panic!("expected a TemporalContextSoundness witness");
+        }
+        assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
+    }
+
+    #[test]
+    fn temporal_less_program_carries_no_proof() {
+        let ir = ir_from_source("flow Chat() -> Unit { step S { ask: \"hi\" } }\n");
+        assert!(
+            super::generate::generate_temporal_context_soundness_proofs(&ir, "test").is_empty(),
+            "no temporal contract → no proof"
+        );
+    }
+
+    #[test]
+    fn temporal_context_soundness_refutes_an_unknown_zone() {
+        // `Fake/Zone` passes the frontend's SHAPE law (axon-T892 sees a
+        // plausible IANA form) — only the tz-database membership check the
+        // proof carries can catch it before the runtime fails closed.
+        let ir = ir_from_source(
+            "flow Plan() -> Unit { step S { now: \"Fake/Zone\" ask: \"hi\" } }\n",
+        );
+        let proofs =
+            super::generate::generate_temporal_context_soundness_proofs(&ir, "test");
+        assert_eq!(proofs.len(), 1);
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("tz database"), "{reason}");
+                assert!(reason.contains("Fake/Zone"), "{reason}");
+            }
+            other => panic!("expected Refuted (unknown zone), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn temporal_context_soundness_refutes_a_shape_violation() {
+        // Hand-craft an IR with a malformed zone (bypassing the compile-time
+        // axon-T892 — a hand-edited or version-drifted deployment).
+        let mut ir = ir_from_source(TEMPORAL_PROGRAM);
+        ir.contexts[0].now_tz = Some("Bogota".to_string());
+        let proofs =
+            super::generate::generate_temporal_context_soundness_proofs(&ir, "test");
+        assert_eq!(proofs.len(), 1);
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => assert!(reason.contains("T892"), "{reason}"),
+            other => panic!("expected Refuted (shape violation), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn temporal_context_soundness_refutes_a_forged_witness() {
+        // Forge: the witness claims a zone the artifact doesn't declare.
+        let ir = ir_from_source(TEMPORAL_PROGRAM);
+        let mut proofs =
+            super::generate::generate_temporal_context_soundness_proofs(&ir, "test");
+        if let Witness::TemporalContextSoundness(ref mut w) = proofs[0].witness {
+            w.declarations
+                .push(("step".to_string(), "Ghost".to_string(), "UTC".to_string()));
+        }
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => assert!(reason.contains("disagrees"), "{reason}"),
+            other => panic!("expected Refuted (forgery), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn temporal_context_soundness_rides_generate_all_proofs() {
+        let ir = ir_from_source(TEMPORAL_PROGRAM);
+        let proofs = super::generate::generate_all_proofs(&ir, "test");
+        assert!(
+            proofs
+                .iter()
+                .any(|p| p.property == PropertyClass::TemporalContextSoundness),
+            "self-contained → registered in the default generation set"
+        );
     }
 
     // ── §Fase 84.c — TechnicianCommandSafety ─────────────────────────────

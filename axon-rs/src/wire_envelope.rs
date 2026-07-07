@@ -153,6 +153,16 @@ pub struct FlowEnvelope {
     /// every pre-§65.F happy-path wire stays byte-identical.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+
+    /// §Fase 91.b — the run's temporal record when any step rendered a
+    /// declared `now:` (`time_is_an_explicit_input` applied to cognition):
+    /// the single captured instant (RFC 3339 UTC), the tz-database release
+    /// it resolved against, and the declared zones actually rendered — the
+    /// triple that makes the exact prompt the model saw reconstructible
+    /// byte-for-byte. `None` — and elided from the JSON — for every
+    /// `now:`-less flow, so every pre-§91 wire stays byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temporal_context: Option<crate::temporal_context::TemporalRecord>,
 }
 
 /// §Fase 39 (D5) — per-step audit surface. Structured replacement
@@ -381,6 +391,8 @@ impl FlowEnvelope {
             // §Fase 65.F — the honest hard-failure detail (named node + cause),
             // verbatim from the runtime walk. `None` on the clean path.
             error: exec_result.error,
+            // §Fase 91.b — the temporal record, verbatim from the runtime walk.
+            temporal_context: exec_result.temporal_context,
         }
     }
 }
@@ -540,6 +552,7 @@ mod tests {
             blame_attribution: None,
             epistemic_envelopes: Vec::new(),
             error: None,
+            temporal_context: None,
         }
     }
 
@@ -699,6 +712,7 @@ mod tests {
             execution_metrics: ExecutionMetrics::default(),
             trace_id: "x".to_string(),
             error: None,
+            temporal_context: None,
         };
         env.certainty = 1.0;
         let sealed = env.seal();
@@ -736,6 +750,7 @@ mod tests {
             execution_metrics: ExecutionMetrics::default(),
             trace_id: "x".to_string(),
             error: None,
+            temporal_context: None,
         };
         let sealed = degenerate.seal();
         assert_eq!(sealed.certainty, 1.0);

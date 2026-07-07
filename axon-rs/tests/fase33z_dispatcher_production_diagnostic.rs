@@ -776,7 +776,7 @@ fn d1_catalog_totality_pin_45_variants() {
             confidence_floor: None,
             navigate_ref: String::new(),
             apply_ref: String::new(),
-            requires_context: None,            body: Vec::new(),
+            requires_context: None,            now_tz: None,            body: Vec::new(),
         }),
         IRFlowNode::Probe(IRProbe {
             node_type: "probe",

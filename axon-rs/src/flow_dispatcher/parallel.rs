@@ -546,7 +546,7 @@ mod tests {
                 confidence_floor: None,
                 navigate_ref: String::new(),
                 apply_ref: String::new(),
-                requires_context: None,                body: Vec::new(),
+                requires_context: None,                now_tz: None,                body: Vec::new(),
             })]
         };
         let (mut ctx, mut rx) = fresh_ctx();
@@ -698,7 +698,7 @@ mod tests {
             confidence_floor: None,
             navigate_ref: String::new(),
             apply_ref: String::new(),
-            requires_context: None,            body: Vec::new(),
+            requires_context: None,            now_tz: None,            body: Vec::new(),
         }
     }
 

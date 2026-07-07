@@ -127,6 +127,13 @@ pub struct PureShapeStep {
     /// Preparation/Verification, τ_eff for Incubation, τ_base for Illumination).
     /// `None` (every pre-§86 shape) → backend default, wire-shape byte-compat.
     pub temperature: Option<f64>,
+    /// §Fase 91.b — the step's declared cognitive timezone (`now: "<IANA>"`,
+    /// threaded from `IRStep.now_tz`). Overrides the frame-level
+    /// `ctx.default_now_tz`. When either is present, [`run_pure_shape`]
+    /// appends the run's captured instant — rendered in that zone — to the
+    /// effective system prompt (`time_is_an_explicit_input`, §91). `None` on
+    /// every pre-§91 shape → prompt byte-identical.
+    pub now_tz: Option<String>,
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -197,6 +204,7 @@ pub async fn run_step(
         tools,
         requires_context: step.requires_context,
         temperature: None,
+        now_tz: step.now_tz.clone(),
     };
     run_pure_shape(shape, ctx).await
 }
@@ -570,6 +578,7 @@ pub async fn run_probe(
         tools: Vec::new(),
         requires_context: None,
         temperature: None,
+        now_tz: None,
     };
     run_pure_shape(shape, ctx).await
 }
@@ -599,6 +608,7 @@ pub async fn run_reason(
         tools: Vec::new(),
         requires_context: None,
         temperature: None,
+        now_tz: None,
     };
     run_pure_shape(shape, ctx).await
 }
@@ -629,6 +639,7 @@ pub async fn run_validate(
         tools: Vec::new(),
         requires_context: None,
         temperature: None,
+        now_tz: None,
     };
     run_pure_shape(shape, ctx).await
 }
@@ -659,6 +670,7 @@ pub async fn run_refine(
         tools: Vec::new(),
         requires_context: None,
         temperature: None,
+        now_tz: None,
     };
     run_pure_shape(shape, ctx).await
 }
@@ -707,6 +719,7 @@ pub async fn run_weave(
         tools: Vec::new(),
         requires_context: None,
         temperature: None,
+        now_tz: None,
     };
     run_pure_shape(shape, ctx).await
 }
@@ -807,6 +820,27 @@ pub async fn run_pure_shape(
         Some(addendum) if ctx.system_prompt.is_empty() => addendum.clone(),
         Some(addendum) => format!("{}\n\n{}", ctx.system_prompt, addendum),
         None => ctx.system_prompt.clone(),
+    };
+
+    // 6b. §Fase 91.b — declared cognitive time. When the step (or the frame)
+    //     declares `now:`, append the run's single captured instant rendered
+    //     in that zone (`time_is_an_explicit_input` — the source declared it,
+    //     the runtime supplies it, the envelope records it). A zone that
+    //     passed the compile-time format law but is unknown to this build's
+    //     tz database fails CLOSED — a loud dispatch error, never a silent
+    //     omission. The lock is scoped and never held across an `.await`.
+    let system = {
+        let mut temporal = ctx.temporal.lock().unwrap();
+        crate::temporal_context::compose_effective_system(
+            &system,
+            shape.now_tz.as_deref(),
+            ctx.default_now_tz.as_deref(),
+            &mut temporal,
+        )
+        .map_err(|e| DispatchError::BackendError {
+            name: "temporal_context".to_string(),
+            message: format!("step '{}': {e}", shape.name),
+        })?
     };
 
     // §Fase 65.C.2 — read the flow's conversation history (enforcing the char
@@ -1390,7 +1424,7 @@ mod tests {
             confidence_floor: None,
             navigate_ref: String::new(),
             apply_ref: String::new(),
-            requires_context: None,            body: Vec::new(),
+            requires_context: None,            now_tz: None,            body: Vec::new(),
         };
         let (mut ctx, mut rx) = fresh_ctx();
 
@@ -1440,6 +1474,8 @@ mod tests {
             apply_ref: String::new(),
             requires_context: None,
 
+            now_tz: None,
+
             body: Vec::new(),
         };
         let (mut ctx, _rx) = fresh_ctx();
@@ -1472,6 +1508,8 @@ mod tests {
             navigate_ref: String::new(),
             apply_ref: String::new(),
             requires_context: Some(16_000),
+
+            now_tz: None,
 
             body: Vec::new(),
         };
@@ -1509,7 +1547,7 @@ mod tests {
             confidence_floor: None,
             navigate_ref: String::new(),
             apply_ref: String::new(),
-            requires_context: None,            body: Vec::new(),
+            requires_context: None,            now_tz: None,            body: Vec::new(),
         };
         let (mut ctx, _rx) = fresh_ctx();
 
@@ -1550,7 +1588,7 @@ mod tests {
             confidence_floor: None,
             navigate_ref: String::new(),
             apply_ref: String::new(),
-            requires_context: None,            body: Vec::new(),
+            requires_context: None,            now_tz: None,            body: Vec::new(),
         };
         let (mut ctx, _rx) = fresh_ctx();
         ctx.context_budget = 1; // force truncation to the most recent turn
@@ -1583,7 +1621,7 @@ mod tests {
             confidence_floor: None,
             navigate_ref: String::new(),
             apply_ref: String::new(),
-            requires_context: None,            body: Vec::new(),
+            requires_context: None,            now_tz: None,            body: Vec::new(),
         }
     }
 
@@ -1694,7 +1732,7 @@ mod tests {
             confidence_floor: None,
             navigate_ref: String::new(),
             apply_ref: String::new(),
-            requires_context: None,            body: Vec::new(),
+            requires_context: None,            now_tz: None,            body: Vec::new(),
         };
         let cancel = CancellationFlag::new();
         cancel.cancel();
@@ -1725,7 +1763,7 @@ mod tests {
             confidence_floor: None,
             navigate_ref: String::new(),
             apply_ref: String::new(),
-            requires_context: None,            body: Vec::new(),
+            requires_context: None,            now_tz: None,            body: Vec::new(),
         };
         let (tx, _rx) = mpsc::unbounded_channel();
         let mut ctx = DispatchCtx::new(
@@ -1766,7 +1804,7 @@ mod tests {
             confidence_floor: None,
             navigate_ref: String::new(),
             apply_ref: String::new(),
-            requires_context: None,            body: Vec::new(),
+            requires_context: None,            now_tz: None,            body: Vec::new(),
         };
         let (mut ctx, _rx) = fresh_ctx();
         ctx.pending_effect_policy = Some(BackpressurePolicy::DropOldest);
@@ -1803,7 +1841,7 @@ mod tests {
             confidence_floor: None,
             navigate_ref: String::new(),
             apply_ref: String::new(),
-            requires_context: None,            body: Vec::new(),
+            requires_context: None,            now_tz: None,            body: Vec::new(),
         };
         let (mut ctx, _rx) = fresh_ctx();
         let _ = run_step(&step, &mut ctx).await.expect("ok");

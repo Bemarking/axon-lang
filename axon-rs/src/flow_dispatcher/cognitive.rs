@@ -301,6 +301,7 @@ async fn forge_phase(
         tools: Vec::new(),
         requires_context: None,
         temperature: Some(temperature),
+        now_tz: None,
     };
     match run_pure_shape(shape, ctx).await? {
         NodeOutcome::Completed { output, .. } => Ok(output),
@@ -483,6 +484,7 @@ pub async fn run_focus(
         tools: Vec::new(),
         requires_context: None,
         temperature: None,
+        now_tz: None,
     };
     run_pure_shape(shape, ctx).await
 }
@@ -514,6 +516,7 @@ pub async fn run_associate(
         tools: Vec::new(),
         requires_context: None,
         temperature: None,
+        now_tz: None,
     };
     run_pure_shape(shape, ctx).await
 }
@@ -551,6 +554,7 @@ pub async fn run_aggregate(
         tools: Vec::new(),
         requires_context: None,
         temperature: None,
+        now_tz: None,
     };
     run_pure_shape(shape, ctx).await
 }
@@ -579,6 +583,7 @@ pub async fn run_explore(
         tools: Vec::new(),
         requires_context: None,
         temperature: None,
+        now_tz: None,
     };
     run_pure_shape(shape, ctx).await
 }
@@ -603,6 +608,7 @@ pub async fn run_ingest(
         tools: Vec::new(),
         requires_context: None,
         temperature: None,
+        now_tz: None,
     };
     run_pure_shape(shape, ctx).await
 }
@@ -963,6 +969,7 @@ pub async fn run_navigate(
         tools: Vec::new(),
         requires_context: None,
         temperature: None,
+        now_tz: None,
     };
     run_pure_shape(shape, ctx).await
 }
@@ -987,6 +994,7 @@ pub async fn run_corroborate(
         tools: Vec::new(),
         requires_context: None,
         temperature: None,
+        now_tz: None,
     };
     run_pure_shape(shape, ctx).await
 }

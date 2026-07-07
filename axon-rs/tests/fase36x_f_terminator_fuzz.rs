@@ -130,6 +130,10 @@ async fn run_shape(
         Arc::new(Mutex::new(HashMap::new())),
         Arc::new(Mutex::new(Vec::new())),
         Arc::new(Mutex::new(Vec::new())),
+        // §Fase 91.b — temporal side-channel (test: fresh state).
+        std::sync::Arc::new(std::sync::Mutex::new(
+            axon::temporal_context::TemporalState::default(),
+        )),
         None,
         None,
         HashMap::new(),

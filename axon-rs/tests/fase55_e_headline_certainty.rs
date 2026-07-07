@@ -31,6 +31,7 @@ fn envelope(
         execution_metrics: Default::default(),
         trace_id: "t".into(),
         error: None,
+        temporal_context: None,
     }
 }
 

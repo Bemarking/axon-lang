@@ -233,6 +233,15 @@ impl AxonDialectAdapter {
                 serde_json::Value::Array(arr),
             );
         }
+        // §Fase 91.b — temporal_context object, elided when None. The key +
+        // shape ({captured_utc, tzdb_version, zones}) match the sync
+        // `FlowEnvelope.temporal_context` byte-for-byte (§55.c parity).
+        if let Some(temporal) = &envelope.temporal_context {
+            data.as_object_mut().expect("json object").insert(
+                "temporal_context".to_string(),
+                serde_json::to_value(temporal).unwrap_or(serde_json::Value::Null),
+            );
+        }
         let event_id = self.next_id();
         Event::default()
             .event("axon.complete")

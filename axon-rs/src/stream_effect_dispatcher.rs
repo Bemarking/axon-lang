@@ -366,7 +366,7 @@ mod tests {
             confidence_floor: None,
             navigate_ref: String::new(),
             apply_ref: apply_ref.to_string(),
-            requires_context: None,            loc: loc(),
+            requires_context: None,            now_tz: None,            loc: loc(),
         })
     }
 

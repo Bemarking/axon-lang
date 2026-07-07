@@ -179,6 +179,14 @@ struct CompiledStep {
     /// "return"]`, BOTH LLM-fabricated). `#[serde(skip)]` — runtime-only.
     #[serde(skip)]
     return_value_expr: Option<String>,
+    /// §Fase 91.b — the step's EFFECTIVE declared cognitive timezone
+    /// (step-level `now:` ∨ the bound `context`'s `now:` — resolved at plan
+    /// build). When present, the executor appends the unit's captured
+    /// instant — rendered in this zone — to the step's system prompt
+    /// (`time_is_an_explicit_input`). Elided from the compiled-plan JSON
+    /// when absent (pre-§91 plans byte-identical).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    now_tz: Option<String>,
 }
 
 /// Fase 17.c — payload carried inside a CompiledStep for `let X = value`
@@ -457,6 +465,18 @@ fn build_compiled_steps(run: &IRRun, ir: &IRProgram) -> Vec<CompiledStep> {
             _ => None,
         };
 
+        // §Fase 91.b — the step's EFFECTIVE declared cognitive timezone:
+        // its own `now:` overrides the bound `context` frame's (`run …
+        // within <Context>`). Only real cognitive steps carry it.
+        let now_tz = match node {
+            IRFlowNode::Step(s) => s.now_tz.clone().or_else(|| {
+                run.resolved_context
+                    .as_ref()
+                    .and_then(|c| c.now_tz.clone())
+            }),
+            _ => None,
+        };
+
         steps.push(CompiledStep {
             step_name,
             step_type,
@@ -475,6 +495,7 @@ fn build_compiled_steps(run: &IRRun, ir: &IRProgram) -> Vec<CompiledStep> {
             tool_param_types,
             structural_node,
             return_value_expr,
+            now_tz,
         });
     }
 
@@ -1637,6 +1658,14 @@ async fn execute_real_async(
             .map(|(j, s)| (s.step_name.as_str(), (j, s)))
             .collect();
 
+        // §Fase 91.b — the unit's shared temporal state: ONE lazily-captured
+        // instant per run, shared by parallel-wave threads (Arc) and the
+        // sequential branch alike, so every `now:`-bearing step in this unit
+        // renders the SAME instant (the per-run law, plan vivo §5).
+        let unit_temporal = std::sync::Arc::new(std::sync::Mutex::new(
+            crate::temporal_context::TemporalState::default(),
+        ));
+
         // ── Wave-based execution loop ────────────────────────────
         for (wave_idx, wave) in schedule.waves.iter().enumerate() {
             let is_parallel_wave = wave.is_parallel && wave.steps.len() > 1;
@@ -1679,6 +1708,9 @@ async fn execute_real_async(
                 // Snapshot shared state; each thread gets its own copy.
                 let ctx_snapshot = ctx.clone();
                 let conversation_snapshot = conversation.clone();
+                // §Fase 91.b — the unit's shared temporal state (one capture,
+                // all threads render the same instant).
+                let unit_temporal_for_wave = unit_temporal.clone();
 
                 let wave_results = parallel::execute_wave(wave, |step_name| {
                     // Thread-local state (no mutation of shared state)
@@ -1721,6 +1753,25 @@ async fn execute_real_async(
 
                     // LLM steps — each thread gets its own conversation copy
                     let full_system = format!("{}\n\n{}", unit.system_prompt, step.system_prompt);
+                    // §Fase 91.b — declared cognitive time (fail-closed: an
+                    // unresolvable declared zone fails the step, never a
+                    // silent omission). The effective zone was resolved at
+                    // plan build (step `now:` ∨ context frame `now:`).
+                    let full_system = match crate::temporal_context::compose_effective_system(
+                        &full_system,
+                        step.now_tz.as_deref(),
+                        None,
+                        &mut unit_temporal_for_wave.lock().unwrap(),
+                    ) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            return parallel::WaveStepResult {
+                                step_name: step_name.to_string(),
+                                output: format!("temporal context error: {e}"),
+                                success: false,
+                            }
+                        }
+                    };
                     let interpolated_prompt = ctx_snapshot.interpolate(&step.user_prompt);
                     let mut thread_conversation = conversation_snapshot.clone();
                     let mut thread_events: Vec<TraceEvent> = Vec::new();
@@ -2195,6 +2246,37 @@ async fn execute_real_async(
 
             // ── LLM call with variable interpolation + conversation history ──
             let full_system = format!("{}\n\n{}", unit.system_prompt, step.system_prompt);
+            // §Fase 91.b — declared cognitive time (fail-closed: an
+            // unresolvable declared zone fails the step — the error string
+            // becomes the step result, mirroring the backend-failure shape —
+            // never a silent omission).
+            let full_system = match crate::temporal_context::compose_effective_system(
+                &full_system,
+                step.now_tz.as_deref(),
+                None,
+                &mut unit_temporal.lock().unwrap(),
+            ) {
+                Ok(s) => s,
+                Err(e) => {
+                    let msg = format!("temporal context error: {e}");
+                    if !json {
+                        println!("  {} {}", c("✗", "\x1b[31m", use_color), c(&msg, "\x1b[31m", use_color));
+                    }
+                    ctx.set_result(&step.step_name, &msg);
+                    report.record_step(StepReport {
+                        name: step.step_name.clone(),
+                        step_type: step.step_type.clone(),
+                        result: msg,
+                        duration_ms: 0,
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        anchor_breaches: 0,
+                        chain_activations: 0,
+                        was_retried: false,
+                    });
+                    continue;
+                }
+            };
             let interpolated_prompt = ctx.interpolate(&step.user_prompt);
 
             // Enforce context budget before LLM call
@@ -2974,6 +3056,14 @@ pub struct ServerRunnerMetrics {
     pub rows_persisted: u64,
     pub rows_mutated: u64,
     pub rows_purged: u64,
+    /// §Fase 91.b — the run's temporal record when any step rendered a
+    /// declared `now:` (`captured_utc` + `tzdb_version` + zones, the
+    /// replayability triple of `time_is_an_explicit_input`). `None` — and
+    /// elided from the wire envelope — for every `now:`-less flow. NOTE:
+    /// the `AXON_LEGACY_EXECUTOR` kill-switch path does not inject temporal
+    /// context (the unified dispatcher is the production engine, §65.E.2);
+    /// it reports `None` here.
+    pub temporal_context: Option<crate::temporal_context::TemporalRecord>,
 }
 
 /// §Fase 55.b/c — derive a flow's epistemic envelopes from the IR. This is
@@ -3043,6 +3133,10 @@ struct CollectedRun {
     /// §Fase 67.c — per-run store row counts, read from the dispatcher
     /// ctx's shared (par-branch-merged) counter after the walk.
     store_row_counts: crate::flow_dispatcher::StoreRowCounts,
+    /// §Fase 91.b — the run's temporal record (`now:` capture + zones),
+    /// read from the dispatcher ctx's shared state after the walk. `None`
+    /// when the flow declares no `now:` (zero wire drift).
+    temporal_context: Option<crate::temporal_context::TemporalRecord>,
 }
 
 /// §Fase 65.E — run a flow through the DISPATCHER with a BUFFER sink and collect
@@ -3062,6 +3156,10 @@ async fn collect_via_dispatcher(
     flow: &crate::ir_nodes::IRFlow,
     backend: &str,
     system_prompt: &str,
+    // §Fase 91.b — the frame-level declared cognitive timezone (the program's
+    // first `context` declaration's `now:` — the same first-context convention
+    // the system-prompt composer uses). `None` ⇒ only step-level `now:` injects.
+    default_now_tz: Option<String>,
     api_key: Option<&str>,
     // §Fase 24.g.2 (Kivi brief #37) — per-tenant LLM endpoint override.
     llm_base_url: Option<&str>,
@@ -3136,11 +3234,16 @@ async fn collect_via_dispatcher(
     for (k, v) in param_bindings {
         ctx.let_bindings.insert(k.clone(), v.clone());
     }
+    // §Fase 91.b — the frame-level declared zone; a step's own `now:` overrides.
+    ctx.default_now_tz = default_now_tz;
 
     // §Fase 65.E.3 — share the audit-record sink so we can read the per-step
     // anchor breaches AFTER the walk (the `drop(ctx)` below releases the ctx's
     // own handle; this Arc clone keeps the records alive for the projection).
     let audit_records = ctx.step_audit_records.clone();
+    // §Fase 91.b — share the temporal state (capture + rendered zones) so the
+    // envelope record is readable after the walk (the same Arc discipline).
+    let temporal = ctx.temporal.clone();
     // §Fase 67.c — clone the shared row-count Arc up front (like
     // `audit_records`); the store handlers increment the SAME Mutex
     // during the walk, so reading it after the walk (via this clone)
@@ -3282,6 +3385,10 @@ async fn collect_via_dispatcher(
     // construction's tail expression.
     let store_row_counts = *row_counts.lock().unwrap();
 
+    // §Fase 91.b — project the run's temporal state into the envelope record.
+    // `None` when no `now:`-bearing step rendered (zero wire drift).
+    let temporal_context = crate::temporal_context::record_of(&temporal.lock().unwrap());
+
     CollectedRun {
         success,
         steps_executed: step_names.len(),
@@ -3292,6 +3399,7 @@ async fn collect_via_dispatcher(
         blame_attribution,
         flow_error,
         store_row_counts,
+        temporal_context,
     }
 }
 
@@ -3409,6 +3517,7 @@ pub fn execute_server_flow(
             max_tokens: None,
             temperature: None,
             cite_sources: None,
+            now_tz: None,
         });
 
         let run = crate::ir_nodes::IRRun {
@@ -3609,6 +3718,8 @@ pub fn execute_server_flow(
                     flow,
                     backend,
                     &system_prompt,
+                    // §Fase 91.b — the frame-level `now:` (first-context convention).
+                    ir.contexts.first().and_then(|c| c.now_tz.clone()),
                     api_key_override,
                     llm_base_url,
                     llm_chat_path,
@@ -3684,6 +3795,9 @@ pub fn execute_server_flow(
                 rows_persisted: collected.store_row_counts.persisted,
                 rows_mutated: collected.store_row_counts.mutated,
                 rows_purged: collected.store_row_counts.purged,
+                // §Fase 91.b — the run's temporal record (capture + zones),
+                // `None` for flows with no `now:` (zero wire drift).
+                temporal_context: collected.temporal_context,
             });
         }
     }
@@ -3921,6 +4035,10 @@ pub fn execute_server_flow(
         rows_persisted: 0,
         rows_mutated: 0,
         rows_purged: 0,
+        // §Fase 91.b — the legacy (kill-switch) executor does not inject
+        // temporal context; the structured record is a property of the
+        // unified/default engine (same rationale as `error: None` above).
+        temporal_context: None,
     })
 }
 
@@ -4715,6 +4833,7 @@ flow Recall(q: Text) -> Text {
             flow,
             "stub",
             "",
+            None, // §Fase 91.b — default_now_tz (test: no frame zone)
             None,
             None,
             None,

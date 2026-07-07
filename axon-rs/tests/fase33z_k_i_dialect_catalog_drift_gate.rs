@@ -533,6 +533,11 @@ fn s7_complete_envelope_field_set_is_locked() {
         runtime_warnings: Vec::new(),
         step_audit_records: Vec::new(),
         epistemic_envelopes: Vec::new(),
+        // §Fase 91.b — considered per adapter: the axon dialect surfaces it
+        // on `axon.complete` (elided when None); openai/anthropic do not
+        // (the §55.b epistemic precedent — axon-native observability rides
+        // the axon dialect only).
+        temporal_context: None,
     };
     // Touch every field at the use site to lock the read surface.
     let _ = envelope.trace_id;

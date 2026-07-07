@@ -107,6 +107,7 @@ fn sync_wire_array(envs: Vec<EpistemicEnvelope>) -> serde_json::Value {
         execution_metrics: Default::default(),
         trace_id: "t".into(),
         error: None,
+        temporal_context: None,
     }
     .seal();
     serde_json::to_value(&env).expect("serialize FlowEnvelope")["epistemic_envelopes"].clone()
@@ -127,6 +128,7 @@ fn streaming_wire_array(envs: Vec<EpistemicEnvelope>) -> serde_json::Value {
         runtime_warnings: Vec::new(),
         step_audit_records: Vec::new(),
         epistemic_envelopes: envs,
+        temporal_context: None,
     };
     let mut adapter = select_adapter("axon", 1);
     let frames = adapter.build_complete_envelope_event(&envelope);

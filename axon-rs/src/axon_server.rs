@@ -2145,6 +2145,15 @@ pub struct ServerExecutionResult {
     /// result + zero diagnostic). Elided from the wire when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+
+    /// §Fase 91.b — the run's temporal record when any step rendered a
+    /// declared `now:` (`captured_utc` + `tzdb_version` + `zones` — the
+    /// replayability triple of `time_is_an_explicit_input`, §71/§91). The
+    /// converter writes it into `FlowEnvelope.temporal_context` verbatim.
+    /// `None` — and elided from the wire — for every `now:`-less flow, so
+    /// every pre-§91 envelope stays byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temporal_context: Option<crate::temporal_context::TemporalRecord>,
 }
 
 /// §Fase 33.x.d — Wire-serializable mirror of
@@ -2300,6 +2309,8 @@ fn server_execute(
         // §Fase 65.F — the honest hard-failure detail (named node + cause),
         // or `None` on the clean path.
         error: run_res.error,
+        // §Fase 91.b — the run's temporal record (`now:` capture + zones).
+        temporal_context: run_res.temporal_context,
     })
 }
 
@@ -18827,6 +18838,16 @@ pub struct StreamingExecution {
     pub runtime_warnings: std::sync::Arc<
         tokio::sync::Mutex<Vec<crate::runtime_warnings::RuntimeWarning>>,
     >,
+    /// §Fase 91.b — the run's shared temporal side-channel (`now:` capture
+    /// + rendered zones). Populated by the dispatcher's per-step renders;
+    /// read by the SSE consumer at completion time and projected onto
+    /// `axon.complete.temporal_context` (elided when no `now:` rendered —
+    /// pre-§91 wire byte-identical). `std::sync::Mutex`: the render lock is
+    /// instant and never held across an `.await` (the §67.c row-counts
+    /// discipline).
+    pub temporal_state: std::sync::Arc<
+        std::sync::Mutex<crate::temporal_context::TemporalState>,
+    >,
 }
 
 /// §Fase 33.z.e — Single hot path through the per-IRFlowNode dispatcher.
@@ -18962,6 +18983,16 @@ pub fn server_execute_streaming(
         tokio::sync::Mutex<Vec<crate::runtime_warnings::RuntimeWarning>>,
     > = std::sync::Arc::new(tokio::sync::Mutex::new(initial_warnings));
 
+    // §Fase 91.b — the shared temporal side-channel: the dispatcher's `now:`
+    // renders populate it; the `axon.complete` envelope reads the record
+    // after the walk (§55.c parity with the sync FlowEnvelope).
+    let temporal_state: std::sync::Arc<
+        std::sync::Mutex<crate::temporal_context::TemporalState>,
+    > = std::sync::Arc::new(std::sync::Mutex::new(
+        crate::temporal_context::TemporalState::default(),
+    ));
+    let temporal_for_complete = temporal_state.clone();
+
     // §Fase 33.z.e — Single hot path through the per-IRFlowNode
     // dispatcher (D1 milestone). The 33.z.b feature-flagged graft +
     // 33.z.c default-on flip + 33.z.d 50-flow parity corpus together
@@ -19004,6 +19035,7 @@ pub fn server_execute_streaming(
     let enforcement_for_dispatcher = enforcement_summaries.clone();
     let audit_for_dispatcher = step_audit_records.clone();
     let warnings_for_dispatcher = runtime_warnings.clone();
+    let temporal_for_dispatcher = temporal_state.clone();
     tokio::spawn(async move {
         crate::streaming_via_dispatcher::run_streaming_via_dispatcher(
             source,
@@ -19015,6 +19047,7 @@ pub fn server_execute_streaming(
             enforcement_for_dispatcher,
             audit_for_dispatcher,
             warnings_for_dispatcher,
+            temporal_for_dispatcher,
             held_capabilities,
             request_body,
             // §Fase 37.y — path + query into the dispatcher.
@@ -19035,6 +19068,9 @@ pub fn server_execute_streaming(
         enforcement_summaries,
         step_audit_records,
         runtime_warnings,
+        // §Fase 91.b — the shared temporal side-channel (the dispatcher's
+        // clone was moved into the spawn above).
+        temporal_state: temporal_for_complete,
     }
 }
 
@@ -19268,6 +19304,8 @@ async fn execute_sse_handler_inner(
                     enforcement_summaries: enforcement_summaries_for_consumer,
                     step_audit_records: step_audit_records_for_consumer,
                     runtime_warnings: runtime_warnings_for_consumer,
+                    // §Fase 91.b — the temporal side-channel for axon.complete.
+                    temporal_state: temporal_for_complete,
                 } = server_execute_streaming(
                     state_for_task.clone(),
                     source.clone(),
@@ -19487,6 +19525,11 @@ async fn execute_sse_handler_inner(
                                 runtime_warnings: warnings_vec,
                                 step_audit_records: step_audit_vec,
                                 epistemic_envelopes: epistemic_envelopes.clone(),
+                                // §Fase 91.b — the run's temporal record, read
+                                // from the shared side-channel after the walk.
+                                temporal_context: crate::temporal_context::record_of(
+                                    &temporal_for_complete.lock().unwrap(),
+                                ),
                             };
                             wire_adapter.build_complete_envelope_event(&envelope)
                         }

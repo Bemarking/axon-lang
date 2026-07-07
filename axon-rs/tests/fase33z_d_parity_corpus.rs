@@ -147,6 +147,9 @@ async fn run_async(source: String, source_file: String, flow_name: String) -> As
         enforcement,
         audit,
         warnings,
+        std::sync::Arc::new(std::sync::Mutex::new(
+            axon::temporal_context::TemporalState::default(),
+        )), // §Fase 91.b — temporal side-channel (test: fresh)
         None,
         None,
         // §Fase 37.y (D3) — request_path + request_query (empty maps).

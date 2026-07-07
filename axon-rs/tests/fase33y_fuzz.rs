@@ -137,6 +137,7 @@ fn random_step(lcg: &mut Lcg) -> IRFlowNode {
             String::new()
         },
         requires_context: None,
+        now_tz: None,
         body: Vec::new(),
     })
 }
@@ -962,6 +963,7 @@ async fn fase33y_n_tool_call_interleaving_d8_d3() {
                 String::new() // empty → no tool plumb
             },
             requires_context: None,
+            now_tz: None,
             body: Vec::new(),
         });
 

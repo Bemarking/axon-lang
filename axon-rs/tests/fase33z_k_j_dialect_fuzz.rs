@@ -401,6 +401,7 @@ fn gen_random_envelope(lcg: &mut Lcg) -> CompleteEnvelope {
         runtime_warnings,
         step_audit_records,
         epistemic_envelopes: Vec::new(),
+        temporal_context: None,
     }
 }
 

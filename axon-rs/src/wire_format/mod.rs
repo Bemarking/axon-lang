@@ -130,6 +130,12 @@ pub struct CompleteEnvelope {
     /// with the sync `FlowEnvelope.epistemic_envelopes` (both derived by
     /// `epistemic_capture::collect_for_flow` — §55.c parity).
     pub epistemic_envelopes: Vec<crate::epistemic_capture::EpistemicEnvelope>,
+    /// §Fase 91.b — the run's temporal record when any step rendered a
+    /// declared `now:` (capture + tzdb version + zones). Emitted as the
+    /// `temporal_context` object on the streaming `axon.complete` envelope
+    /// (elided when `None`), byte-aligned with the sync
+    /// `FlowEnvelope.temporal_context` (the §55.c parity discipline).
+    pub temporal_context: Option<crate::temporal_context::TemporalRecord>,
 }
 
 /// Wire-format adapter trait — translates internal flow-execution

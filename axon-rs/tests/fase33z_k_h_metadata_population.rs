@@ -188,6 +188,7 @@ fn full_envelope_fixture() -> CompleteEnvelope {
             ..Default::default()
         }],
         epistemic_envelopes: Vec::new(),
+        temporal_context: None,
     }
 }
 
@@ -208,6 +209,7 @@ fn minimal_envelope_fixture() -> CompleteEnvelope {
         runtime_warnings: Vec::new(),
         step_audit_records: Vec::new(),
         epistemic_envelopes: Vec::new(),
+        temporal_context: None,
     }
 }
 

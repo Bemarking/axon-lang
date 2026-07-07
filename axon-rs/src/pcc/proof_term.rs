@@ -301,6 +301,17 @@ pub enum PropertyClass {
     /// stored/deployed IR whose stale proof admitted a dead requirement is
     /// REFUTED and the §52 deploy gate rejects the bundle fail-closed.
     CapabilityGrantability,
+    /// §91.c — the doctrine `time_is_an_explicit_input` applied to cognition
+    /// (§91). For every declared cognitive timezone (`now:` on a step or on a
+    /// `context` frame, §91.a), re-derives: (1) the IANA shape law the §91.a
+    /// type-checker proved (`axon-T892`), and (2) — STRICTLY STRONGER than the
+    /// zero-dependency frontend can check — actual membership in this build's
+    /// tz database (chrono-tz). A plausible-but-unknown zone (`Fake/Zone`)
+    /// passes the frontend's shape law and fails CLOSED at runtime (§91.b);
+    /// this proof catches it at verify/deploy time, before the first request
+    /// dies. Program-wide, 0-or-1 proof (the `cors`/`cache` shape); a program
+    /// with no `now:` declarations has no temporal contract → no proof.
+    TemporalContextSoundness,
 }
 
 /// §72.f — the closed period catalog for `budget` quotas. The checker's own
@@ -353,6 +364,7 @@ impl PropertyClass {
             PropertyClass::WardenSoundness => "warden_soundness",
             PropertyClass::AuthorizationCoverage => "authorization_coverage",
             PropertyClass::CapabilityGrantability => "capability_grantability",
+            PropertyClass::TemporalContextSoundness => "temporal_context_soundness",
         }
     }
 }
@@ -1001,6 +1013,30 @@ pub struct CapabilityGrantabilityWitness {
     pub all_grantable: bool,
 }
 
+/// §91.c — witness for [`PropertyClass::TemporalContextSoundness`].
+///
+/// Program-wide (the `cors`/`cache` shape): "every declared cognitive
+/// timezone is well-formed and resolvable" quantifies over the whole
+/// declaration set. The checker RE-DERIVES every field from the IR's
+/// `contexts` + the flows' step trees (recursing through Conditional /
+/// ForIn / Par / Listen / Warden / Quant bodies) and rejects the proof if
+/// the witness disagrees (D51.2). A verifying proof has both violation
+/// lists empty.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TemporalContextSoundnessWitness {
+    /// `(surface, owner, zone)` for every declared `now:` — surface ∈
+    /// {"context", "step"} — contexts first (declaration order), then flows
+    /// in order, steps in body order (recursive).
+    pub declarations: Vec<(String, String, String)>,
+    /// Zones failing the IANA shape law (`axon-T892`, re-derived). Empty for
+    /// a verifying proof.
+    pub format_violations: Vec<String>,
+    /// Zones passing the shape law but UNKNOWN to this build's tz database
+    /// (chrono-tz — the authority the frontend defers to, §71.a split).
+    /// Empty for a verifying proof.
+    pub unknown_zones: Vec<String>,
+}
+
 /// The property-specific witness. Tagged so the JSON is self-describing
 /// + a future class adds a variant without ambiguity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1029,6 +1065,7 @@ pub enum Witness {
     WardenSoundness(WardenSoundnessWitness),
     AuthorizationCoverage(AuthorizationCoverageWitness),
     CapabilityGrantability(CapabilityGrantabilityWitness),
+    TemporalContextSoundness(TemporalContextSoundnessWitness),
 }
 
 impl Witness {
@@ -1069,6 +1106,8 @@ impl Witness {
             Witness::AuthorizationCoverage(w) => &w.endpoint_name,
             // §90.b — program-wide property, no single named subject.
             Witness::CapabilityGrantability(_) => "<program>",
+            // §91.c — program-wide property, no single named subject.
+            Witness::TemporalContextSoundness(_) => "<program>",
         }
     }
 }

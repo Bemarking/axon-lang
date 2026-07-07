@@ -144,6 +144,9 @@ pub fn check_proof(proof: &ProofTerm, ir: &IRProgram) -> CheckOutcome {
         (PropertyClass::CapabilityGrantability, Witness::CapabilityGrantability(w)) => {
             check_capability_grantability(w, ir)
         }
+        (PropertyClass::TemporalContextSoundness, Witness::TemporalContextSoundness(w)) => {
+            check_temporal_context_soundness(w, ir)
+        }
         _ => CheckOutcome::UnknownProperty,
     }
 }
@@ -995,6 +998,55 @@ fn check_cors_policy_consistency(
                 "axon-T857 axonendpoints sharing a path disagree on `cors:` \
                  (endpoint_a, endpoint_b) pairs: {:?}",
                 actual.cross_method_conflicts
+            ),
+        };
+    }
+    CheckOutcome::Verified
+}
+
+/// §91.c — independent checker for [`PropertyClass::TemporalContextSoundness`].
+/// Re-derives the whole-program witness (contexts + recursive step walk) and
+/// rejects on ANY of: a forged/stale witness, a zone violating the IANA shape
+/// law (`axon-T892`, re-derived), or a shape-valid zone unknown to this
+/// build's tz database (the failure the zero-dep frontend cannot catch —
+/// §91.b fails closed at runtime; this proof catches it before deploy).
+fn check_temporal_context_soundness(
+    claimed: &super::proof_term::TemporalContextSoundnessWitness,
+    ir: &IRProgram,
+) -> CheckOutcome {
+    let actual = match super::generate::derive_temporal_context_soundness_witness(ir) {
+        Some(w) => w,
+        None => {
+            return CheckOutcome::Refuted {
+                reason: "no temporal contract exists in this artifact (no `now:` \
+                         declarations on any step or context) — forged or stale proof"
+                    .to_string(),
+            }
+        }
+    };
+    if actual != *claimed {
+        return CheckOutcome::Refuted {
+            reason: "witness disagrees with artifact re-derivation (forged or stale proof)"
+                .to_string(),
+        };
+    }
+    if !actual.format_violations.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axon-T892 declared `now:` zone(s) violate the IANA shape law \
+                 (expected \"Area/Location\" or \"UTC\"): {:?}",
+                actual.format_violations
+            ),
+        };
+    }
+    if !actual.unknown_zones.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "declared `now:` zone(s) pass the shape law but are NOT in this build's \
+                 IANA tz database (tzdb {}) — the run would fail closed at the first \
+                 `now:`-bearing step: {:?}",
+                crate::window::tz_db_version(),
+                actual.unknown_zones
             ),
         };
     }
