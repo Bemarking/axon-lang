@@ -388,6 +388,7 @@ impl IRGenerator {
             max_tokens: n.max_tokens,
             temperature: n.temperature,
             cite_sources: n.cite_sources,
+            now_tz: n.now_tz.clone(),
         }
     }
 
@@ -662,6 +663,7 @@ impl IRGenerator {
                 navigate_ref: s.navigate_ref.clone(),
                 apply_ref: s.apply_ref.clone(),
                 requires_context: s.requires_context,
+                now_tz: s.now_tz.clone(),
                 body: Vec::new(),
             }),
             FlowStep::Probe(s) => IRFlowNode::Probe(IRProbe {
@@ -1090,6 +1092,7 @@ impl IRGenerator {
                     navigate_ref: String::new(),
                     apply_ref: String::new(),
                     requires_context: None,
+                    now_tz: None,
                     body: Vec::new(),
                 })
             }

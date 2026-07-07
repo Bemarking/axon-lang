@@ -1734,6 +1734,29 @@ impl<'a> TypeChecker<'a> {
                 );
             }
         }
+        if let Some(tz) = &node.now_tz {
+            self.check_now_tz(tz, "context", &node.name, &node.loc);
+        }
+    }
+
+    /// §Fase 91.a — the `now:` format law (`axon-T892`). Mirrors the §71.a
+    /// window-timezone posture: the frontend (zero-dependency) checks the
+    /// IANA *shape* — `"UTC"` or `Area/Location` with no leading/trailing
+    /// slash — and the runtime (§91.b, chrono-tz) is the authority on actual
+    /// IANA membership, failing closed on an unresolvable zone.
+    fn check_now_tz(&mut self, tz: &str, surface: &str, name: &str, loc: &Loc) {
+        let t = tz.trim();
+        let tz_ok = t == "UTC" || (t.contains('/') && !t.starts_with('/') && !t.ends_with('/'));
+        if !tz_ok {
+            self.emit(
+                format!(
+                    "axon-T892 {surface} '{name}' declares an invalid `now:` timezone \
+                     '{tz}' — expected an IANA name like \"America/Bogota\" or \"UTC\". \
+                     Time is an explicit input: say WHOSE time the cognition runs in.",
+                ),
+                loc,
+            );
+        }
     }
 
     fn check_anchor(&mut self, node: &AnchorConstraint) {
@@ -7823,6 +7846,11 @@ impl<'a> TypeChecker<'a> {
                     // §Fase 68.f — a `requires_context:` that no model could ever
                     // satisfy is `axon-T809` at compile time.
                     self.check_requires_context(s);
+                    // §Fase 91.a — a step-level `now:` must be a plausible IANA
+                    // zone (`axon-T892`).
+                    if let Some(tz) = &s.now_tz {
+                        self.check_now_tz(tz, "step", &s.name, &s.loc);
+                    }
                 }
                 // §Fase 51.b — the Continuous Type Invariant (D8). Inside a
                 // `quant` block, conversational / unstructured discrete types

@@ -669,6 +669,10 @@ pub struct IRContext {
     pub max_tokens: Option<i64>,
     pub temperature: Option<f64>,
     pub cite_sources: Option<bool>,
+    /// §Fase 91.a — the frame's declared cognitive timezone (IANA name).
+    /// Elided when absent → pre-§91 context IR JSON stays byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub now_tz: Option<String>,
 }
 
 // ── Anchor ───────────────────────────────────────────────────────────────────
@@ -848,6 +852,12 @@ pub struct IRStep {
     /// to `None` → the §68.c resolver picks the backend default exactly as today.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requires_context: Option<u32>,
+    /// §Fase 91.a — the step's declared cognitive timezone (IANA name). The
+    /// runtime renders the run's captured instant in this zone into the step's
+    /// cognitive context. Elided when absent → every pre-§91 step's IR JSON is
+    /// byte-identical (no IR-SHA drift); legacy IR → `None` → no injection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub now_tz: Option<String>,
     pub body: Vec<serde_json::Value>,
 }
 

@@ -2264,6 +2264,7 @@ impl Parser {
             max_tokens: None,
             temperature: None,
             cite_sources: None,
+            now_tz: None,
             loc,
             leading_trivia: Vec::new(),
             trailing_trivia: Vec::new(),
@@ -2278,6 +2279,8 @@ impl Parser {
                 "memory" => node.memory_scope = self.consume_any_ident_or_kw()?.value,
                 "language" => node.language = self.consume(TokenType::StringLit)?.value,
                 "depth" => node.depth = self.consume_any_ident_or_kw()?.value,
+                // §Fase 91.a — the frame's cognitive timezone (IANA string).
+                "now" => node.now_tz = Some(self.consume(TokenType::StringLit)?.value),
                 "max_tokens" => {
                     node.max_tokens = Some(
                         self.consume(TokenType::Integer)?
@@ -2997,6 +3000,7 @@ impl Parser {
             navigate_ref: String::new(),
             apply_ref: String::new(),
             requires_context: None,
+            now_tz: None,
             loc,
         };
 
@@ -3071,6 +3075,29 @@ impl Parser {
                     self.advance();
                     node.requires_context = Some(value);
                 }
+                // §Fase 91.a — `now: "<IANA-tz>"`: the step's declared cognitive
+                // timezone. A string literal; the format law (IANA shape) is the
+                // type-checker's job (`axon-T892`) — the parser only requires a
+                // string token here, surfaced at the exact column.
+                TokenType::Identifier if inner.value == "now" => {
+                    self.advance();
+                    self.consume(TokenType::Colon)?;
+                    let tz = self.current().clone();
+                    if tz.ttype != TokenType::StringLit {
+                        return Err(ParseError {
+                            message: format!(
+                                "`now:` must be an IANA timezone string literal like \
+                                 \"America/Bogota\" or \"UTC\" (got '{}')",
+                                tz.value
+                            ),
+                            line: tz.line,
+                            column: tz.column,
+                            ..Default::default()
+                        });
+                    }
+                    self.advance();
+                    node.now_tz = Some(tz.value);
+                }
                 // §Fase 54.a — a `use` nested inside a `step { }` body used
                 // to be skipped structurally (grouped with the sub-constructs
                 // below), silently degrading the tool dispatch to an
@@ -3112,7 +3139,7 @@ impl Parser {
                         message: format!(
                             "Unexpected token in step body: '{}' — expected given, ask, \
                              probe, reason, weave, stream, output, confidence_floor, navigate, \
-                             apply, requires_context",
+                             apply, requires_context, now",
                             inner.value
                         ),
                         line: inner.line,

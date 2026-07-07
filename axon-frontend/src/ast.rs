@@ -1706,6 +1706,12 @@ pub struct ContextDefinition {
     pub max_tokens: Option<i64>,
     pub temperature: Option<f64>,
     pub cite_sources: Option<bool>,
+    /// §Fase 91.a — the conversational frame's declared cognitive timezone
+    /// (IANA name). Every step running within this context carries the run's
+    /// captured instant rendered in this zone, unless the step declares its
+    /// own `now:` override. Format-checked (`axon-T892`); `None` → no
+    /// temporal injection (back-compat).
+    pub now_tz: Option<String>,
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia attached to this declaration
     /// (comments preceding the declaration's first token, since the
@@ -2009,6 +2015,15 @@ pub struct StepNode {
     /// resolved backend's §68.a catalog); `None` → the backend default
     /// (back-compat). Declare the NEED, not the vendor SKU (D68.1).
     pub requires_context: Option<u32>,
+    /// §Fase 91.a — the step's declared cognitive timezone: an IANA name
+    /// (`"America/Bogota"`, `"UTC"`). When present, the runtime injects the
+    /// run's captured instant — rendered in THIS zone — into the step's
+    /// cognitive context (`time_is_an_explicit_input`, the §71 doctrine
+    /// applied to cognition). Format-checked at compile time (`axon-T892`);
+    /// full IANA membership is the runtime's job (chrono-tz, §91.b).
+    /// Overrides a bound `context`'s `now:` for this step. `None` → no
+    /// temporal injection (back-compat).
+    pub now_tz: Option<String>,
     pub loc: Loc,
 }
 
