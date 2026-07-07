@@ -33,6 +33,8 @@ const EXPECTED: &[(&str, ExampleTopic)] = &[
     ("weave_braid", ExampleTopic::Composition),
     // §Fase 51 (v2.19.0) — the quant cognitive primitive feature map.
     ("quant_feature_map", ExampleTopic::Composition),
+    // §Fase 91 — declared cognitive time (`now:` on step + context frame).
+    ("temporal_cognitive_context", ExampleTopic::Composition),
     // Session types (2)
     ("session_chat_duality", ExampleTopic::SessionTypes),
     ("socket_websocket_chat", ExampleTopic::SessionTypes),

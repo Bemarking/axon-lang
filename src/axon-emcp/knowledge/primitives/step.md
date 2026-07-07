@@ -11,6 +11,7 @@ grammar: |
       output: <Type>                  # required for cognitive steps — output type
       confidence_floor: <0.0..1.0>    # optional — minimum confidence to accept
       requires_context: <tokens>      # optional (§68) — min context window; resolver picks the smallest model that fits
+      now: "<IANA-tz>"                # optional (§91) — declared cognitive time: inject the run's captured instant, rendered in THIS zone
       navigate: <Graph.Path>          # optional — route through a knowledge graph
       apply: <FlowName>               # optional — invoke a declared flow
 
@@ -143,6 +144,47 @@ flow-level model binding applies). Validation is **`axon-T809`**: the
 value must be `> 0` and not exceed the largest context window in the
 capability catalog (a requirement no model can satisfy is a compile
 error, not a silent fallback).
+
+### `now:` (optional, §Fase 91)
+
+An **IANA timezone string literal** (`"America/Bogota"`, `"UTC"`) —
+the step's **declared cognitive time**. When present, the runtime
+injects the run's single captured instant — rendered in THIS zone —
+into the step's system prompt, e.g.:
+
+```
+Current datetime: 2026-07-07T14:33:05-05:00 (America/Bogota; tzdb 2025b; captured at run start).
+```
+
+This is `time_is_an_explicit_input` (§71) applied to cognition: the
+source DECLARES that the step carries time and WHOSE time it reasons
+in; the runtime supplies the instant; the envelope records
+`(captured_utc, tzdb_version, zones)` so the exact prompt is
+replayable. There is deliberately **no ambient clock** — a step
+without `now:` (and no frame-level `context.now:`) gets no temporal
+line, byte-identical to pre-§91.
+
+```axon
+step Triage {
+    given: request
+    now: "America/Bogota"
+    ask: "Propose three visit slots this week."
+    output: VisitPlan
+}
+```
+
+Three laws:
+
+1. **One instant per run** — every `now:`-bearing step in a run
+   renders the SAME captured instant (steps never disagree about
+   "now"); a daemon tick is a new run with a fresh capture.
+2. **Step overrides frame** — a step's `now:` wins over the bound
+   `context` declaration's `now:` for that step alone.
+3. **Fail-closed** — the zone is format-checked at compile time
+   (**`axon-T892`**: `"Area/Location"` or `"UTC"`); a shape-valid
+   zone unknown to the tz database fails the step loudly at runtime
+   (and is caught earlier by the `TemporalContextSoundness` proof at
+   verify/deploy). Never a silent omission.
 
 ### `navigate:` (optional)
 

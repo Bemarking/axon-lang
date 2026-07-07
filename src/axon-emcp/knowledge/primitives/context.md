@@ -12,6 +12,7 @@ grammar: |
       max_tokens: <integer>                         # optional — output budget
       temperature: <0.0..2.0>                       # optional — sampling temperature
       cite_sources: <true|false>                    # optional — force citations on every claim
+      now: "<IANA-tz>"                              # optional (§91) — the frame's declared cognitive timezone
   }
 ---
 
@@ -97,6 +98,20 @@ context is active MUST carry an `[evidence: ...]` citation —
 identical semantics to the persona-level field of the same name.
 The two compose: if either the persona OR the active context
 demands citations, citations are required.
+
+### `now:` (optional, §Fase 91)
+
+An **IANA timezone string literal** (`"America/Bogota"`, `"UTC"`) —
+the frame's **declared cognitive timezone**. Every step running
+within this context carries the run's single captured instant,
+rendered in this zone, in its system prompt — unless the step
+declares its own `now:` (step overrides frame). This is
+`time_is_an_explicit_input` (§71) applied to cognition: a
+scheduling agent must say WHOSE time it reasons in; "the server's
+local time" is the ambient read this doctrine forbids.
+Format-checked at compile time (**`axon-T892`**); the envelope
+records `(captured_utc, tzdb_version, zones)` for byte-exact
+replay. Absent ⇒ no temporal injection (byte-identical to pre-§91).
 
 ## Runtime behaviour
 
