@@ -2128,7 +2128,7 @@ impl<'a> TypeChecker<'a> {
         self.check_technician_tool(node);
         // §Fase 85.c — cache-reference resolution + non-pure-needs-ttl.
         self.check_tool_cache_ref(node);
-        // §Fase 94.c (axon-T901) — the dispatch-injection `secret:` laws.
+        // §Fase 94.c (axon-T902) — the dispatch-injection `secret:` laws.
         // Inert when unset (every pre-§94 tool).
         if !node.secret.is_empty() {
             // Key shape — the compile-time SecretKeyPolicy mirror (the T850
@@ -2144,7 +2144,7 @@ impl<'a> TypeChecker<'a> {
             if !head_ok || !rest_ok {
                 self.emit(
                     format!(
-                        "axon-T901 tool '{}' `secret:` value '{}' is not a config key — \
+                        "axon-T902 tool '{}' `secret:` value '{}' is not a config key — \
                          keys are lowercase dot-separated (`[a-z0-9][a-z0-9_.-]*`, no \
                          `/`, no `:`); credentials never appear in source. The runtime \
                          resolves the key against the tenant's secret custody at \
@@ -2162,7 +2162,7 @@ impl<'a> TypeChecker<'a> {
             if node.target.is_some() {
                 self.emit(
                     format!(
-                        "axon-T901 tool '{}' declares BOTH `target:` (technician argv \
+                        "axon-T902 tool '{}' declares BOTH `target:` (technician argv \
                          dispatch) and `secret:` (HTTP dispatch injection) — a \
                          technician command has no request body to inject a secret \
                          into. Drop one: technician credentials belong on the machine \

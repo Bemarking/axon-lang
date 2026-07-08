@@ -1842,10 +1842,10 @@ pub struct ToolDefinition {
     /// custody and injects the value into the tool-server request under
     /// the reserved `axon_secret` field — the flow never touches it. The
     /// §80.c posture extended to tools: this is a config KEY, never a
-    /// credential literal (`axon-T901`, the T850 charset mirror). Empty =
+    /// credential literal (`axon-T902`, the T850 charset mirror). Empty =
     /// no injection (every pre-§94 tool). Meaningless on a
     /// `target:`-bound technician tool (execve dispatch, no HTTP request
-    /// to inject into) — declaring both is `axon-T901`.
+    /// to inject into) — declaring both is `axon-T902`.
     pub secret: String,
     /// §Fase 84.b — Remote Hands. The `socket` this technician tool dispatches
     /// over: a program acting on a real machine dials `axon` as a `socket`

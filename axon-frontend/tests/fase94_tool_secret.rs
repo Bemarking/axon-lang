@@ -5,9 +5,9 @@
 //! Pinned properties:
 //! 1. `secret:` parses as a dotted config key into `ToolDefinition.secret`.
 //! 2. A well-formed tool with `secret:` produces zero diagnostics.
-//! 3. **axon-T901** — a non-key-shaped value (the T850 charset mirror:
+//! 3. **axon-T902** — a non-key-shaped value (the T850 charset mirror:
 //!    no `/`, no `:`, no uppercase) is rejected.
-//! 4. **axon-T901** — `secret:` on a `target:`-bound technician tool is
+//! 4. **axon-T902** — `secret:` on a `target:`-bound technician tool is
 //!    rejected (argv dispatch has no request to inject into).
 //! 5. IR: `secret` rides `IRToolSpec`; elided when empty (IR-SHA
 //!    stability for every pre-§94 tool).
@@ -62,7 +62,7 @@ fn well_formed_tool_secret_is_clean() {
 }
 
 #[test]
-fn t901_uppercase_key_is_rejected() {
+fn t902_uppercase_key_is_rejected() {
     // `Crm.hubspot` parses as a dotted identifier but violates the key
     // charset (lowercase-only head) — the T850 mirror.
     let src = "tool T {\n secret: Crm.hubspot\n}\n";
@@ -70,15 +70,15 @@ fn t901_uppercase_key_is_rejected() {
     assert!(
         errors
             .iter()
-            .any(|e| e.contains("axon-T901") && e.contains("not a config key")),
-        "expected axon-T901 key-shape, got: {errors:?}"
+            .any(|e| e.contains("axon-T902") && e.contains("not a config key")),
+        "expected axon-T902 key-shape, got: {errors:?}"
     );
 }
 
 #[test]
-fn t901_secret_on_technician_tool_is_rejected() {
+fn t902_secret_on_technician_tool_is_rejected() {
     // The socket reference is deliberately unresolved — T861 fires alongside,
-    // but the T901 technician exclusion must fire regardless: the law is on
+    // but the T902 technician exclusion must fire regardless: the law is on
     // the tool's own shape, not on the target's validity.
     let src = "tool Ping {\n\
         secret: crm.hubspot\n\
@@ -91,8 +91,8 @@ fn t901_secret_on_technician_tool_is_rejected() {
     assert!(
         errors
             .iter()
-            .any(|e| e.contains("axon-T901") && e.contains("technician")),
-        "expected axon-T901 technician exclusion, got: {errors:?}"
+            .any(|e| e.contains("axon-T902") && e.contains("technician")),
+        "expected axon-T902 technician exclusion, got: {errors:?}"
     );
 }
 
