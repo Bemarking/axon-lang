@@ -1124,6 +1124,9 @@ pub async fn dispatch_node(
         IRFlowNode::DaemonStep(node) => algebraic_handlers::run_daemon_step(node, ctx).await,
         // §Fase 92.c — ephemeral-credential minting (attenuated, fail-closed).
         IRFlowNode::Mint(node) => wire_integrations::run_mint(node, ctx).await,
+        // §Fase 94.b — mediated secret renewal (fail-closed without the
+        // custody port; an LLM fallthrough would HALLUCINATE a rotation).
+        IRFlowNode::Rotate(node) => wire_integrations::run_rotate(node, ctx).await,
         // §Fase 33.y.h — π-calc typed channels (Fase 13).
         IRFlowNode::Emit(node) => wire_integrations::run_emit(node, ctx).await,
         IRFlowNode::Publish(node) => wire_integrations::run_publish(node, ctx).await,

@@ -7981,6 +7981,74 @@ impl<'a> TypeChecker<'a> {
                     self.check_secrets_store_write("purge", &n.store_name, flow_name, &n.loc);
                     self.run_38d_where_proof(&n.store_name, &n.where_expr, &n.loc);
                 }
+                // §Fase 94.b — `rotate <SecretsStore> [where "…"] with <Tool>
+                // as <binding>`: the target must be a declared `backend:
+                // secrets` store (axon-T898 — rotating an adopter table is
+                // meaningless: there is no custody behind it), the tool must
+                // be a declared `tool` (axon-T899 — the exchange needs a real
+                // executor), and the optional metadata filter is proven
+                // against the SYNTHESIZED schema exactly like a `retrieve`.
+                FlowStep::Rotate(n) => {
+                    match self.symbols.lookup(&n.store_ref) {
+                        None => self.emit(
+                            format!(
+                                "axon-T898 `rotate` targets '{}' in flow '{flow_name}', \
+                                 which is not declared — a rotation targets a \
+                                 `backend: secrets` metadata store.",
+                                n.store_ref
+                            ),
+                            &n.loc,
+                        ),
+                        Some(sym) if sym.kind != "axonstore" => self.emit(
+                            format!(
+                                "axon-T898 `rotate` targets '{}' in flow '{flow_name}', \
+                                 but it is a {} — a rotation targets a `backend: \
+                                 secrets` metadata store.",
+                                n.store_ref, sym.kind
+                            ),
+                            &n.loc,
+                        ),
+                        Some(_) if !self.secrets_backed_stores.contains(&n.store_ref) => {
+                            self.emit(
+                                format!(
+                                    "axon-T898 `rotate` targets the axonstore '{}' in \
+                                     flow '{flow_name}', but its backend is not \
+                                     `secrets` — rotation is the renewal of CUSTODIED \
+                                     authority (`rotation_without_revelation`); an \
+                                     adopter table has no custody behind it. Use \
+                                     `mutate` for ordinary rows, or declare a \
+                                     `backend: secrets` store for the class.",
+                                    n.store_ref
+                                ),
+                                &n.loc,
+                            );
+                        }
+                        _ => {}
+                    }
+                    match self.symbols.lookup(&n.tool_ref) {
+                        None => self.emit(
+                            format!(
+                                "axon-T899 `rotate … with {}` in flow '{flow_name}' \
+                                 references an undeclared tool — the renewal exchange \
+                                 is performed by a declared `tool` (it receives the \
+                                 current value under the reserved `axon_rotation` \
+                                 envelope and returns the renewed one).",
+                                n.tool_ref
+                            ),
+                            &n.loc,
+                        ),
+                        Some(sym) if sym.kind != "tool" => self.emit(
+                            format!(
+                                "axon-T899 `rotate … with {}` in flow '{flow_name}' \
+                                 references a {}, not a tool.",
+                                n.tool_ref, sym.kind
+                            ),
+                            &n.loc,
+                        ),
+                        _ => {}
+                    }
+                    self.run_38d_where_proof(&n.store_ref, &n.where_expr, &n.loc);
+                }
                 FlowStep::ComputeApply(n) => {
                     if !n.compute_name.is_empty() {
                         match self.symbols.lookup(&n.compute_name) {

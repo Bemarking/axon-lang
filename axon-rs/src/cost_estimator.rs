@@ -166,6 +166,10 @@ fn classify_node(node: &IRFlowNode) -> StepKind {
         // §Fase 92.c — `mint` is a pure effect (no model call, no store I/O):
         // classify as Control alongside the other non-cognitive verbs.
         IRFlowNode::Mint(_) => StepKind::Control,
+        // §Fase 94.b — `rotate` performs one mediated tool exchange per
+        // matching custody entry (network I/O, no model call): classify as
+        // ToolCall — the closest honest kind for a set-oriented dispatch.
+        IRFlowNode::Rotate(_) => StepKind::ToolCall,
     }
 }
 

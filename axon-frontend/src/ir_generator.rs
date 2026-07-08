@@ -676,6 +676,17 @@ impl IRGenerator {
                 credential_ref: s.credential_ref.clone(),
                 binding: s.binding.clone(),
             }),
+            // §Fase 94.b — `rotate <SecretsStore> [where "…"] with <Tool>
+            // as <binding>`.
+            FlowStep::Rotate(s) => IRFlowNode::Rotate(crate::ir_nodes::IRRotateStep {
+                node_type: "rotate",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
+                store_ref: s.store_ref.clone(),
+                where_expr: s.where_expr.clone(),
+                tool_ref: s.tool_ref.clone(),
+                binding: s.binding.clone(),
+            }),
             FlowStep::Probe(s) => IRFlowNode::Probe(IRProbe {
                 node_type: "probe",
                 source_line: s.loc.line,

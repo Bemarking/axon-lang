@@ -744,6 +744,7 @@ mod tests {
             isolation: String::new(),
             on_breach: String::new(),
             capability: capability.to_string(),
+            class: String::new(),
             column_schema: None,
         }
     }

@@ -562,6 +562,9 @@ fn extract_step_info(node: &IRFlowNode) -> (String, String, String) {
         IRFlowNode::UseTool(s) => (s.tool_name.clone(), "use_tool".to_string(), format!("Use tool: {}", s.tool_name)),
         // §Fase 92.b — ephemeral-credential minting (dispatcher-routed).
         IRFlowNode::Mint(s) => (s.credential_ref.clone(), "mint".to_string(), format!("Mint credential: {} as {}", s.credential_ref, s.binding)),
+        // §Fase 94.b — mediated secret renewal (dispatcher-routed; the
+        // summary names store + tool, NEVER a secret value).
+        IRFlowNode::Rotate(s) => (s.store_ref.clone(), "rotate".to_string(), format!("Rotate secrets: {} with {}", s.store_ref, s.tool_ref)),
         IRFlowNode::Remember(s) => (s.memory_target.clone(), "remember".to_string(), format!("Remember: {}", s.expression)),
         IRFlowNode::Recall(s) => (s.memory_source.clone(), "recall".to_string(), format!("Recall: {}", s.query)),
         IRFlowNode::Conditional(s) => (s.condition.clone(), "conditional".to_string(), format!("If: {}", s.condition)),
@@ -1382,7 +1385,14 @@ fn routes_through_dispatcher(node: &crate::ir_nodes::IRFlowNode) -> bool {
     // §Fase 92.c — `mint` MUST route to its real dispatcher handler: an LLM
     // fallthrough would HALLUCINATE a bearer token. On a path with no minter
     // port the handler fails CLOSED (MissingDependency) — the honest outcome.
-    matches!(node, N::Navigate(_) | N::Drill(_) | N::Trail(_) | N::Mint(_))
+    //
+    // §Fase 94.b — `rotate` likewise: an LLM fallthrough would HALLUCINATE a
+    // rotation (fabricated summary over untouched custody). No custody port ⇒
+    // the handler fails CLOSED.
+    matches!(
+        node,
+        N::Navigate(_) | N::Drill(_) | N::Trail(_) | N::Mint(_) | N::Rotate(_)
+    )
 }
 
 /// §Fase 65.A/B — run a pure-effect structural verb (navigate / drill / trail)
@@ -4468,6 +4478,7 @@ mod fase35e_tests {
             isolation: String::new(),
             on_breach: String::new(),
             capability: String::new(),
+            class: String::new(),
             column_schema: None,
         }
     }

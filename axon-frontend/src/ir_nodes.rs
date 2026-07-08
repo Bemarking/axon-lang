@@ -986,6 +986,8 @@ pub enum IRFlowNode {
     Emit(IREmit),
     /// §Fase 92.b — ephemeral-credential minting (attenuated, TTL-bounded).
     Mint(IRMintStep),
+    /// §Fase 94.b — mediated secret renewal (`rotation_without_revelation`).
+    Rotate(IRRotateStep),
     /// §λ-L-E Fase 13 — capability extrusion (Publish-Ext).
     Publish(IRPublish),
     /// §λ-L-E Fase 13 — dual of publish (typed handle import).
@@ -2353,6 +2355,26 @@ pub struct IRMintStep {
     pub source_line: u32,
     pub source_column: u32,
     pub credential_ref: String,
+    pub binding: String,
+}
+
+/// §Fase 94.b — compiled `rotate <SecretsStore> [where "…"] with <Tool>
+/// as <binding>` step. The runtime enumerates the custody entries of the
+/// store's class matching `where_expr` (whole class when empty), performs
+/// ONE mediated exchange per key through the named tool (reveal → tool
+/// renews → CAS commit at version+1), and binds the METADATA-ONLY
+/// summary. Fail-closed without a custody port; each per-key failure
+/// degrades with a witness, never destructively.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRRotateStep {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub store_ref: String,
+    /// §67 metadata filter; empty = the whole class (elided from the wire).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub where_expr: String,
+    pub tool_ref: String,
     pub binding: String,
 }
 

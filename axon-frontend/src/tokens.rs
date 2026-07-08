@@ -219,6 +219,13 @@ pub enum TokenType {
     // once, never persisted).
     Credential,
     Mint,
+    // §Fase 94.b — `rotate <SecretsStore> [where "<filter>"] with <Tool>
+    // as <binding>`: the mediated secret-renewal flow verb (doctrine
+    // `rotation_without_revelation`). The runtime reveals each matching
+    // secret ONLY into the tool exchange and commits the returned value
+    // back to custody (CAS, version+1); the binding receives the
+    // metadata-only rotation summary — never a value.
+    Rotate,
     // `observable` (§Fase 51.c.2) — a top-level Pauli-sum declaration
     // `M = Σ cₖ Pₖ` (real coeffs × Pauli strings ⇒ Hermitian by construction)
     // that a `quant` block measures against.
@@ -560,6 +567,8 @@ pub fn keyword_type(word: &str) -> TokenType {
         "credential" => TokenType::Credential,
         // `mint` (§Fase 92.b) — the credential-minting flow verb.
         "mint" => TokenType::Mint,
+        // `rotate` (§Fase 94.b) — the mediated secret-renewal flow verb.
+        "rotate" => TokenType::Rotate,
         // `quant` as a cognitive primitive (§Fase 51.a) — flow-body block.
         "quant" => TokenType::Quant,
         // `observable` (§Fase 51.c.2) — top-level Pauli-sum declaration.

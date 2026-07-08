@@ -2006,6 +2006,9 @@ pub enum FlowStep {
     /// §Fase 92.b — `mint <Credential> as <binding>`: ephemeral-credential
     /// minting (attenuated, TTL-bounded; `authority_only_attenuates`).
     Mint(MintStep),
+    /// §Fase 94.b — `rotate <SecretsStore> [where "…"] with <Tool> as
+    /// <binding>`: mediated secret renewal (`rotation_without_revelation`).
+    Rotate(RotateStep),
     /// §λ-L-E Fase 13 — capability extrusion (Publish-Ext, paper §4.3).
     Publish(PublishStatement),
     /// §λ-L-E Fase 13 — dual of publish (dynamic typed handle import).
@@ -2970,6 +2973,29 @@ pub struct EmitStatement {
 #[derive(Debug)]
 pub struct MintStep {
     pub credential_ref: String,
+    pub binding: String,
+    pub loc: Loc,
+}
+
+/// §Fase 94.b — `rotate <SecretsStore> [where "<filter>"] with <Tool> as
+/// <binding>`: the mediated secret-renewal flow verb (doctrine
+/// `rotation_without_revelation`). Set-oriented like `mutate`: every
+/// custody entry of the store's class matching the filter (whole class
+/// when the filter is omitted — the post-breach bulk-rotation shape) is
+/// renewed through ONE mediated exchange per key: the runtime reveals
+/// the current value only into the tool call, the tool returns the new
+/// value, the runtime commits it (CAS on version — concurrent rotators
+/// cannot double-spend a refresh credential). The binding receives the
+/// METADATA-ONLY summary `{attempted, rotated, failed}` — no term
+/// evaluates to a secret value. `rotate` on a non-secrets store =
+/// `axon-T898`; an undeclared tool = `axon-T899`.
+#[derive(Debug)]
+pub struct RotateStep {
+    pub store_ref: String,
+    /// The §67-grammar metadata filter (`expires_at < now() + interval
+    /// '10 minutes'`, `key LIKE 'crm.%'`, …). Empty = the whole class.
+    pub where_expr: String,
+    pub tool_ref: String,
     pub binding: String,
     pub loc: Loc,
 }

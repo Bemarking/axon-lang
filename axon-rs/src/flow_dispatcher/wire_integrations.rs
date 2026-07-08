@@ -1455,6 +1455,44 @@ pub async fn run_mint(
 }
 
 // ────────────────────────────────────────────────────────────────────
+//  Rotate (§Fase 94 — mediated secret renewal)
+// ────────────────────────────────────────────────────────────────────
+
+/// §Fase 94.b — `rotate <SecretsStore> [where "…"] with <Tool> as
+/// <binding>`. Wire shape: `step_type: "rotate"`.
+///
+/// Doctrine `rotation_without_revelation`: the runtime enumerates the
+/// custody entries of the store's class matching the filter, performs ONE
+/// mediated exchange per key through the named tool (reveal → tool renews
+/// → CAS commit at version+1), and binds the METADATA-ONLY summary — no
+/// term ever evaluates to a secret value, and the wire audit carries the
+/// summary only.
+///
+/// Fail-closed: an environment with no `secret_custody` port configured
+/// (CLI, tests without wiring, OSS default) gets a loud
+/// `MissingDependency` — never a silent stub and NEVER an LLM
+/// fallthrough (which would hallucinate a rotation). The §94.d custody
+/// port supplies the wired path.
+pub async fn run_rotate(
+    node: &axon_frontend::ir_nodes::IRRotateStep,
+    ctx: &mut DispatchCtx,
+) -> Result<NodeOutcome, DispatchError> {
+    if ctx.cancel.is_cancelled() {
+        return Err(DispatchError::UpstreamCancelled);
+    }
+    let step_index = ctx.step_counter;
+    ctx.step_counter += 1;
+
+    emit_step_start(ctx, &node.store_ref, step_index, "rotate")?;
+
+    // Fail-closed port resolution FIRST (no silent stub — the §86 lesson,
+    // the §92.c posture). The wired path lands in §94.d.
+    Err(DispatchError::MissingDependency {
+        name: "secret_custody",
+    })
+}
+
+// ────────────────────────────────────────────────────────────────────
 //  Deliberate (payload-free multi-agent block)
 // ────────────────────────────────────────────────────────────────────
 
@@ -2431,6 +2469,7 @@ mod tests {
             isolation: String::new(),
             on_breach: String::new(),
             capability: String::new(),
+            class: String::new(),
             column_schema: None,
         }
     }

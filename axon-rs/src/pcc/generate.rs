@@ -576,6 +576,10 @@ fn collect_store_accesses(steps: &[crate::ir_nodes::IRFlowNode], out: &mut Vec<S
             // §Fase 92.b — `mint` is a leaf effect (no store op by
             // construction — axon-T896 forbids its binding from entering one).
             N::Mint(_) => {}
+            // §Fase 94.b — `rotate` READS its secrets store (the class
+            // metadata view) to enumerate matching keys; its capability
+            // gate must be honored like any other store access.
+            N::Rotate(s) => out.push(s.store_ref.clone()),
             // §Fase 52.a — a `listen` handler body can contain store ops (a
             // daemon cleaner that `persist`s); descend so they're soundness-
             // checked, like the quant body above.
@@ -793,6 +797,12 @@ fn collect_named_use_tool_calls<'a>(
             N::Yield(_) => {}
             // §Fase 92.b — `mint` is a leaf (no nested body, no `use`).
             N::Mint(_) => {}
+            // §Fase 94.b — `rotate` is a leaf here: it references a tool,
+            // but NOT as a structured `use` call — the exchange rides the
+            // reserved `axon_rotation` envelope, not the tool's declared
+            // `parameters:` schema, so §58.i schema-soundness does not
+            // apply to it (the §94.e SecretCustodySoundness class owns it).
+            N::Rotate(_) => {}
             // §Fase 52.a — a `listen` handler body can contain a `use <Tool>`;
             // descend so it is soundness-checked.
             N::Listen(l) => collect_named_use_tool_calls(&l.body, out),

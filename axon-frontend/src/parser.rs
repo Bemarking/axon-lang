@@ -2939,6 +2939,9 @@ impl Parser {
             TokenType::Emit => self.parse_emit_step(),
             // §Fase 92.b — `mint <Credential> as <binding>` (ephemeral credential).
             TokenType::Mint => self.parse_mint_step(),
+            // §Fase 94.b — `rotate <SecretsStore> [where "…"] with <Tool> as
+            // <binding>` (mediated secret renewal).
+            TokenType::Rotate => self.parse_rotate_step(),
             TokenType::Publish => self.parse_publish_step(),
             TokenType::Discover => self.parse_discover_step(),
             TokenType::Persist => self.parse_persist_step(),
@@ -9178,6 +9181,59 @@ impl Parser {
         let binding = self.consume(TokenType::Identifier)?.value;
         Ok(FlowStep::Mint(MintStep {
             credential_ref,
+            binding,
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+        }))
+    }
+
+    /// §Fase 94.b — parse `rotate <SecretsStore> [where "<filter>"] with
+    /// <Tool> as <binding>` (doctrine `rotation_without_revelation`).
+    ///
+    /// All three anchors are grammar, not convention: the store names WHAT
+    /// may rotate (a `backend: secrets` class view — `axon-T898` in the
+    /// type-checker), the tool names WHO performs the exchange
+    /// (`axon-T899`), and the binding receives the metadata-only summary —
+    /// a `rotate` without a binding would renew authority with no
+    /// observable outcome, so `as` is REQUIRED (the `mint` posture). The
+    /// `where` filter is optional (§67 string grammar, proven against the
+    /// synthesized metadata schema); omitting it rotates the WHOLE class —
+    /// the deliberate post-breach bulk shape. `with` is a soft keyword
+    /// (not a lexer token): reserving it globally would break every
+    /// adopter identifier named `with`.
+    fn parse_rotate_step(&mut self) -> Result<FlowStep, ParseError> {
+        let tok = self.consume(TokenType::Rotate)?;
+        let store_ref = self.consume(TokenType::Identifier)?.value;
+        let mut where_expr = String::new();
+        if self.check(TokenType::Where) {
+            self.advance();
+            where_expr = self.consume(TokenType::StringLit)?.value.clone();
+        }
+        let with_tok = self.current().clone();
+        if with_tok.value != "with" {
+            return Err(ParseError {
+                message: format!(
+                    "Expected `with <Tool>` after `rotate {store_ref}{}`, found '{}'. \
+                     A rotation names the tool that performs the renewal exchange: \
+                     `rotate {store_ref} [where \"<filter>\"] with <Tool> as <binding>`.",
+                    if where_expr.is_empty() { "" } else { " where …" },
+                    with_tok.value
+                ),
+                line: with_tok.line,
+                column: with_tok.column,
+                ..Default::default()
+            });
+        }
+        self.advance();
+        let tool_ref = self.consume(TokenType::Identifier)?.value;
+        self.consume(TokenType::As)?;
+        let binding = self.consume(TokenType::Identifier)?.value;
+        Ok(FlowStep::Rotate(RotateStep {
+            store_ref,
+            where_expr,
+            tool_ref,
             binding,
             loc: Loc {
                 line: tok.line,

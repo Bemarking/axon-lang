@@ -178,6 +178,9 @@ pub fn ir_flow_node_kind(node: &IRFlowNode) -> &'static str {
         // §Fase 92.b — ephemeral-credential minting. Same step_type string
         // as `runner::extract_step_info` (drift-gated).
         IRFlowNode::Mint(_) => "mint",
+        // §Fase 94.b — mediated secret renewal. Same step_type string as
+        // `runner::extract_step_info` (drift-gated).
+        IRFlowNode::Rotate(_) => "rotate",
         IRFlowNode::Publish(_) => "publish",
         IRFlowNode::Discover(_) => "discover",
         IRFlowNode::Persist(_) => "persist",
