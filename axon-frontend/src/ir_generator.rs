@@ -470,6 +470,9 @@ impl IRGenerator {
                 })
                 .collect(),
             output_type: n.output_type.clone(),
+            // §Fase 94.c — the dispatch-injection secret KEY (elided when
+            // empty; the value NEVER rides the IR — it lives in custody).
+            secret: n.secret.clone(),
             effect_row,
             // §Fase 84.b — Remote Hands technician fields (elided from the IR
             // when unset, per the `skip_serializing_if` on `IRToolSpec`).

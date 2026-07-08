@@ -254,6 +254,7 @@ mod tests {
                 })
                 .collect(),
             output_type: None,
+            secret: String::new(),
             effect_row: Vec::new(),
             target: Some("TechSafeWS".to_string()),
             risk: Some(risk.to_string()),

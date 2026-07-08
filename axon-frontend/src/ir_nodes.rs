@@ -754,6 +754,13 @@ pub struct IRToolSpec {
     /// is typed. `None` when undeclared. Single source of truth (lives here,
     /// not denormalised onto each call site).
     pub output_type: Option<String>,
+    /// §Fase 94.c — the per-tenant secret KEY injected into every dispatch
+    /// under the reserved `axon_secret` request field (resolved against the
+    /// tenant's custody at `use` time; the flow never touches the value).
+    /// Elided when empty — every pre-§94 tool serializes byte-identically
+    /// (IR-SHA stability).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub secret: String,
     pub effect_row: Vec<String>,
     /// §Fase 84.b — Remote Hands. All three fields are `skip_serializing_if`
     /// so a program using none of them serialises **byte-identically** to the

@@ -1836,6 +1836,17 @@ pub struct ToolDefinition {
     /// is referenceable as `${Step.output}` with a real type (§58 D8). Flat
     /// string (mirrors step `output:`); `None` when undeclared.
     pub output_type: Option<String>,
+    /// §Fase 94.c — the per-tenant secret KEY injected into every dispatch
+    /// of this tool (doctrine `rotation_without_revelation`): at `use`
+    /// time the runtime resolves the key against the tenant's secret
+    /// custody and injects the value into the tool-server request under
+    /// the reserved `axon_secret` field — the flow never touches it. The
+    /// §80.c posture extended to tools: this is a config KEY, never a
+    /// credential literal (`axon-T901`, the T850 charset mirror). Empty =
+    /// no injection (every pre-§94 tool). Meaningless on a
+    /// `target:`-bound technician tool (execve dispatch, no HTTP request
+    /// to inject into) — declaring both is `axon-T901`.
+    pub secret: String,
     /// §Fase 84.b — Remote Hands. The `socket` this technician tool dispatches
     /// over: a program acting on a real machine dials `axon` as a `socket`
     /// client, and a `target:`-bound tool call sends its rendered argv down

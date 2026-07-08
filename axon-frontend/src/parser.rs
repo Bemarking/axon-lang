@@ -2418,6 +2418,7 @@ impl Parser {
             effects: None,
             parameters: Vec::new(),
             output_type: None,
+            secret: String::new(),
             target: None,
             risk: None,
             argv: Vec::new(),
@@ -2459,6 +2460,10 @@ impl Parser {
                 // §Fase 58.a — the tool's typed input schema + output type.
                 "parameters" => node.parameters = self.parse_tool_param_schema()?,
                 "output_type" => node.output_type = Some(self.parse_output_type_string()?),
+                // §Fase 94.c — the per-tenant secret KEY injected at
+                // dispatch (`rotation_without_revelation`). Key shape +
+                // technician exclusion are `axon-T901` (type-checker).
+                "secret" => node.secret = self.parse_dotted_identifier()?,
                 // §Fase 84.b — Remote Hands technician fields.
                 "target" => node.target = Some(self.consume_any_ident_or_kw()?.value),
                 "risk" => node.risk = Some(self.consume_any_ident_or_kw()?.value),
