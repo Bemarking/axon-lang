@@ -413,6 +413,7 @@ async fn t11_pillar_iv_capability_gates_a_real_postgresql_store() {
         isolation: String::new(),
         on_breach: String::new(),
         capability: "vault.read".to_string(),
+        class: String::new(),
         column_schema: None,
     }])
     .expect("registry build");
@@ -752,6 +753,7 @@ async fn t17_d8_deploy_verification_verified_and_missing() {
             isolation: String::new(),
             on_breach: String::new(),
             capability: String::new(),
+            class: String::new(),
             column_schema: None,
         },
         IRAxonStore {
@@ -765,6 +767,7 @@ async fn t17_d8_deploy_verification_verified_and_missing() {
             isolation: String::new(),
             on_breach: String::new(),
             capability: String::new(),
+            class: String::new(),
             column_schema: None,
         },
     ])

@@ -293,6 +293,14 @@ pub struct DispatchCtx {
     /// Empty for a credential-less program.
     pub credentials:
         std::sync::Arc<std::collections::HashMap<String, crate::ir_nodes::IRCredential>>,
+    /// §Fase 94.d — the secret-custody port behind the `backend: secrets`
+    /// metadata store, the `rotate` verb, and the `tool { secret: }`
+    /// dispatch injection (`rotation_without_revelation`). `None` (the
+    /// `new` default) ⇒ every one of those surfaces fails CLOSED with
+    /// `MissingDependency` — never a silent stub, never an LLM
+    /// fallthrough. The enterprise executor injects its envelope-encrypted
+    /// Postgres custody (§94.h); tests use `secret_custody::InMemoryCustody`.
+    pub secret_custody: Option<std::sync::Arc<dyn crate::secret_custody::SecretCustody>>,
     pub cancel: CancellationFlag,
     pub tx: mpsc::UnboundedSender<FlowExecutionEvent>,
     pub enforcement_summaries: Arc<
@@ -517,6 +525,9 @@ impl DispatchCtx {
             )),
             credential_minter: None,
             credentials: std::sync::Arc::new(std::collections::HashMap::new()),
+            // §Fase 94.d — no custody by default: rotate / secrets-retrieve /
+            // secret-bearing tool dispatch all fail CLOSED until one is attached.
+            secret_custody: None,
             cancel,
             tx,
             enforcement_summaries: Arc::new(Mutex::new(HashMap::new())),
@@ -559,6 +570,18 @@ impl DispatchCtx {
             // §Fase 74.e — no replay sink by default.
             replay_log: None,
         }
+    }
+
+    /// §Fase 94.d — Builder: attach the secret-custody port so the
+    /// `backend: secrets` metadata store, the `rotate` verb, and
+    /// `tool { secret: }` dispatch injection have a live custody behind
+    /// them. Without this, all three fail CLOSED (`MissingDependency`).
+    pub fn with_secret_custody(
+        mut self,
+        custody: std::sync::Arc<dyn crate::secret_custody::SecretCustody>,
+    ) -> Self {
+        self.secret_custody = Some(custody);
+        self
     }
 
     /// §Fase 74.a — Builder: attach the shared typed-channel event bus so a

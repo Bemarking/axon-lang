@@ -114,6 +114,7 @@ fn store_specs() -> Vec<IRAxonStore> {
             isolation: String::new(),
             on_breach: String::new(),
             capability: String::new(),
+            class: String::new(),
             column_schema: None,
         })
         .collect()

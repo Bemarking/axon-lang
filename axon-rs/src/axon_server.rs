@@ -2275,6 +2275,11 @@ fn server_execute(
         // PASETO minter is the enterprise executor's concern); a reached
         // `mint` fails closed with a loud missing-dependency error.
         None,
+        // §Fase 94.d — the OSS HTTP path owns no secret custody (the
+        // envelope-encrypted Pg custody is the enterprise executor's
+        // concern); rotate / secrets-retrieve / secret-bearing tool
+        // dispatch fail closed with a loud missing-dependency error.
+        None,
     )?;
 
     // Count anchors from IR

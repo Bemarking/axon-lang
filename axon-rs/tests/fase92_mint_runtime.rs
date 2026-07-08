@@ -131,6 +131,7 @@ fn e2e_mint_without_a_port_fails_the_flow_loudly() {
     let m = axon::runner::execute_server_flow(
         &ir, "Bootstrap", "stub", "<fase92>", None, None, &empty, &empty, None, None, None,
         None, None, None,
+        None, // §Fase 94.d — secret custody (test: none)
     )
     .expect("execute returns metrics");
     assert!(!m.success, "mint without a port must fail the flow");

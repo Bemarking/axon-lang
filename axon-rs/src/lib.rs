@@ -387,6 +387,10 @@ pub mod webhooks;
 /// §Fase 92.c — the `CredentialMinter` port behind the `mint` flow verb
 /// (attenuated, TTL-bounded ephemeral credentials; fail-closed when absent).
 pub mod credential_minter;
+/// §Fase 94.d — the `SecretCustody` port behind the `backend: secrets`
+/// metadata store, the `rotate` verb and the `tool { secret: }` injection
+/// (`rotation_without_revelation`; fail-closed when absent).
+pub mod secret_custody;
 /// §Fase 91.b — declared cognitive time: the runtime half of `now:` (one
 /// capture per run, deterministic prompt line, envelope record).
 pub mod temporal_context;

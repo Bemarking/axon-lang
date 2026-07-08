@@ -225,6 +225,7 @@ pub fn execute_listener_body(
                 // the durable per-tenant outbox is the enterprise supervisor path.
                 None,
                 None, // §Fase 92.c — no minter on the OSS daemon path (mint fails closed)
+                None, // §Fase 94.d — no custody on the OSS daemon path (rotate/secrets fail closed)
             );
             (run.flow_name.clone(), result)
         })
@@ -278,6 +279,7 @@ pub fn deliver_typed_event(
                     // §Fase 74.f — OSS single-node delivery stays in-process.
                     None,
                     None, // §Fase 92.c — no minter on the OSS daemon path (mint fails closed)
+                    None, // §Fase 94.d — no custody on the OSS daemon path (rotate/secrets fail closed)
                 );
                 out.push((daemon.name.clone(), run.flow_name.clone(), result));
             }
@@ -429,6 +431,7 @@ pub fn deliver_typed_event_reliable(
                         // §Fase 74.f — OSS single-node delivery stays in-process.
                         None,
                         None, // §Fase 92.c — no minter on the OSS daemon path (mint fails closed)
+                    None, // §Fase 94.d — no custody on the OSS daemon path (rotate/secrets fail closed)
                     );
                     if let Err(e) = r {
                         return Err(format!("flow '{}': {e}", run.flow_name));

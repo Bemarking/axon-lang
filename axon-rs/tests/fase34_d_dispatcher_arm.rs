@@ -84,6 +84,7 @@ fn entry(
         output_schema: String::new(),
         effect_row: effect_row.into_iter().map(String::from).collect(),
         parameters: Vec::new(),
+        secret: String::new(),
         source: ToolSource::Program,
         is_streaming,
     }

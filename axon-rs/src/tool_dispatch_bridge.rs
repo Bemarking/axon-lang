@@ -400,6 +400,7 @@ mod tests {
             output_schema: String::new(),
             effect_row,
             parameters: Vec::new(),
+            secret: String::new(),
             source: ToolSource::Program,
             is_streaming,
         }

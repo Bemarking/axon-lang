@@ -203,12 +203,54 @@ fn resolve_pg_backend(
     };
     match registry.resolve(store_name)? {
         StoreHandle::InMemory => Ok(None),
+        // §Fase 94.d — a secrets store never reaches this resolver's
+        // callers: `run_retrieve` routes it to custody FIRST, and the
+        // write handlers refuse it FIRST. Falling through to KV here
+        // would fabricate results — route it like InMemory is wrong,
+        // so this arm is unreachable-by-construction and honest if a
+        // future caller forgets the pre-check: treat as KV-none and
+        // let the write guard / retrieve pre-check own the refusal.
+        StoreHandle::Secrets { .. } => Ok(None),
         StoreHandle::Postgres(backend) => {
             let floor =
                 registry.spec(store_name).and_then(|s| s.confidence_floor);
             Ok(Some((backend, floor)))
         }
     }
+}
+
+/// §Fase 94.d — resolve a store name to its secrets `class:` when (and
+/// only when) it is a declared `backend: secrets` store. The pre-check
+/// every store handler runs BEFORE the SQL-vs-KV fork.
+fn resolve_secrets_class(ctx: &DispatchCtx, store_name: &str) -> Option<String> {
+    let registry = ctx.store_registry.as_ref()?;
+    match registry.resolve(store_name) {
+        Ok(StoreHandle::Secrets { class }) => Some(class),
+        _ => None,
+    }
+}
+
+/// §Fase 94.d — the write-verb guard (the runtime mirror of axon-T897):
+/// a `persist`/`mutate`/`purge` that reaches dispatch against a secrets
+/// store (stale or hand-edited IR — the compiler refuses it) fails
+/// CLOSED, never falls through to KV or SQL.
+fn refuse_secrets_store_write(
+    ctx: &DispatchCtx,
+    verb: &str,
+    store_name: &str,
+) -> Result<(), DispatchError> {
+    if resolve_secrets_class(ctx, store_name).is_some() {
+        return Err(DispatchError::BackendError {
+            name: "secret_custody".to_string(),
+            message: format!(
+                "`{verb}` reached dispatch against the secrets store \
+                 '{store_name}' — a `backend: secrets` store is READ-ONLY \
+                 metadata (`rotation_without_revelation`; axon-T897 refuses \
+                 this at compile time — stale or hand-edited IR)"
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// Build the row a `persist`/`mutate` writes — every user-level
@@ -570,6 +612,8 @@ pub async fn run_persist(
     } else {
         node.store_name.clone()
     };
+    // §Fase 94.d — the axon-T897 runtime mirror: never write custody.
+    refuse_secrets_store_write(ctx, "persist", &node.store_name)?;
     // §Fase 35.j Pillar IV — capability gate (before any side effect).
     enforce_store_capability(ctx, &node.store_name)?;
     emit_step_start(ctx, &step_name, step_index, "persist")?;
@@ -671,6 +715,47 @@ pub async fn run_retrieve(
     // §Fase 35.j Pillar IV — capability gate (before any side effect).
     enforce_store_capability(ctx, &node.store_name)?;
     emit_step_start(ctx, &step_name, step_index, "retrieve")?;
+
+    // §Fase 94.d — a `backend: secrets` store routes to the custody port
+    // (metadata only), NEVER to SQL and NEVER to the KV fallback (a
+    // silent KV read would fabricate an empty result over live custody).
+    if let Some(class) = resolve_secrets_class(ctx, &node.store_name) {
+        let custody = ctx
+            .secret_custody
+            .clone()
+            .ok_or(DispatchError::MissingDependency {
+                name: "secret_custody",
+            })?;
+        let (envelope, count) = crate::secret_custody::retrieve_metadata(
+            &*custody,
+            &ctx.tenant_id,
+            &class,
+            &node.where_expr,
+            &node.order_by,
+            &node.limit_expr,
+            &node.aggregate,
+            &node.group_by,
+            &ctx.let_bindings,
+        )
+        .await
+        .map_err(|e| DispatchError::BackendError {
+            name: "secret_custody".to_string(),
+            message: e,
+        })?;
+        ctx.record_store_rows(
+            crate::flow_dispatcher::StoreRowKind::Retrieved,
+            count as u64,
+        );
+        if !node.alias.is_empty() {
+            ctx.let_bindings.insert(node.alias.clone(), envelope.clone());
+        }
+        emit_step_complete(ctx, &step_name, step_index, &envelope, 0)?;
+        return Ok(NodeOutcome::Completed {
+            output: envelope,
+            tokens_emitted: 0,
+            step_index,
+        });
+    }
 
     let value = match resolve_pg_backend(ctx, &node.store_name) {
         Ok(Some((backend, floor))) => {
@@ -1029,6 +1114,8 @@ pub async fn run_mutate(
     } else {
         node.store_name.clone()
     };
+    // §Fase 94.d — the axon-T897 runtime mirror: never write custody.
+    refuse_secrets_store_write(ctx, "mutate", &node.store_name)?;
     // §Fase 35.j Pillar IV — capability gate (before any side effect).
     enforce_store_capability(ctx, &node.store_name)?;
     emit_step_start(ctx, &step_name, step_index, "mutate")?;
@@ -1131,6 +1218,8 @@ pub async fn run_purge(
     } else {
         node.store_name.clone()
     };
+    // §Fase 94.d — the axon-T897 runtime mirror: never write custody.
+    refuse_secrets_store_write(ctx, "purge", &node.store_name)?;
     // §Fase 35.j Pillar IV — capability gate (before any side effect).
     enforce_store_capability(ctx, &node.store_name)?;
     emit_step_start(ctx, &step_name, step_index, "purge")?;
@@ -1471,8 +1560,14 @@ pub async fn run_mint(
 /// Fail-closed: an environment with no `secret_custody` port configured
 /// (CLI, tests without wiring, OSS default) gets a loud
 /// `MissingDependency` — never a silent stub and NEVER an LLM
-/// fallthrough (which would hallucinate a rotation). The §94.d custody
-/// port supplies the wired path.
+/// fallthrough (which would hallucinate a rotation).
+///
+/// Failure posture (per key, [[feedback-boot-hydrate-self-heal]] shape):
+/// reveal / exchange / parse / CAS failures degrade THAT key with a
+/// witness in the summary's `failed` list — the old value stays intact
+/// (never destructive), the sweep continues, and a CAS loser never
+/// retries with the stale revealed value (the provider may have
+/// invalidated it).
 pub async fn run_rotate(
     node: &axon_frontend::ir_nodes::IRRotateStep,
     ctx: &mut DispatchCtx,
@@ -1483,13 +1578,185 @@ pub async fn run_rotate(
     let step_index = ctx.step_counter;
     ctx.step_counter += 1;
 
+    // §35.j Pillar IV — the store's capability gate, before any effect.
+    enforce_store_capability(ctx, &node.store_ref)?;
     emit_step_start(ctx, &node.store_ref, step_index, "rotate")?;
 
     // Fail-closed port resolution FIRST (no silent stub — the §86 lesson,
-    // the §92.c posture). The wired path lands in §94.d.
-    Err(DispatchError::MissingDependency {
-        name: "secret_custody",
+    // the §92.c posture).
+    let custody = ctx
+        .secret_custody
+        .clone()
+        .ok_or(DispatchError::MissingDependency {
+            name: "secret_custody",
+        })?;
+
+    // The compiled store: must be a declared `backend: secrets` store. A
+    // miss means a stale/hand-edited IR bypassed compile-time axon-T898.
+    let class = match ctx
+        .store_registry
+        .as_ref()
+        .and_then(|r| r.spec(&node.store_ref))
+    {
+        Some(spec) if spec.backend == "secrets" && !spec.class.is_empty() => {
+            spec.class.clone()
+        }
+        _ => {
+            return Err(DispatchError::BackendError {
+                name: "secret_custody".to_string(),
+                message: format!(
+                    "`rotate` reached dispatch against '{}', which is not a \
+                     declared `backend: secrets` store — the compile-time \
+                     axon-T898 check did not run over this IR (stale or \
+                     hand-edited artifact)",
+                    node.store_ref
+                ),
+            });
+        }
+    };
+
+    // The rotation tool must be registered (axon-T899's runtime mirror).
+    let registry = ctx
+        .tool_registry
+        .clone()
+        .ok_or(DispatchError::MissingDependency { name: "tool_registry" })?;
+    if registry.get(&node.tool_ref).is_none() {
+        return Err(DispatchError::BackendError {
+            name: "secret_custody".to_string(),
+            message: format!(
+                "rotation tool '{}' is not registered — the compile-time \
+                 axon-T899 check did not run over this IR",
+                node.tool_ref
+            ),
+        });
+    }
+
+    // Enumerate the class + apply the §67 metadata filter.
+    let class_prefix = format!("{class}.");
+    let all = custody
+        .list_metadata(&ctx.tenant_id, &class_prefix)
+        .await
+        .map_err(|e| DispatchError::BackendError {
+            name: "secret_custody".to_string(),
+            message: format!("enumeration failed (fail-closed, nothing rotated): {e}"),
+        })?;
+    let matched = if node.where_expr.trim().is_empty() {
+        all
+    } else {
+        let filter = crate::store::filter::parse_filter(&node.where_expr, &ctx.let_bindings)
+            .map_err(|e| DispatchError::BackendError {
+                name: "secret_custody".to_string(),
+                message: format!("rotate `where:` did not compile: {e}"),
+            })?;
+        crate::secret_custody::filter_metadata(all, &filter, custody_now_ms()).map_err(|e| {
+            DispatchError::BackendError {
+                name: "secret_custody".to_string(),
+                message: format!("rotate `where:` evaluation failed: {e}"),
+            }
+        })?
+    };
+
+    // One mediated exchange per key. Sequential by design: a rotation
+    // sweep is small (a class of connections) and per-key ordering keeps
+    // the audit chain and CAS behavior easy to reason about.
+    let attempted = matched.len();
+    let mut rotated: Vec<String> = Vec::new();
+    let mut failed: Vec<serde_json::Value> = Vec::new();
+    for meta in matched {
+        if ctx.cancel.is_cancelled() {
+            return Err(DispatchError::UpstreamCancelled);
+        }
+        match rotate_one(&*custody, &registry, &ctx.tenant_id, &node.tool_ref, &meta.key).await
+        {
+            Ok(()) => rotated.push(meta.key),
+            Err(reason) => {
+                failed.push(serde_json::json!({ "key": meta.key, "reason": reason }));
+            }
+        }
+    }
+
+    // The METADATA-ONLY summary — the binding and the wire audit carry
+    // this and nothing else (rotation without revelation).
+    let summary = serde_json::json!({
+        "attempted": attempted,
+        "rotated": rotated,
+        "failed": failed,
     })
+    .to_string();
+    ctx.let_bindings.insert(node.binding.clone(), summary.clone());
+
+    emit_step_complete(ctx, &node.store_ref, step_index, &summary, 0)?;
+
+    Ok(NodeOutcome::Completed {
+        output: summary,
+        tokens_emitted: 0,
+        step_index,
+    })
+}
+
+fn custody_now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// ONE mediated exchange: reveal → tool renews → CAS commit. Every error
+/// is a per-key witness string; the value never leaves this function
+/// except INTO the tool request body.
+async fn rotate_one(
+    custody: &dyn crate::secret_custody::SecretCustody,
+    registry: &std::sync::Arc<crate::tool_registry::ToolRegistry>,
+    tenant: &str,
+    tool_ref: &str,
+    key: &str,
+) -> Result<(), String> {
+    let revealed = custody
+        .reveal_for_rotation(tenant, key)
+        .await
+        .map_err(|e| format!("reveal refused: {e}"))?;
+    let expected_version = revealed.version;
+    let body = crate::secret_custody::rotation_request_body(key, &revealed);
+    drop(revealed);
+
+    // The exchange rides the SAME §58 dispatch chokepoint as `use <Tool>`
+    // (endpoint resolution, per-tenant base_url, provider routing) — in a
+    // blocking task because the HTTP tool client is blocking (the
+    // `dispatch_use_tool_real` discipline).
+    let registry_for_task = registry.clone();
+    let tool_name = tool_ref.to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        registry_for_task.dispatch(&tool_name, &body)
+    })
+    .await
+    .map_err(|e| format!("exchange task failed: {e}"))?
+    .ok_or_else(|| {
+        format!(
+            "tool '{tool_ref}' has no dispatchable provider — a rotation tool \
+             must be http/mcp/native, never an LLM fallthrough"
+        )
+    })?;
+    if !result.success {
+        return Err(format!("exchange failed: {}", truncate_witness(&result.output)));
+    }
+    let (new_value, expires_at_ms) =
+        crate::secret_custody::parse_rotated_response(&result.output)?;
+    custody
+        .commit_rotation(tenant, key, &new_value, expires_at_ms, expected_version)
+        .await
+        .map_err(|e| format!("commit refused: {e}"))?;
+    Ok(())
+}
+
+/// Bound a tool-error witness so a misbehaving tool cannot flood the
+/// summary (and cannot smuggle a large payload into the audit).
+fn truncate_witness(s: &str) -> String {
+    const MAX: usize = 300;
+    if s.len() <= MAX {
+        s.to_string()
+    } else {
+        format!("{}… ({} bytes)", &s[..MAX], s.len())
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────

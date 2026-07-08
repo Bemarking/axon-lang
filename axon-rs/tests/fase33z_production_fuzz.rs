@@ -1019,6 +1019,7 @@ async fn fuzz_s4_parity_determinism_stress() {
             None, // §Fase 72.c — budget (test: unbudgeted)
             None, // §Fase 74.f — event_outbox (test: in-process emit)
             None, // §Fase 92.c — credential minter (test: none)
+            None, // §Fase 94.d — secret custody (test: none)
         );
         if let Ok(sync_metrics) = sync {
             if sync_metrics.success != baseline.success {

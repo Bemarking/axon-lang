@@ -45,6 +45,14 @@ pub struct ToolEntry {
     /// path (§58.e/58.f) applies via `CompiledStep.tool_param_types`.
     /// Empty for a schema-less tool (D5) and for the built-ins.
     pub parameters: Vec<(String, String)>,
+    /// §Fase 94.c — the per-tenant secret KEY injected into every dispatch
+    /// of this tool under the reserved `axon_secret` request field
+    /// (`rotation_without_revelation`). Populated from `IRToolSpec.secret`
+    /// at [`ToolRegistry::register_from_ir`]. Empty = no injection (every
+    /// pre-§94 tool and the built-ins). The dispatch handlers resolve the
+    /// key against the `SecretCustody` port — fail-closed when the key is
+    /// set and no custody is attached.
+    pub secret: String,
     pub source: ToolSource,
     /// §Fase 34.c (v1.29.0) — Whether this tool is a stream
     /// producer. Auto-derived at registration time from
@@ -168,6 +176,7 @@ impl ToolRegistry {
                 // §Fase 58.f.2 — built-ins declare no typed input schema;
                 // they accept the legacy positional `on <arg>` form.
                 parameters: Vec::new(),
+                secret: String::new(),
                 source: ToolSource::Builtin,
                 // §Fase 34.c — Calculator declares `compute` effect only.
                 // No stream effect → is_streaming = false.
@@ -187,6 +196,7 @@ impl ToolRegistry {
                 effect_row: vec!["read".to_string()],
                 // §Fase 58.f.2 — see Calculator: no typed input schema.
                 parameters: Vec::new(),
+                secret: String::new(),
                 source: ToolSource::Builtin,
                 // §Fase 34.c — DateTimeTool declares `read` effect only.
                 is_streaming: false,
@@ -225,6 +235,8 @@ impl ToolRegistry {
                     output_schema: spec.output_schema.clone(),
                     effect_row: spec.effect_row.clone(),
                     parameters,
+                    // §Fase 94.c — the dispatch-injection secret KEY.
+                    secret: spec.secret.clone(),
                     source: ToolSource::Program,
                     is_streaming,
                 },
@@ -491,6 +503,7 @@ mod tests {
             output_schema: String::new(),
             effect_row: Vec::new(),
             parameters: Vec::new(),
+            secret: String::new(),
             source: ToolSource::Program,
             is_streaming: false,
         });
@@ -592,6 +605,7 @@ mod tests {
             output_schema: String::new(),
             effect_row: Vec::new(),
             parameters: Vec::new(),
+            secret: String::new(),
             source: ToolSource::Program,
             is_streaming: false,
         });
@@ -614,6 +628,7 @@ mod tests {
             output_schema: String::new(),
             effect_row: Vec::new(),
             parameters: Vec::new(),
+            secret: String::new(),
             source: ToolSource::Program,
             is_streaming: false,
         });
@@ -642,6 +657,7 @@ mod tests {
             output_schema: String::new(),
             effect_row: Vec::new(),
             parameters: Vec::new(),
+            secret: String::new(),
             source: ToolSource::Program,
             is_streaming: false,
         });
@@ -712,6 +728,7 @@ mod tests {
             output_schema: String::new(),
             effect_row: Vec::new(),
             parameters: Vec::new(),
+            secret: String::new(),
             source: ToolSource::Program,
             is_streaming: false,
         });
@@ -725,6 +742,7 @@ mod tests {
             output_schema: String::new(),
             effect_row: Vec::new(),
             parameters: Vec::new(),
+            secret: String::new(),
             source: ToolSource::Program,
             is_streaming: false,
         });
@@ -738,6 +756,7 @@ mod tests {
             output_schema: String::new(),
             effect_row: Vec::new(),
             parameters: Vec::new(),
+            secret: String::new(),
             source: ToolSource::Program,
             is_streaming: false,
         });
@@ -774,6 +793,7 @@ mod tests {
             output_schema: String::new(),
             effect_row: Vec::new(),
             parameters: Vec::new(),
+            secret: String::new(),
             source: ToolSource::Program,
             is_streaming: false,
         });
@@ -794,6 +814,7 @@ mod tests {
             output_schema: String::new(),
             effect_row: Vec::new(),
             parameters: Vec::new(),
+            secret: String::new(),
             source: ToolSource::Program,
             is_streaming: false,
         });
@@ -807,6 +828,7 @@ mod tests {
             output_schema: String::new(),
             effect_row: Vec::new(),
             parameters: Vec::new(),
+            secret: String::new(),
             source: ToolSource::Program,
             is_streaming: false,
         });

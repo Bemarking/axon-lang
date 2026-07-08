@@ -77,6 +77,7 @@ fn run() -> ServerRunnerMetrics {
             None, // §Fase 72.c — budget (test: unbudgeted)
         None, // §Fase 74.f — event_outbox (test: in-process emit)
         None, // §Fase 92.c — credential minter (test: none)
+        None, // §Fase 94.d — secret custody (test: none)
     )
     .expect("run")
 }

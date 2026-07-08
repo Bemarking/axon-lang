@@ -208,6 +208,7 @@ fn store_specs() -> Vec<IRAxonStore> {
             isolation: String::new(),
             on_breach: String::new(),
             capability: String::new(),
+            class: String::new(),
             column_schema: None,
         })
         .collect()
@@ -245,7 +246,9 @@ async fn ctx_for_tenant(
     for store in [DOC_STORE, EDGE_STORE] {
         let backend = match registry.resolve(store).expect("resolve store") {
             StoreHandle::Postgres(b) => b,
-            StoreHandle::InMemory => panic!("expected a postgresql store for {store}"),
+            StoreHandle::InMemory | StoreHandle::Secrets { .. } => {
+                panic!("expected a postgresql store for {store}")
+            }
         };
         let mut pin = backend.acquire_pin().await.expect("acquire pin");
         // Set the §40 tenant GUC (as the privileged owner), THEN drop to the

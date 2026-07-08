@@ -1988,6 +1988,47 @@ async fn execute_real_async(
                 let raw_expr = step.memory_expression.as_deref().unwrap_or("");
                 let expr = ctx.interpolate(raw_expr);
 
+                // §Fase 94.d — a store op against a `backend: secrets`
+                // store on the LEGACY executor fails CLOSED: this path
+                // carries no custody port (the unified driver + SSE +
+                // enterprise executor do — the §92.g deferral shape), and
+                // falling through to the KV path would FABRICATE an empty
+                // result over live custody. Loud, typed, per-step.
+                if matches!(step.step_type.as_str(), "persist" | "retrieve" | "mutate" | "purge")
+                    && store_registry.backend_kind(&step.step_name)
+                        == Some(StoreBackendKind::Secrets)
+                {
+                    let msg = format!(
+                        "store error: axonstore `{}` is `backend: secrets` — the legacy \
+                         executor carries no secret_custody port; run this flow through \
+                         the dispatcher-driven path (server/daemon executor) \
+                         (rotation_without_revelation, fail-closed)",
+                        step.step_name
+                    );
+                    ctx.set_result(&step.step_name, &msg);
+                    hooks.on_step_end(0, 0, 0, 0, false);
+                    report.record_step(StepReport {
+                        name: step.step_name.clone(),
+                        step_type: step.step_type.clone(),
+                        result: msg.clone(),
+                        duration_ms: 0,
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        anchor_breaches: 0,
+                        chain_activations: 0,
+                        was_retried: false,
+                    });
+                    if trace {
+                        events.push(TraceEvent {
+                            event: format!("axonstore_secrets_refused_{}", step.step_type),
+                            unit: unit.flow_name.clone(),
+                            step: step.step_name.clone(),
+                            detail: msg,
+                        });
+                    }
+                    continue;
+                }
+
                 // §Fase 35.e — SQL routing. A persist/retrieve/mutate/
                 // purge whose store resolves to a postgresql backend
                 // executes real SQL and skips the key-value path
@@ -3213,6 +3254,11 @@ async fn collect_via_dispatcher(
         std::collections::HashMap<String, crate::ir_nodes::IRCredential>,
     >,
     credential_minter: Option<std::sync::Arc<dyn crate::credential_minter::CredentialMinter>>,
+    // §Fase 94.d — the secret-custody port behind `backend: secrets` /
+    // `rotate` / `tool { secret: }`. `None` ⇒ all three fail CLOSED
+    // (`MissingDependency`); the enterprise executor injects its
+    // envelope-encrypted Pg custody (§94.h) — the §92.c injection shape.
+    secret_custody: Option<std::sync::Arc<dyn crate::secret_custody::SecretCustody>>,
 ) -> CollectedRun {
     use crate::flow_dispatcher::{dispatch_node, DispatchCtx, NodeOutcome};
     use crate::flow_execution_event::FlowExecutionEvent;
@@ -3262,6 +3308,8 @@ async fn collect_via_dispatcher(
     // §Fase 92.c — the credential contracts + (optionally) the minter port.
     ctx.credentials = credentials;
     ctx.credential_minter = credential_minter;
+    // §Fase 94.d — the secret-custody port (None ⇒ fail-closed).
+    ctx.secret_custody = secret_custody;
 
     // §Fase 65.E.3 — share the audit-record sink so we can read the per-step
     // anchor breaches AFTER the walk (the `drop(ctx)` below releases the ctx's
@@ -3482,6 +3530,15 @@ pub fn execute_server_flow(
     // (HTTP, CLI, tests) ⇒ a reached `mint` fails CLOSED with a loud
     // missing-dependency error, never a silent stub (§86 lesson).
     credential_minter: Option<std::sync::Arc<dyn crate::credential_minter::CredentialMinter>>,
+    // §Fase 94.d — the secret-custody port behind the `backend: secrets`
+    // metadata store, the `rotate` verb, and `tool { secret: }` dispatch
+    // injection. `Some` only when the deployment owns a custody (the
+    // enterprise executor injects its envelope-encrypted Pg custody,
+    // §94.h — the same injection shape as `credential_minter`); `None`
+    // for every other caller (HTTP, CLI, tests) ⇒ each of those surfaces
+    // fails CLOSED with a loud missing-dependency error, never a silent
+    // stub and never a fabricated result.
+    secret_custody: Option<std::sync::Arc<dyn crate::secret_custody::SecretCustody>>,
 ) -> Result<ServerRunnerMetrics, String> {
     let mut target_run = None;
     for run in &ir.runs {
@@ -3783,6 +3840,8 @@ pub fn execute_server_flow(
                             .collect(),
                     ),
                     credential_minter.clone(),
+                    // §Fase 94.d — the custody port (None ⇒ fail-closed).
+                    secret_custody.clone(),
                 )
                 .await
             });
@@ -4811,6 +4870,7 @@ flow Recall(q: Text) -> Text {
             None, // §Fase 72.c — budget (test: unbudgeted)
             None, // §Fase 74.f — event outbox (test: no durable sink)
             None, // §Fase 92.c — credential minter (test: none)
+            None, // §Fase 94.d — secret custody (test: none)
         )
         .expect("flow runs");
 
@@ -4891,6 +4951,7 @@ flow Recall(q: Text) -> Text {
             None, // §Fase 74.f — event outbox (test: no durable sink)
             std::sync::Arc::new(std::collections::HashMap::new()), // §Fase 92.c — credentials
             None, // §Fase 92.c — credential minter (test: none)
+            None, // §Fase 94.d — secret custody (test: none)
         )
         .await;
 
@@ -4934,6 +4995,7 @@ flow Echo(p: Text) -> Text {
             None, // budget
             None, // outbox
             None, // §Fase 92.c — credential minter (test: none)
+            None, // §Fase 94.d — secret custody (test: none)
         )
         .expect("flow runs");
         assert!(metrics.success, "the flow runs");
@@ -4970,6 +5032,7 @@ flow Learn(tenant_id: Text, session_id_generic: Text) -> Text {
             &std::collections::HashMap::new(), &std::collections::HashMap::new(),
             None, None, None, None, None,
             None, // §Fase 92.c — credential minter (test: none)
+            None, // §Fase 94.d — secret custody (test: none)
         )
         .expect("flow runs");
         assert!(metrics.success);
@@ -5022,6 +5085,7 @@ flow Producer(tenant_id: Text) -> Text {
             // §Fase 74.f — inject the durable outbox (the enterprise daemon path).
             Some(probe.clone() as std::sync::Arc<dyn EventOutbox>),
             None, // §Fase 92.c — credential minter (test: none)
+            None, // §Fase 94.d — secret custody (test: none)
         )
         .expect("flow runs");
 

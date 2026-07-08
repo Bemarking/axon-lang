@@ -2728,6 +2728,7 @@ fn tool_registry_program_tool_stub() {
         output_schema: String::new(),
         effect_row: Vec::new(),
         parameters: Vec::new(),
+        secret: String::new(),
         source: ToolSource::Program,
         is_streaming: false,
     });
@@ -3114,6 +3115,7 @@ fn http_tool_dispatch_via_registry() {
         output_schema: "JSON".to_string(),
         effect_row: vec!["network".to_string()],
         parameters: Vec::new(),
+        secret: String::new(),
         source: ToolSource::Program,
         is_streaming: false,
     });
@@ -3142,6 +3144,7 @@ fn http_tool_empty_url_fails() {
         output_schema: String::new(),
         effect_row: vec![],
         parameters: Vec::new(),
+        secret: String::new(),
         source: ToolSource::Program,
         is_streaming: false,
     };
@@ -3166,6 +3169,7 @@ fn http_tool_invalid_scheme_fails() {
         output_schema: String::new(),
         effect_row: vec![],
         parameters: Vec::new(),
+        secret: String::new(),
         source: ToolSource::Program,
         is_streaming: false,
     };
@@ -3192,6 +3196,7 @@ fn http_tool_no_longer_falls_through() {
         output_schema: String::new(),
         effect_row: vec!["network".to_string()],
         parameters: Vec::new(),
+        secret: String::new(),
         source: ToolSource::Program,
         is_streaming: false,
     });
@@ -3312,6 +3317,7 @@ fn emcp_dispatch_via_registry() {
         output_schema: "JSON".to_string(),
         effect_row: vec!["network".to_string(), "epistemic:speculate".to_string()],
         parameters: Vec::new(),
+        secret: String::new(),
         source: ToolSource::Program,
         is_streaming: false,
     });
@@ -3400,6 +3406,7 @@ fn emcp_mcp_no_longer_falls_through() {
         output_schema: "JSON".to_string(),
         effect_row: vec!["network".to_string(), "io".to_string(), "epistemic:speculate".to_string()],
         parameters: Vec::new(),
+        secret: String::new(),
         source: ToolSource::Program,
         is_streaming: false,
     });
@@ -18997,6 +19004,7 @@ fn execute_server_flow_accepts_api_key_override() {
             None, // §Fase 72.c — budget (test: unbudgeted)
         None, // §Fase 74.f — event_outbox (test: in-process emit)
         None, // §Fase 92.c — credential minter (test: none)
+        None, // §Fase 94.d — secret custody (test: none)
     );
     assert!(result.is_err()); // flow not found, but the function accepted the args
 
@@ -19016,6 +19024,7 @@ fn execute_server_flow_accepts_api_key_override() {
             None, // §Fase 72.c — budget (test: unbudgeted)
         None, // §Fase 74.f — event_outbox (test: in-process emit)
         None, // §Fase 92.c — credential minter (test: none)
+        None, // §Fase 94.d — secret custody (test: none)
     );
     assert!(result2.is_err()); // flow not found, but key override was accepted
 }

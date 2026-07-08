@@ -525,6 +525,7 @@ async fn s4_from_entry_rejects_invalid_url_scheme() {
         output_schema: String::new(),
         effect_row: vec!["stream:drop_oldest".into()],
         parameters: Vec::new(),
+        secret: String::new(),
         source: ToolSource::Program,
         is_streaming: true,
     };
@@ -571,6 +572,7 @@ fn registry_with_http(name: &str, runtime: &str, effect_row: Vec<&str>) -> Arc<T
         output_schema: String::new(),
         effect_row: effect_row.into_iter().map(String::from).collect(),
         parameters: Vec::new(),
+        secret: String::new(),
         source: ToolSource::Program,
         is_streaming: true,
     });

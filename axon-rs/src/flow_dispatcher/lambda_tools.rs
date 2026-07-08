@@ -228,14 +228,17 @@ async fn dispatch_use_tool_real(
     ctx: &DispatchCtx,
 ) -> Option<crate::tool_executor::ToolResult> {
     let registry = ctx.tool_registry.clone()?;
-    // Resolve the typed input schema for coercion. The borrow ends
-    // here (cloned) so `registry` can move into `spawn_blocking`.
-    let parameters = registry.get(&node.tool_name)?.parameters.clone();
+    // Resolve the typed input schema for coercion (+ the §94.c secret
+    // key). The borrows end here (cloned) so `registry` can move into
+    // `spawn_blocking`.
+    let entry = registry.get(&node.tool_name)?;
+    let parameters = entry.parameters.clone();
+    let secret_key = entry.secret.clone();
 
     // Assemble the request argument: a structured JSON body for the
     // keyword form (D2), or the interpolated single argument for the
     // legacy `on <arg>` form (D5).
-    let argument = if node.named_args.is_empty() {
+    let mut argument = if node.named_args.is_empty() {
         crate::exec_context::interpolate_vars(&node.argument, &ctx.let_bindings)
     } else {
         let interpolated: Vec<(String, String)> = node
@@ -257,6 +260,57 @@ async fn dispatch_use_tool_real(
             .collect();
         crate::runner::build_structured_tool_body(&interpolated, &parameters)
     };
+
+    // §Fase 94.c — dispatch injection (`rotation_without_revelation`):
+    // a tool declaring `secret: <key>` gets the per-tenant custody value
+    // injected under the reserved `axon_secret` field of its structured
+    // body. Fail-CLOSED at every fork: no custody port, a custody
+    // refusal, or a non-JSON legacy body all fail the dispatch with a
+    // witness — a declared injection is never silently skipped (the tool
+    // would call its vendor unauthenticated and 401 confusingly, or
+    // worse, fall back to ambient credentials).
+    if !secret_key.is_empty() {
+        let refuse = |message: String| {
+            Some(crate::tool_executor::ToolResult {
+                success: false,
+                output: message,
+                tool_name: node.tool_name.clone(),
+            })
+        };
+        let Some(custody) = ctx.secret_custody.clone() else {
+            return refuse(format!(
+                "tool '{}' declares `secret: {}` but no secret_custody port is \
+                 configured — injection fails closed (never an unauthenticated \
+                 vendor call)",
+                node.tool_name, secret_key
+            ));
+        };
+        let revealed = match custody.reveal_for_dispatch(&ctx.tenant_id, &secret_key).await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                return refuse(format!(
+                    "tool '{}' secret injection refused by custody: {e}",
+                    node.tool_name
+                ))
+            }
+        };
+        let mut body: serde_json::Value = match serde_json::from_str(&argument) {
+            Ok(serde_json::Value::Object(map)) => serde_json::Value::Object(map),
+            _ => {
+                return refuse(format!(
+                    "tool '{}' declares `secret:` but was invoked with a \
+                     non-structured argument — secret injection requires the \
+                     `use {}(k = v, …)` keyword form (the body must be a JSON \
+                     object to carry the reserved `axon_secret` field)",
+                    node.tool_name, node.tool_name
+                ))
+            }
+        };
+        body["axon_secret"] = serde_json::Value::String(revealed.value.clone());
+        drop(revealed);
+        argument = body.to_string();
+    }
 
     let tool_name = node.tool_name.clone();
     let registry_for_task = registry.clone();

@@ -120,6 +120,7 @@ fn stream_tool_entry(name: &str, effect_row: Vec<&str>) -> ToolEntry {
         output_schema: String::new(),
         effect_row: row,
         parameters: Vec::new(),
+        secret: String::new(),
         source: ToolSource::Program,
         is_streaming,
     }

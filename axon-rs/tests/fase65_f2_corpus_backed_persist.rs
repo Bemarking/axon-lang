@@ -104,6 +104,7 @@ fn persist_into_a_corpus_backed_store_still_resolves_and_names_its_failure() {
             None, // §Fase 72.c — budget (test: unbudgeted)
         None, // §Fase 74.f — event_outbox (test: in-process emit)
         None, // §Fase 92.c — credential minter (test: none)
+        None, // §Fase 94.d — secret custody (test: none)
     )
     .expect("server runner Ok");
 

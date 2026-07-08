@@ -69,6 +69,11 @@ pub enum StoreBackendKind {
     InMemory,
     /// A `sqlx::PgPool`-backed SQL store (35.c `PostgresStoreBackend`).
     Postgresql,
+    /// §Fase 94.a — the read-only METADATA view over the tenant's secret
+    /// custody (`rotation_without_revelation`). No connection string, no
+    /// adopter table: the dispatch handlers route it to the
+    /// `axon::secret_custody` port (fail-closed when absent).
+    Secrets,
 }
 
 impl StoreBackendKind {
@@ -77,6 +82,7 @@ impl StoreBackendKind {
         match self {
             StoreBackendKind::InMemory => "in_memory",
             StoreBackendKind::Postgresql => "postgresql",
+            StoreBackendKind::Secrets => "secrets",
         }
     }
 }
@@ -96,6 +102,8 @@ pub fn classify_backend(backend: &str) -> Option<StoreBackendKind> {
     match backend.trim().to_ascii_lowercase().as_str() {
         "" | "in_memory" => Some(StoreBackendKind::InMemory),
         "postgresql" => Some(StoreBackendKind::Postgresql),
+        // §Fase 94.a — the secret-custody metadata view.
+        "secrets" => Some(StoreBackendKind::Secrets),
         _ => None,
     }
 }
@@ -147,6 +155,11 @@ pub enum StoreHandle {
     InMemory,
     /// A Postgres-backed store, with its (shared, cached) backend.
     Postgres(PostgresStoreBackend),
+    /// §Fase 94.a — the secret-custody metadata view: the store's
+    /// declared `class:` (WITHOUT the trailing dot; callers derive the
+    /// key prefix as `class + "."`). Routed to the `secret_custody`
+    /// port by the dispatch handlers — never to SQL, never to KV.
+    Secrets { class: String },
 }
 
 impl StoreHandle {
@@ -158,6 +171,12 @@ impl StoreHandle {
     /// `true` iff this resolves to the SQL path.
     pub fn is_postgres(&self) -> bool {
         matches!(self, StoreHandle::Postgres(_))
+    }
+
+    /// §Fase 94.a — `true` iff this resolves to the secret-custody
+    /// metadata view.
+    pub fn is_secrets(&self) -> bool {
+        matches!(self, StoreHandle::Secrets { .. })
     }
 }
 
@@ -327,6 +346,12 @@ impl StoreRegistry {
 
         match registered.kind {
             StoreBackendKind::InMemory => Ok(StoreHandle::InMemory),
+            // §Fase 94.a — pure resolution: the class rides the handle;
+            // the custody port itself lives on the DispatchCtx (it is a
+            // per-request/per-tenant seam, not a registry-cached pool).
+            StoreBackendKind::Secrets => Ok(StoreHandle::Secrets {
+                class: registered.spec.class.clone(),
+            }),
             StoreBackendKind::Postgresql => {
                 // Resolve the DSN first — this is the cache key, and
                 // the point at which a missing `env:` var surfaces as
@@ -498,8 +523,10 @@ impl StoreRegistry {
                         }
                     }
                 }
-                // `kind` is Postgresql — `resolve` cannot yield InMemory.
-                Ok(StoreHandle::InMemory) => {}
+                // `kind` is Postgresql — `resolve` cannot yield InMemory
+                // (nor Secrets: a secrets store has no table to verify —
+                // its custody schema is the enterprise migration's law).
+                Ok(StoreHandle::InMemory) | Ok(StoreHandle::Secrets { .. }) => {}
                 Err(e) => {
                     // The connection could not even be resolved (a
                     // missing `env:` var, a malformed DSN) — non-fatal;

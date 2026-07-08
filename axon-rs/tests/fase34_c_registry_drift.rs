@@ -56,6 +56,7 @@ fn spec(name: &str, effect_row: &[&str]) -> IRToolSpec {
         output_schema: String::new(),
         parameters: Vec::new(),
         output_type: None,
+        secret: String::new(),
         effect_row: effect_row.iter().map(|s| s.to_string()).collect(),
         target: None,
         risk: None,
@@ -322,6 +323,7 @@ fn s6_register_direct_path_respects_caller_set_is_streaming() {
         output_schema: String::new(),
         effect_row: vec!["custom_effect".to_string()],
         parameters: Vec::new(),
+        secret: String::new(),
         source: ToolSource::Program,
         // Adopter explicitly flags as streaming even though
         // effect_row doesn't have `stream:` prefix. This is a
