@@ -1246,7 +1246,8 @@ Body prose.
         // §Fase 87: 58 → 60 with `savant` + `synth`.
         // §Fase 88: 60 → 62 with `warden` + `scope`.
         // §Fase 92: 62 → 64 with `credential` + `mint`.
-        assert_eq!(s.total, 64);
+        // §Fase 94: 64 → 65 with `rotate` (mediated secret renewal).
+        assert_eq!(s.total, 65);
     }
 
     /// §Phase 5 — every MCP prompt shipped under
@@ -1379,6 +1380,9 @@ Body prose.
             // §Fase 93 — every granted authority projects (the dead-authority
             // closure: the converse quantifier of every_requirement_is_grantable).
             (ReferenceKind::Logic, "every_granted_authority_projects"),
+            // §Fase 94 — rotation without revelation: custodied secrets have
+            // lifecycles, not readers (the inbound dual of §92).
+            (ReferenceKind::Logic, "rotation_without_revelation"),
             (ReferenceKind::Compliance, "hipaa"),
             (ReferenceKind::Compliance, "gdpr"),
             (ReferenceKind::Compliance, "pci_dss"),
@@ -1422,7 +1426,8 @@ Body prose.
         );
         assert_eq!(
             cat.reference_count_of(ReferenceKind::Logic),
-            14,
+            // §Fase 94: 14 → 15 with `rotation_without_revelation`.
+            15,
             "logic family count drift"
         );
         assert_eq!(

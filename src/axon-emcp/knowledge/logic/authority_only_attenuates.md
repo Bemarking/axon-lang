@@ -66,6 +66,13 @@ in typed, PCC-attested source.
   machine identity with catalog grants. `credential` deliberately
   cannot reach that shape (the 24h ceiling) — a credential that
   outlives a day is a service account wearing a costume.
+- **The inbound dual**:
+  [`rotation_without_revelation`](axon://logic/rotation_without_revelation)
+  (§94) governs authority a third party lends US — a borrowed
+  credential is custodied, renewed in custody (`rotate`), and never
+  readable, exactly as a minted bearer is never persisted
+  (`axon-T896`). Together the two laws close the perimeter: no
+  authority — own or borrowed — exists as data in cognition space.
 
 The honest test: if a piece of code can produce a bearer whose
 authority exceeds what that code itself was granted, your delegation

@@ -657,6 +657,14 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         summary: "The credential-minting flow verb — `mint <Credential> as <binding>` mints a declared ephemeral contract at runtime (fail-closed without a minter port) and binds the raw bearer, shown once and never persisted (axon-T896).",
         doc_status: DocStatus::Documented,
     },
+    PrimitiveInfo {
+        name: "rotate",
+        category: "wire",
+        top_level: false,
+        since: "Fase 94",
+        summary: "The mediated secret-renewal flow verb — `rotate <SecretsStore> [where \"<filter>\"] with <Tool> as <binding>` renews every custody entry of a `backend: secrets` store's class matching the §67 filter through ONE runtime-mediated exchange per key (reveal → tool renews → CAS commit at version+1), binding the metadata-only summary. `rotation_without_revelation`: no term evaluates to a secret value; fail-closed without a custody port. Target must be a secrets store (axon-T898), the tool declared (axon-T899).",
+        doc_status: DocStatus::Documented,
+    },
     // §Fase 6.d — `logic` was registered in 6.a as an operators
     // primitive but has NO parser production (the lexer recognises
     // the `logic` keyword token; no `parse_logic` exists; the
@@ -770,9 +778,10 @@ mod tests {
         // `scope` (the authorization-scope policy) → 60→62.
         // §Fase 92 added `credential` (the ephemeral-credential contract) +
         // `mint` (the minting flow verb) → 62→64.
+        // §Fase 94 added `rotate` (the mediated secret-renewal verb) → 64→65.
         assert_eq!(
             PRIMITIVE_REGISTRY.len(),
-            64,
+            65,
             "PRIMITIVE_REGISTRY count drift — add/remove the primitive intentionally + update this assertion"
         );
     }
@@ -879,6 +888,8 @@ mod tests {
             "warden", "scope",
             // §Fase 92 — the ephemeral-credential contract + its minting verb.
             "credential", "mint",
+            // §Fase 94 — the mediated secret-renewal verb.
+            "rotate",
         ]
         .into_iter()
         .collect();
@@ -903,13 +914,14 @@ mod tests {
         // §Fase 87: 58 → 60 with `savant` + `synth`.
         // §Fase 88: 60 → 62 with `warden` + `scope`.
         // §Fase 92: 62 → 64 with `credential` + `mint`.
-        assert_eq!(s.total, 64);
+        // §Fase 94: 64 → 65 with `rotate` (the mediated secret-renewal verb).
+        assert_eq!(s.total, 65);
         assert_eq!(s.documented + s.pending, s.total);
         // §Fase 6.d achieves **100% coverage** — every entry in the
         // registry has a `.md` and a passing drift-gated canonical
         // program. Pending count is 0; any future drop is a
         // regression the gate catches.
-        assert_eq!(s.documented, 64);
+        assert_eq!(s.documented, 65);
         assert_eq!(s.pending, 0);
     }
 

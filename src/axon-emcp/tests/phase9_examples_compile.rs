@@ -44,9 +44,12 @@ const EXPECTED: &[(&str, ExampleTopic)] = &[
     ("lambda_epistemic_stamp", ExampleTopic::Effects),
     // Streaming (1)
     ("streaming_chat", ExampleTopic::Streaming),
-    // Data (2)
+    // Data (3)
     ("axonstore_typed", ExampleTopic::Data),
     ("dataspace_basic", ExampleTopic::Data),
+    // §Fase 94 — the secret-custody rotation lifecycle (backend: secrets
+    // + rotate + tool secret injection; `rotation_without_revelation`).
+    ("secret_custody_rotation", ExampleTopic::Data),
     // Agents (2)
     ("agent_react", ExampleTopic::Agents),
     ("reflex_to_immune", ExampleTopic::Agents),
