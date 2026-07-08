@@ -5986,6 +5986,7 @@ impl Parser {
             isolation: String::new(),
             on_breach: String::new(),
             capability: String::new(),
+            class: String::new(),
             column_schema: None,
             loc: Loc {
                 line: tok.line,
@@ -6014,6 +6015,14 @@ impl Parser {
                 self.advance();
                 match field_name.as_str() {
                     "backend" => node.backend = self.consume_any_ident_or_kw()?.value.clone(),
+                    // §Fase 94.a — the secret-class prefix of a
+                    // `backend: secrets` metadata store. Dotted-identifier
+                    // form (`class: crm`, `class: crm.oauth`); the
+                    // secrets-only placement rule + slug shape are
+                    // `axon-T900` in the type-checker (it needs the
+                    // resolved `backend:`, which may appear after this
+                    // field in source order).
+                    "class" => node.class = self.parse_dotted_identifier()?,
                     "connection" => {
                         node.connection = self.consume(TokenType::StringLit)?.value.clone()
                     }

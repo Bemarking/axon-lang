@@ -2009,11 +2009,20 @@ pub struct IRAxonStore {
     /// §Fase 35.j (D11) — Pillar IV: the capability slug required to
     /// access this store (empty = no gate).
     pub capability: String,
+    /// §Fase 94.a — the secret-class prefix of a `backend: secrets`
+    /// metadata store (`rotation_without_revelation`). Non-empty ⇔
+    /// `backend == "secrets"` (both directions enforced by `axon-T900`
+    /// before the IR ships). Elided from the wire when empty — every
+    /// pre-§94 store serializes byte-identically (IR-SHA stability).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub class: String,
     /// §Fase 38.b (D1) — the OPTIONAL column-schema declaration. Three
     /// closed forms (inline / manifest-ref / env-var). `None` means the
     /// 37.x runtime+deploy path applies verbatim (D5 absolute). The
     /// §38.d / §38.e type-checker proves every store reference against
-    /// this when present.
+    /// this when present. §Fase 94.a: for a `backend: secrets` store the
+    /// generator synthesizes the FIXED metadata schema here (the artifact
+    /// is self-describing; PCC and the deploy gate re-derive against it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub column_schema: Option<IRStoreColumnSchema>,
 }

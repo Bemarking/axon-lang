@@ -245,6 +245,47 @@ pub struct StoreColumn {
     pub column: u32,
 }
 
+/// §Fase 94.a — the FIXED, compiler-synthesized column schema of a
+/// `backend: secrets` metadata store (doctrine
+/// `rotation_without_revelation`). A secrets-backed axonstore is a
+/// read-only METADATA view over the tenant's secret custody: the four
+/// columns below are everything a flow may ever see — the secret VALUE
+/// has no column, no type, and no term that evaluates to it. Declaring
+/// an explicit `schema` on a secrets store is `axon-T900` (the shape is
+/// law, not adopter choice); write verbs against it are `axon-T897`.
+///
+/// `expires_at` is nullable BY DESIGN: expiry is declared metadata
+/// (`time_is_an_explicit_input`), written by the seeder or the rotation
+/// commit — a secret without a declared expiry simply never matches an
+/// `expires_at <` filter.
+pub fn secrets_metadata_schema(line: u32, column: u32) -> StoreColumnSchema {
+    let col = |name: &str, col_type: StoreColumnType, not_null: bool| StoreColumn {
+        name: name.to_string(),
+        col_type,
+        primary_key: false,
+        auto_increment: false,
+        not_null,
+        unique: false,
+        default_value: String::new(),
+        identity: false,
+        indexed: false,
+        json_shape: None,
+        line,
+        column,
+    };
+    StoreColumnSchema::Inline {
+        columns: vec![
+            col("key", StoreColumnType::Text, true),
+            col("version", StoreColumnType::Int, true),
+            col("created_at", StoreColumnType::Timestamptz, true),
+            col("expires_at", StoreColumnType::Timestamptz, false),
+        ],
+        leading_trivia: Vec::new(),
+        line,
+        column,
+    }
+}
+
 // ════════════════════════════════════════════════════════════════════
 //  AST node — the three closed `schema:` declaration forms
 // ════════════════════════════════════════════════════════════════════

@@ -224,7 +224,13 @@ const VALID_MANDATE_POLICIES: &[&str] = &["coerce", "halt", "retry"];
 //
 // `mysql` / `sqlite` remain type-check-valid but runtime-absent (a
 // documented future fase) — see `docs/fase/fase_36x_mixed_flow_streaming.md` §7.
-const VALID_STORE_BACKENDS: &[&str] = &["in_memory", "mysql", "postgresql", "sqlite"];
+// §Fase 94.a — `secrets` is the metadata VIEW over the tenant's secret
+// custody (doctrine `rotation_without_revelation`): read-only (T897),
+// class-scoped (T900), fixed synthesized schema. It is a backend in the
+// grammar sense only — there is no connection string and no adopter
+// table behind it; the runtime binds it to the `axon::secret_custody`
+// port.
+const VALID_STORE_BACKENDS: &[&str] = &["in_memory", "mysql", "postgresql", "secrets", "sqlite"];
 
 const VALID_STORE_ISOLATION: &[&str] = &["read_committed", "repeatable_read", "serializable"];
 
@@ -724,6 +730,13 @@ pub struct TypeChecker<'a> {
     /// case). The compile-time mirror of the §74.g PCC
     /// `ChannelDeliverySoundness`.
     emitted_channels: std::collections::HashSet<String>,
+    /// §Fase 94.a — the names of every `backend: secrets` metadata store
+    /// in the program, recorded at registration. Read by the write-verb
+    /// law (`axon-T897`: `persist`/`mutate`/`purge` against a secrets
+    /// store is unrepresentable — custody is written only by the seeding
+    /// API and the mediated `rotate` commit) and by the §94.b `rotate`
+    /// target rule (`axon-T898`: `rotate` targets ONLY a secrets store).
+    secrets_backed_stores: std::collections::HashSet<String>,
 }
 
 // ── §Fase 70.b — static type inference for the pure expression engine ─────────
@@ -942,6 +955,7 @@ impl<'a> TypeChecker<'a> {
             current_flow_param_spellings: std::collections::BTreeMap::new(),
             current_mint_bindings: std::collections::HashSet::new(),
             emitted_channels: std::collections::HashSet::new(),
+            secrets_backed_stores: std::collections::HashSet::new(),
         }
     }
 
@@ -975,6 +989,7 @@ impl<'a> TypeChecker<'a> {
             current_flow_param_spellings: std::collections::BTreeMap::new(),
             current_mint_bindings: std::collections::HashSet::new(),
             emitted_channels: std::collections::HashSet::new(),
+            secrets_backed_stores: std::collections::HashSet::new(),
         }
     }
 
@@ -1221,6 +1236,35 @@ impl<'a> TypeChecker<'a> {
                     // Without `--schemas-dir`, `self.manifest` is None
                     // and forms (b)/(c) silently skip exactly as they
                     // did in v1.38.3 (D5 backwards-compat absolute).
+                    //
+                    // §Fase 94.a — a `backend: secrets` metadata store
+                    // gets the FIXED synthesized schema (key / version /
+                    // created_at / expires_at) so `where:` / `order_by:`
+                    // / aggregate proofs run against the custody
+                    // metadata columns exactly like a declared inline
+                    // schema. Recorded in `secrets_backed_stores` for
+                    // the T897 write-verb law + the §94.b `rotate`
+                    // target rule. The synthesized set is inserted
+                    // FIRST so it wins even when the adopter ALSO
+                    // declared an explicit schema (that declaration is
+                    // `axon-T900` in `check_axonstore` — but the proofs
+                    // must still run against the law's shape, not the
+                    // adopter's).
+                    if n.backend == "secrets" {
+                        self.secrets_backed_stores.insert(n.name.clone());
+                        let synthesized = crate::store_schema::secrets_metadata_schema(
+                            n.loc.line,
+                            n.loc.column,
+                        );
+                        if let Some(cs) =
+                            crate::store_column_proof::ColumnSet::from_inline_schema(
+                                &synthesized,
+                            )
+                        {
+                            self.store_inline_column_sets.insert(n.name.clone(), cs);
+                        }
+                    }
+                    if n.backend != "secrets" {
                     if let Some(schema) = &n.column_schema {
                         match schema {
                             crate::store_schema::StoreColumnSchema::Inline { .. } => {
@@ -1287,6 +1331,7 @@ impl<'a> TypeChecker<'a> {
                             }
                         }
                     }
+                    } // §Fase 94.a — end of the non-secrets schema arm.
                 }
                 Declaration::AxonEndpoint(n) => {
                     registrations.push((
@@ -4837,6 +4882,85 @@ impl<'a> TypeChecker<'a> {
         if let Some(v) = node.confidence_floor {
             self.check_range(v, 0.0, 1.0, "confidence_floor", &node.loc);
         }
+
+        // §Fase 94.a — the `backend: secrets` placement laws (axon-T900).
+        // A secrets store is a class-scoped, read-only metadata view over
+        // the tenant's secret custody; every field that would make it
+        // look like an adopter table is unrepresentable.
+        if node.backend == "secrets" {
+            if node.class.is_empty() {
+                self.emit(
+                    format!(
+                        "axon-T900 axonstore '{}' declares `backend: secrets` without a \
+                         `class:` — a class-less secrets store would enumerate the \
+                         tenant's ENTIRE secret namespace (`llm.*` included). Declare \
+                         the secret-class prefix it may see, e.g. `class: crm` (covers \
+                         keys under `crm.`).",
+                        node.name
+                    ),
+                    &node.loc,
+                );
+            } else if !crate::parser::is_valid_capability_slug(&node.class) {
+                self.emit(
+                    format!(
+                        "axon-T900 axonstore '{}' declares an invalid secret class \
+                         '{}'. A class is a dotted lowercase prefix matching \
+                         ^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$ — e.g. `crm`, \
+                         `crm.oauth`.",
+                        node.name, node.class
+                    ),
+                    &node.loc,
+                );
+            }
+            if node.column_schema.is_some() {
+                self.emit(
+                    format!(
+                        "axon-T900 axonstore '{}' declares `backend: secrets` AND an \
+                         explicit `schema` — the metadata schema of a secrets store is \
+                         LAW, synthesized by the compiler (key: Text, version: Int, \
+                         created_at: Timestamptz, expires_at: Timestamptz). Drop the \
+                         `schema` block; the secret VALUE has no column by design \
+                         (`rotation_without_revelation`).",
+                        node.name
+                    ),
+                    &node.loc,
+                );
+            }
+            if !node.connection.is_empty()
+                || !node.isolation.is_empty()
+                || !node.on_breach.is_empty()
+                || node.confidence_floor.is_some()
+            {
+                self.emit(
+                    format!(
+                        "axon-T900 axonstore '{}' declares `backend: secrets` with \
+                         adopter-storage fields (`connection:` / `isolation:` / \
+                         `on_breach:` / `confidence_floor:`) — a secrets store has no \
+                         connection string and no adopter table behind it (the runtime \
+                         binds it to the tenant's secret custody). Only `class:` and \
+                         `capability:` apply.",
+                        node.name
+                    ),
+                    &node.loc,
+                );
+            }
+        } else if !node.class.is_empty() {
+            self.emit(
+                format!(
+                    "axon-T900 axonstore '{}' declares `class: {}` but its backend is \
+                     '{}' — `class:` is the secret-class prefix of a `backend: secrets` \
+                     metadata store and has no meaning elsewhere.",
+                    node.name,
+                    node.class,
+                    if node.backend.is_empty() {
+                        "<unset>"
+                    } else {
+                        &node.backend
+                    }
+                ),
+                &node.loc,
+            );
+        }
     }
 
     /// §λ-L-E Fase 1 — Resource validation.
@@ -7784,6 +7908,10 @@ impl<'a> TypeChecker<'a> {
                 }
                 FlowStep::Persist(n) => {
                     self.check_store_ref(&n.store_name, flow_name, &n.loc);
+                    // §Fase 94.a — write verbs never touch a secrets store
+                    // (axon-T897): custody is written only by the seeding
+                    // API and the mediated `rotate` commit.
+                    self.check_secrets_store_write("persist", &n.store_name, flow_name, &n.loc);
                     // §Fase 38.e — D2 second half: persist field-block
                     // proof (axon-T803 NOT-NULL omission + axon-T804
                     // unknown field + axon-T802 value-type mismatch).
@@ -7837,6 +7965,8 @@ impl<'a> TypeChecker<'a> {
                 }
                 FlowStep::Mutate(n) => {
                     self.check_store_ref(&n.store_name, flow_name, &n.loc);
+                    // §Fase 94.a (axon-T897) — see the Persist arm.
+                    self.check_secrets_store_write("mutate", &n.store_name, flow_name, &n.loc);
                     self.run_38d_where_proof(&n.store_name, &n.where_expr, &n.loc);
                     // §Fase 38.e — D2 second half: mutate SET-block
                     // proof (axon-T804 unknown field + axon-T802
@@ -7847,6 +7977,8 @@ impl<'a> TypeChecker<'a> {
                 }
                 FlowStep::Purge(n) => {
                     self.check_store_ref(&n.store_name, flow_name, &n.loc);
+                    // §Fase 94.a (axon-T897) — see the Persist arm.
+                    self.check_secrets_store_write("purge", &n.store_name, flow_name, &n.loc);
                     self.run_38d_where_proof(&n.store_name, &n.where_expr, &n.loc);
                 }
                 FlowStep::ComputeApply(n) => {
@@ -8695,6 +8827,35 @@ impl<'a> TypeChecker<'a> {
                     step.name
                 ),
                 &step.loc,
+            );
+        }
+    }
+
+    /// §Fase 94.a — the write-verb law over a `backend: secrets` store
+    /// (`axon-T897`). A secrets store is a read-only metadata view:
+    /// `persist` / `mutate` / `purge` against it are unrepresentable —
+    /// custody is written only by the tenant-secrets seeding API and by
+    /// the runtime commit of a mediated `rotate` (§94.b). Emitted at the
+    /// offending step, naming the verb, so `axon fix` guidance stays
+    /// exact.
+    fn check_secrets_store_write(
+        &mut self,
+        verb: &str,
+        store_name: &str,
+        flow_name: &str,
+        loc: &Loc,
+    ) {
+        if !store_name.is_empty() && self.secrets_backed_stores.contains(store_name) {
+            self.emit(
+                format!(
+                    "axon-T897 `{verb}` targets the secrets store '{store_name}' in \
+                     flow '{flow_name}' — a `backend: secrets` store is a READ-ONLY \
+                     metadata view over the tenant's secret custody \
+                     (`rotation_without_revelation`). Custody is written only by the \
+                     tenant-secrets API (seed) and by `rotate … with <Tool>` (renewal); \
+                     `retrieve` is the only verb that reads it."
+                ),
+                loc,
             );
         }
     }

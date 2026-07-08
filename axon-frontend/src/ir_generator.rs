@@ -1535,11 +1535,28 @@ impl IRGenerator {
             isolation: n.isolation.clone(),
             on_breach: n.on_breach.clone(),
             capability: n.capability.clone(),
+            class: n.class.clone(),
             // §Fase 38.b (D1) — thread the parsed column-schema
             // declaration (if any) through to the IR. The IR mirror
             // preserves the tagged-union shape (inline / manifest_ref /
             // env_var) and the canonical PascalCase column-type name.
-            column_schema: n.column_schema.as_ref().map(lower_column_schema),
+            //
+            // §Fase 94.a — a `backend: secrets` store carries the FIXED
+            // synthesized metadata schema instead (an adopter-declared
+            // schema on a secrets store is `axon-T900` and never reaches
+            // a shipped IR): the artifact stays self-describing, so PCC
+            // and the enterprise deploy gate re-derive the law's shape
+            // from the IR alone.
+            column_schema: if n.backend == "secrets" {
+                Some(lower_column_schema(
+                    &crate::store_schema::secrets_metadata_schema(
+                        n.loc.line,
+                        n.loc.column,
+                    ),
+                ))
+            } else {
+                n.column_schema.as_ref().map(lower_column_schema)
+            },
         }
     }
 

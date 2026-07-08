@@ -1498,11 +1498,24 @@ pub struct AxonStoreDefinition {
     /// parse time against the closed slug grammar (shared with the
     /// Fase 32.g `requires:` grammar).
     pub capability: String,
+    /// §Fase 94.a — the secret-class prefix of a `backend: secrets`
+    /// metadata store (doctrine `rotation_without_revelation`). A
+    /// dotted lowercase identifier, e.g. `crm` — the store enumerates
+    /// the tenant's secrets whose keys live under `<class>.` (so
+    /// `class: crm` covers `crm.hubspot`, `crm.zoho.acct_x`, …).
+    /// REQUIRED when `backend: secrets` and FORBIDDEN otherwise
+    /// (`axon-T900`): a class-less secrets store would enumerate the
+    /// tenant's ENTIRE secret namespace (`llm.*` included) — that
+    /// over-broad view is unrepresentable, not discouraged.
+    pub class: String,
     /// §Fase 38.b (D1) — the OPTIONAL column-schema declaration. Three
     /// closed forms (inline / manifest-ref / env-var); `None` means the
     /// 37.x runtime+deploy path applies verbatim (D5 absolute). The
     /// §38.d / §38.e `StoreColumnProof` pass consumes this; the §38.h
-    /// CLI exports it.
+    /// CLI exports it. For a `backend: secrets` store this is always
+    /// `None` in the AST (declaring one is `axon-T900`) — the fixed
+    /// metadata schema is synthesized at IR time
+    /// (`store_schema::secrets_metadata_schema`).
     pub column_schema: Option<crate::store_schema::StoreColumnSchema>,
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia attached to this declaration
