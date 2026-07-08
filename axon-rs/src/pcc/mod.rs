@@ -67,6 +67,8 @@ pub use generate::{
     derive_temporal_context_soundness_witness, generate_temporal_context_soundness_proofs,
     // §Fase 92.d — the authority_only_attenuates static obligation.
     derive_credential_attenuation_witness, generate_credential_attenuation_proofs,
+    // §Fase 94.e — the rotation_without_revelation static obligation.
+    derive_secret_custody_witness, generate_secret_custody_proofs,
 };
 pub use proof_term::{
     CallSoundnessCertificate, CapabilityContainmentWitness, CapabilityGrantabilityWitness,
@@ -78,6 +80,7 @@ pub use proof_term::{
     EffectRowSoundnessWitness, InterruptibleSessionSoundnessWitness, ParkedResidualSoundnessWitness,
     ProofBundle, ProofTerm,
     PropertyClass, ResourceBoundsWitness,
+    SecretCustodySoundnessWitness,
     ShieldHaltGuaranteeWitness, TemporalContextSoundnessWitness, ToolCallSoundnessWitness,
     UpstreamProjectionSoundnessWitness,
     Witness, CALL_INTERRUPT_CAUSES,
@@ -2810,6 +2813,116 @@ mod tests {
             proofs
                 .iter()
                 .any(|p| p.property == PropertyClass::CredentialAttenuation),
+            "self-contained → registered in the default generation set"
+        );
+    }
+
+    // ── §Fase 94.e — SecretCustodySoundness ──────────────────────────────
+
+    const CUSTODY_PROGRAM: &str = "axonstore CrmTokens {\n\
+             backend: secrets\n\
+             class: crm\n\
+         }\n\
+         tool RefreshCrmToken {\n\
+             endpoint: \"/tools/crm/refresh\"\n\
+         }\n\
+         flow RotateExpiring() -> Unit {\n\
+             rotate CrmTokens where \"expires_at < now() + interval '10 minutes'\" with RefreshCrmToken as result\n\
+             step S { ask: \"${result}\" }\n\
+         }\n";
+
+    #[test]
+    fn secret_custody_round_trips_and_verifies() {
+        let ir = ir_from_source(CUSTODY_PROGRAM);
+        let proofs = super::generate::generate_secret_custody_proofs(&ir, "test");
+        assert_eq!(proofs.len(), 1, "one whole-program proof when custody exists");
+        assert_eq!(proofs[0].property, PropertyClass::SecretCustodySoundness);
+        if let Witness::SecretCustodySoundness(ref w) = proofs[0].witness {
+            assert_eq!(
+                w.stores,
+                vec![("CrmTokens".to_string(), "crm".to_string())]
+            );
+            assert_eq!(
+                w.rotates,
+                vec![(
+                    "RotateExpiring".to_string(),
+                    "CrmTokens".to_string(),
+                    "RefreshCrmToken".to_string(),
+                    "result".to_string()
+                )]
+            );
+            assert!(w.unresolved_stores.is_empty());
+            assert!(w.unresolved_tools.is_empty());
+            assert!(w.invalid_classes.is_empty());
+            assert!(w.write_violations.is_empty());
+        } else {
+            panic!("expected a SecretCustodySoundness witness");
+        }
+        assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
+    }
+
+    #[test]
+    fn custody_less_program_carries_no_custody_proof() {
+        let ir = ir_from_source("flow Chat() -> Unit { step S { ask: \"hi\" } }\n");
+        assert!(
+            super::generate::generate_secret_custody_proofs(&ir, "test").is_empty(),
+            "no custody → no proof"
+        );
+    }
+
+    #[test]
+    fn secret_custody_refutes_a_ghost_rotation_tool() {
+        // Hand-craft an IR (bypassing compile-time axon-T899) where the
+        // rotate names a tool that doesn't exist.
+        let mut ir = ir_from_source(CUSTODY_PROGRAM);
+        ir.tools.clear();
+        let proofs = super::generate::generate_secret_custody_proofs(&ir, "test");
+        assert_eq!(proofs.len(), 1);
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => assert!(reason.contains("T899"), "{reason}"),
+            other => panic!("expected Refuted (ghost tool), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn secret_custody_refutes_a_class_less_store() {
+        // Hand-craft an IR with an empty class (bypassing axon-T900).
+        let mut ir = ir_from_source(CUSTODY_PROGRAM);
+        for s in &mut ir.axonstore_specs {
+            if s.backend == "secrets" {
+                s.class = String::new();
+            }
+        }
+        let proofs = super::generate::generate_secret_custody_proofs(&ir, "test");
+        assert_eq!(proofs.len(), 1);
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => assert!(reason.contains("T900"), "{reason}"),
+            other => panic!("expected Refuted (class-less store), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn secret_custody_refutes_a_forged_witness() {
+        let ir = ir_from_source(CUSTODY_PROGRAM);
+        let mut proofs = super::generate::generate_secret_custody_proofs(&ir, "test");
+        if let Witness::SecretCustodySoundness(ref mut w) = proofs[0].witness {
+            // Forge: claim a broader class than the artifact declares.
+            w.stores[0].1 = "llm".to_string();
+        }
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => assert!(reason.contains("disagrees"), "{reason}"),
+            other => panic!("expected Refuted (forgery), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn secret_custody_rides_generate_all_proofs() {
+        let ir = ir_from_source(CUSTODY_PROGRAM);
+        let proofs = super::generate::generate_all_proofs(&ir, "test");
+        assert!(
+            proofs
+                .iter()
+                .any(|p| p.property == PropertyClass::SecretCustodySoundness),
             "self-contained → registered in the default generation set"
         );
     }

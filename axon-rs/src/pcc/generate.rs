@@ -2125,6 +2125,176 @@ pub fn generate_credential_attenuation_proofs(
     }
 }
 
+// ── §Fase 94.e — SecretCustodySoundness ──────────────────────────────────────
+
+/// §94.e — recursively collect every `rotate` site from a flow-IR body
+/// (the §92.d walk shape).
+fn collect_rotate_sites(
+    flow_name: &str,
+    nodes: &[axon_frontend::ir_nodes::IRFlowNode],
+    out: &mut Vec<(String, String, String, String)>,
+) {
+    use axon_frontend::ir_nodes::IRFlowNode;
+    for node in nodes {
+        match node {
+            IRFlowNode::Rotate(r) => out.push((
+                flow_name.to_string(),
+                r.store_ref.clone(),
+                r.tool_ref.clone(),
+                r.binding.clone(),
+            )),
+            IRFlowNode::Conditional(c) => {
+                collect_rotate_sites(flow_name, &c.then_body, out);
+                collect_rotate_sites(flow_name, &c.else_body, out);
+            }
+            IRFlowNode::ForIn(f) => collect_rotate_sites(flow_name, &f.body, out),
+            IRFlowNode::Par(p) => {
+                for branch in &p.branches {
+                    collect_rotate_sites(flow_name, branch, out);
+                }
+            }
+            IRFlowNode::Listen(l) => collect_rotate_sites(flow_name, &l.body, out),
+            IRFlowNode::Warden(w) => collect_rotate_sites(flow_name, &w.body, out),
+            IRFlowNode::Quant(q) => collect_rotate_sites(flow_name, &q.body, out),
+            _ => {}
+        }
+    }
+}
+
+/// §94.e — recursively collect every WRITE verb against a store in
+/// `secrets_stores` (`axon-T897`, re-derived).
+fn collect_secrets_write_violations(
+    flow_name: &str,
+    nodes: &[axon_frontend::ir_nodes::IRFlowNode],
+    secrets_stores: &std::collections::HashSet<&str>,
+    out: &mut Vec<(String, String, String)>,
+) {
+    use axon_frontend::ir_nodes::IRFlowNode;
+    let mut push = |verb: &str, store: &str, out: &mut Vec<(String, String, String)>| {
+        if secrets_stores.contains(store) {
+            out.push((flow_name.to_string(), verb.to_string(), store.to_string()));
+        }
+    };
+    for node in nodes {
+        match node {
+            IRFlowNode::Persist(s) => push("persist", &s.store_name, out),
+            IRFlowNode::Mutate(s) => push("mutate", &s.store_name, out),
+            IRFlowNode::Purge(s) => push("purge", &s.store_name, out),
+            IRFlowNode::Conditional(c) => {
+                collect_secrets_write_violations(flow_name, &c.then_body, secrets_stores, out);
+                collect_secrets_write_violations(flow_name, &c.else_body, secrets_stores, out);
+            }
+            IRFlowNode::ForIn(f) => {
+                collect_secrets_write_violations(flow_name, &f.body, secrets_stores, out)
+            }
+            IRFlowNode::Par(p) => {
+                for branch in &p.branches {
+                    collect_secrets_write_violations(flow_name, branch, secrets_stores, out);
+                }
+            }
+            IRFlowNode::Listen(l) => {
+                collect_secrets_write_violations(flow_name, &l.body, secrets_stores, out)
+            }
+            IRFlowNode::Warden(w) => {
+                collect_secrets_write_violations(flow_name, &w.body, secrets_stores, out)
+            }
+            IRFlowNode::Quant(q) => {
+                collect_secrets_write_violations(flow_name, &q.body, secrets_stores, out)
+            }
+            _ => {}
+        }
+    }
+}
+
+/// §94.e — the `class:` shape law, re-stated by the checker (D51.2):
+/// non-empty dotted lowercase slug (`axon-T900`'s charset, the §92.d
+/// `slug_ok` mirror).
+fn secrets_class_ok(class: &str) -> bool {
+    !class.is_empty()
+        && class.split('.').all(|seg| {
+            let mut ch = seg.chars();
+            matches!(ch.next(), Some('a'..='z'))
+                && ch.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        })
+}
+
+/// §94.e — re-derive the whole-program secret-custody witness. `None`
+/// when the program declares no `backend: secrets` store and no `rotate`
+/// — no contract → no proof (the standing convention).
+pub fn derive_secret_custody_witness(
+    ir: &IRProgram,
+) -> Option<super::proof_term::SecretCustodySoundnessWitness> {
+    let stores: Vec<(String, String)> = ir
+        .axonstore_specs
+        .iter()
+        .filter(|s| s.backend == "secrets")
+        .map(|s| (s.name.clone(), s.class.clone()))
+        .collect();
+    let mut rotates: Vec<(String, String, String, String)> = Vec::new();
+    for flow in &ir.flows {
+        collect_rotate_sites(&flow.name, &flow.steps, &mut rotates);
+    }
+    if stores.is_empty() && rotates.is_empty() {
+        return None;
+    }
+
+    let secrets_names: std::collections::HashSet<&str> =
+        stores.iter().map(|(n, _)| n.as_str()).collect();
+    let declared_tools: std::collections::HashSet<&str> =
+        ir.tools.iter().map(|t| t.name.as_str()).collect();
+
+    let mut unresolved_stores: Vec<String> = Vec::new();
+    let mut unresolved_tools: Vec<String> = Vec::new();
+    for (_, store_ref, tool_ref, _) in &rotates {
+        if !secrets_names.contains(store_ref.as_str()) && !unresolved_stores.contains(store_ref)
+        {
+            unresolved_stores.push(store_ref.clone());
+        }
+        if !declared_tools.contains(tool_ref.as_str()) && !unresolved_tools.contains(tool_ref) {
+            unresolved_tools.push(tool_ref.clone());
+        }
+    }
+    let invalid_classes: Vec<String> = stores
+        .iter()
+        .filter(|(_, class)| !secrets_class_ok(class))
+        .map(|(n, _)| n.clone())
+        .collect();
+    let mut write_violations: Vec<(String, String, String)> = Vec::new();
+    for flow in &ir.flows {
+        collect_secrets_write_violations(
+            &flow.name,
+            &flow.steps,
+            &secrets_names,
+            &mut write_violations,
+        );
+    }
+    Some(super::proof_term::SecretCustodySoundnessWitness {
+        stores,
+        rotates,
+        unresolved_stores,
+        unresolved_tools,
+        invalid_classes,
+        write_violations,
+    })
+}
+
+/// §94.e — generate the (at most one) SecretCustodySoundness proof for
+/// `ir`. Program-wide, so this is a Vec of length 0 or 1.
+pub fn generate_secret_custody_proofs(
+    ir: &IRProgram,
+    axon_version: &str,
+) -> Vec<ProofTerm> {
+    match derive_secret_custody_witness(ir) {
+        Some(witness) => vec![ProofTerm {
+            property: PropertyClass::SecretCustodySoundness,
+            artifact_digest: artifact_digest(ir),
+            witness: Witness::SecretCustodySoundness(witness),
+            axon_version: axon_version.to_string(),
+        }],
+        None => Vec::new(),
+    }
+}
+
 // ── §Fase 84.c — TechnicianCommandSafety ─────────────────────────────────────
 
 /// §84.c — does this IR session-step sequence contain a reachable
@@ -2594,5 +2764,6 @@ pub fn generate_all_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm>
     proofs.extend(generate_authorization_coverage_proofs(ir, axon_version));
     proofs.extend(generate_temporal_context_soundness_proofs(ir, axon_version));
     proofs.extend(generate_credential_attenuation_proofs(ir, axon_version));
+    proofs.extend(generate_secret_custody_proofs(ir, axon_version));
     proofs
 }

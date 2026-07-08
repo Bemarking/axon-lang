@@ -324,6 +324,20 @@ pub enum PropertyClass {
     /// enforced fail-closed at mint time (§92.c handler + port).
     /// Program-wide, 0-or-1 proof; no `credential`/`mint` → no proof.
     CredentialAttenuation,
+    /// §94.e — the STATIC half of the doctrine
+    /// `rotation_without_revelation` (§94): every `backend: secrets`
+    /// store carries a shape-valid `class:` (`axon-T900`, re-derived),
+    /// every `rotate` targets a declared secrets store (`axon-T898`) and
+    /// a declared tool (`axon-T899`), and NO write verb touches a
+    /// secrets store (`axon-T897` — custody is written only by the seed
+    /// API and the mediated rotate commit). Belt-and-suspenders against
+    /// a stored/hand-edited IR whose compile-time proof has gone stale.
+    /// The DYNAMIC halves (CAS commit, reveal-only-into-the-exchange)
+    /// are enforced fail-closed by the §94.d dispatcher + custody port —
+    /// by construction of the wire, no term evaluates to a value.
+    /// Program-wide, 0-or-1 proof; no secrets store and no `rotate` →
+    /// no proof.
+    SecretCustodySoundness,
 }
 
 /// §72.f — the closed period catalog for `budget` quotas. The checker's own
@@ -378,6 +392,7 @@ impl PropertyClass {
             PropertyClass::CapabilityGrantability => "capability_grantability",
             PropertyClass::TemporalContextSoundness => "temporal_context_soundness",
             PropertyClass::CredentialAttenuation => "credential_attenuation",
+            PropertyClass::SecretCustodySoundness => "secret_custody_soundness",
         }
     }
 }
@@ -1072,6 +1087,43 @@ pub struct CredentialAttenuationWitness {
     pub invalid_contracts: Vec<String>,
 }
 
+/// §94.e — witness for [`PropertyClass::SecretCustodySoundness`].
+///
+/// Program-wide (the `cors`/`temporal`/`credential` shape). The checker
+/// RE-DERIVES every field from the IR's `axonstore_specs` + `tool_specs` +
+/// the flows' step trees and rejects the proof if the witness disagrees
+/// (D51.2). A verifying proof has every violation list empty.
+///
+/// The dynamic halves of `rotation_without_revelation` — the CAS commit,
+/// the reveal-only-into-the-exchange discipline — are enforced fail-closed
+/// by the dispatcher + the custody port (§94.d), BY CONSTRUCTION of the
+/// wire (no term evaluates to a value); data-dependent, so deliberately
+/// NOT claimed here (the §92.d honesty split).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SecretCustodySoundnessWitness {
+    /// `(store_name, class)` for every `backend: secrets` axonstore,
+    /// declaration order.
+    pub stores: Vec<(String, String)>,
+    /// `(flow, store_ref, tool_ref, binding)` for every `rotate`, walk
+    /// order (recursing through the nesting variants).
+    pub rotates: Vec<(String, String, String, String)>,
+    /// Rotate targets that do not resolve to a declared `backend:
+    /// secrets` store (`axon-T898`, re-derived). Empty for a verifying
+    /// proof.
+    pub unresolved_stores: Vec<String>,
+    /// Rotate tools that do not resolve to a declared `tool`
+    /// (`axon-T899`, re-derived). Empty for a verifying proof.
+    pub unresolved_tools: Vec<String>,
+    /// Secrets stores with a missing or shape-invalid `class:`
+    /// (`axon-T900`, re-derived). Empty for a verifying proof.
+    pub invalid_classes: Vec<String>,
+    /// `(flow, verb, store)` for every write verb (`persist`/`mutate`/
+    /// `purge`) against a secrets store (`axon-T897`, re-derived —
+    /// custody is written only by the seed API and the mediated `rotate`
+    /// commit). Empty for a verifying proof.
+    pub write_violations: Vec<(String, String, String)>,
+}
+
 /// The property-specific witness. Tagged so the JSON is self-describing
 /// + a future class adds a variant without ambiguity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1102,6 +1154,7 @@ pub enum Witness {
     CapabilityGrantability(CapabilityGrantabilityWitness),
     TemporalContextSoundness(TemporalContextSoundnessWitness),
     CredentialAttenuation(CredentialAttenuationWitness),
+    SecretCustodySoundness(SecretCustodySoundnessWitness),
 }
 
 impl Witness {
@@ -1146,6 +1199,8 @@ impl Witness {
             Witness::TemporalContextSoundness(_) => "<program>",
             // §92.d — program-wide property, no single named subject.
             Witness::CredentialAttenuation(_) => "<program>",
+            // §94.e — program-wide property, no single named subject.
+            Witness::SecretCustodySoundness(_) => "<program>",
         }
     }
 }

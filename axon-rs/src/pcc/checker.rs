@@ -150,6 +150,9 @@ pub fn check_proof(proof: &ProofTerm, ir: &IRProgram) -> CheckOutcome {
         (PropertyClass::CredentialAttenuation, Witness::CredentialAttenuation(w)) => {
             check_credential_attenuation(w, ir)
         }
+        (PropertyClass::SecretCustodySoundness, Witness::SecretCustodySoundness(w)) => {
+            check_secret_custody_soundness(w, ir)
+        }
         _ => CheckOutcome::UnknownProperty,
     }
 }
@@ -1049,6 +1052,73 @@ fn check_credential_attenuation(
                 "axon-T893/axon-T894 ill-formed credential contract(s) (empty/invalid \
                  grants, or TTL outside the (0, 24h] ephemeral ceiling): {:?}",
                 actual.invalid_contracts
+            ),
+        };
+    }
+    CheckOutcome::Verified
+}
+
+/// §94.e — independent checker for [`PropertyClass::SecretCustodySoundness`].
+/// Re-derives the whole-program witness (secrets stores + recursive rotate
+/// walk + write-verb walk) and rejects on ANY of: a forged/stale witness, a
+/// rotate of an undeclared secrets store (`axon-T898`) or an undeclared tool
+/// (`axon-T899`), a missing/shape-invalid `class:` (`axon-T900`), or a write
+/// verb against a secrets store (`axon-T897`). The dynamic halves of
+/// `rotation_without_revelation` (CAS commit, reveal-only-into-the-exchange)
+/// are enforced fail-closed by the §94.d dispatcher + custody port — by
+/// construction of the wire, no term evaluates to a value — data-dependent,
+/// so deliberately NOT claimed here.
+fn check_secret_custody_soundness(
+    claimed: &super::proof_term::SecretCustodySoundnessWitness,
+    ir: &IRProgram,
+) -> CheckOutcome {
+    let actual = match super::generate::derive_secret_custody_witness(ir) {
+        Some(w) => w,
+        None => {
+            return CheckOutcome::Refuted {
+                reason: "no custody contract exists in this artifact (no `backend: \
+                         secrets` store, no `rotate` sites) — forged or stale proof"
+                    .to_string(),
+            }
+        }
+    };
+    if actual != *claimed {
+        return CheckOutcome::Refuted {
+            reason: "witness disagrees with artifact re-derivation (forged or stale proof)"
+                .to_string(),
+        };
+    }
+    if !actual.unresolved_stores.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axon-T898 `rotate` target(s) do not resolve to a declared `backend: \
+                 secrets` store: {:?}",
+                actual.unresolved_stores
+            ),
+        };
+    }
+    if !actual.unresolved_tools.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axon-T899 `rotate` tool(s) do not resolve to a declared `tool`: {:?}",
+                actual.unresolved_tools
+            ),
+        };
+    }
+    if !actual.invalid_classes.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axon-T900 secrets store(s) with a missing or shape-invalid `class:`: {:?}",
+                actual.invalid_classes
+            ),
+        };
+    }
+    if !actual.write_violations.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axon-T897 write verb(s) against a secrets store (custody is written \
+                 only by the seed API and the mediated rotate commit): {:?}",
+                actual.write_violations
             ),
         };
     }
