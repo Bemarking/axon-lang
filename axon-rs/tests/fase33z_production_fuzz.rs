@@ -1008,6 +1008,7 @@ async fn fuzz_s4_parity_determinism_stress() {
             &ir,
             flow_name,
             "stub",
+            "", // §Fase 95.f — tenant scope (empty = pre-fix behavior)
             &source_file,
             None,
             None,

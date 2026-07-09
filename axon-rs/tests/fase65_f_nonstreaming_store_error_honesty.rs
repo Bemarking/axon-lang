@@ -74,6 +74,7 @@ fn nonstreaming_persist_failure_is_surfaced_not_swallowed() {
         &ir,
         "HibernateSession",
         "stub",
+        "", // §Fase 95.f — tenant scope (empty = pre-fix behavior)
         "fase65_f.axon",
         None,
         None,
@@ -154,6 +155,7 @@ axonendpoint GreetEndpoint { public: true
         &ir,
         "Greet",
         "stub",
+        "", // §Fase 95.f — tenant scope (empty = pre-fix behavior)
         "fase65_f_clean.axon",
         None,
         None,

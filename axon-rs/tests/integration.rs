@@ -19001,6 +19001,7 @@ fn execute_server_flow_accepts_api_key_override() {
         &ir,
         "nonexistent",
         "stub",
+        "", // §Fase 95.f — tenant scope (empty = pre-fix behavior)
         "test.axon",
         None,
         None,
@@ -19021,6 +19022,7 @@ fn execute_server_flow_accepts_api_key_override() {
         &ir,
         "nonexistent",
         "stub",
+        "", // §Fase 95.f — tenant scope (empty = pre-fix behavior)
         "test.axon",
         Some("sk-test-123"),
         None,

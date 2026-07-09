@@ -93,6 +93,7 @@ fn persist_into_a_corpus_backed_store_still_resolves_and_names_its_failure() {
         &ir,
         "HibernateSession",
         "stub",
+        "", // §Fase 95.f — tenant scope (empty = pre-fix behavior)
         "fase65_f2.axon",
         None,
         Some(&body),

@@ -3211,6 +3211,18 @@ struct CollectedRun {
 async fn collect_via_dispatcher(
     flow: &crate::ir_nodes::IRFlow,
     backend: &str,
+    // §Fase 95.f — the VERIFIED tenant this flow runs under. Set on the
+    // DispatchCtx so every tenant-scoped runtime seam that takes an EXPLICIT
+    // tenant — the `axon::secret_custody` port (`rotate` enumeration/reveal,
+    // `retrieve` over a `backend: secrets` store, `tool { secret: }` /
+    // `secret_partition:` dispatch injection), the `mint` minter, session
+    // state — receives the caller's scoped tenant, never ambient state (the
+    // §93 explicit-tenant posture). Empty ⇒ those custody surfaces fail
+    // CLOSED (`require_tenant` refuses an unscoped call), which is correct
+    // for a CLI/test with no tenant scope. The endpoint passes the
+    // request-verified `route.tenant_id`; the daemon supervisor passes the
+    // daemon's scoped tenant.
+    tenant_id: &str,
     system_prompt: &str,
     // §Fase 91.b — the frame-level declared cognitive timezone (the program's
     // first `context` declaration's `now:` — the same first-context convention
@@ -3271,6 +3283,9 @@ async fn collect_via_dispatcher(
         crate::cancel_token::CancellationFlag::new(),
         tx,
     )
+    // §Fase 95.f — thread the verified tenant onto the ctx (was defaulted to
+    // empty, silently unscoping every explicit-tenant custody call).
+    .with_tenant_id(tenant_id)
     .with_store_registry(nav_dispatch.store_registry.clone())
     .with_mdn_corpora(nav_dispatch.corpora.clone())
     .with_mdn_adaptive(nav_dispatch.adaptive.clone())
@@ -3481,6 +3496,17 @@ pub fn execute_server_flow(
     ir: &crate::ir_nodes::IRProgram,
     flow_name: &str,
     backend: &str,
+    // §Fase 95.f — the VERIFIED tenant this flow executes under, set on the
+    // DispatchCtx so every explicit-tenant runtime seam (the
+    // `axon::secret_custody` port for `rotate`/`retrieve`-secrets/`secret:`
+    // injection, the `mint` minter, session state) runs under the caller's
+    // scoped tenant — never ambient (the §93 posture). The endpoint passes
+    // the request-verified `route.tenant_id`; the daemon supervisor passes
+    // the daemon's scoped tenant; a CLI/test with no scope passes `""`
+    // (custody then fails CLOSED — `require_tenant` refuses an unscoped
+    // call — which is correct). Before §95.f this was silently empty, so
+    // every custody call was refused as "unscoped" in real deployments.
+    tenant_id: &str,
     source_file: &str,
     api_key_override: Option<&str>,
     // §Fase 37.b (D1) — the parsed HTTP request body. The flow's
@@ -3807,6 +3833,7 @@ pub fn execute_server_flow(
                 collect_via_dispatcher(
                     flow,
                     backend,
+                    tenant_id,
                     &system_prompt,
                     // §Fase 91.b — the frame-level `now:` (first-context convention).
                     ir.contexts.first().and_then(|c| c.now_tz.clone()),
@@ -4859,6 +4886,7 @@ flow Recall(q: Text) -> Text {
             &ir,
             "Recall",
             "anthropic", // a real backend name (NOT "stub" → execute_real_async)
+            "acme",      // §Fase 95.f — tenant scope
             "kivi.axon",
             Some("dummy-key"), // no step actually calls the LLM
             Some(&body),
@@ -4936,6 +4964,7 @@ flow Recall(q: Text) -> Text {
         let collected = collect_via_dispatcher(
             flow,
             "stub",
+            "", // §Fase 95.f — tenant_id (test: no custody, empty scope ok)
             "",
             None, // §Fase 91.b — default_now_tz (test: no frame zone)
             None,
@@ -4984,6 +5013,7 @@ flow Echo(p: Text) -> Text {
             &ir,
             "Echo",
             "stub",
+            "acme", // §Fase 95.f — tenant scope
             "echo.axon",
             None,
             Some(&body),
@@ -5028,7 +5058,7 @@ flow Learn(tenant_id: Text, session_id_generic: Text) -> Text {
             "status": "ACTIVE"
         });
         let metrics = execute_server_flow(
-            &ir, "Learn", "stub", "learn.axon", None, Some(&payload),
+            &ir, "Learn", "stub", "acme", "learn.axon", None, Some(&payload),
             &std::collections::HashMap::new(), &std::collections::HashMap::new(),
             None, None, None, None, None,
             None, // §Fase 92.c — credential minter (test: none)
@@ -5073,6 +5103,7 @@ flow Producer(tenant_id: Text) -> Text {
             &ir,
             "Producer",
             "stub",
+            "acme", // §Fase 95.f — tenant scope
             "producer.axon",
             None,
             Some(&body),

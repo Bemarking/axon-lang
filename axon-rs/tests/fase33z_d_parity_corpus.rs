@@ -113,6 +113,7 @@ fn run_sync(source: &str, source_file: &str, flow_name: &str) -> Result<ServerRu
         &ir,
         flow_name,
         "stub",
+        "", // §Fase 95.f — tenant scope (empty = pre-fix behavior)
         source_file,
         None,
         None,

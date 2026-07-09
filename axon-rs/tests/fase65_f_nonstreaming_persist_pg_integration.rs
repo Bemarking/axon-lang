@@ -158,6 +158,7 @@ async fn nonstreaming_persist_commits_the_row() {
             &ir,
             "HibernateSession",
             "stub", // the LLM step degrades to "(stub)"; the persist is real SQL
+            "", // §Fase 95.f — tenant scope (empty = pre-fix behavior)
             "fase65_f_pg.axon",
             None,
             Some(&body),

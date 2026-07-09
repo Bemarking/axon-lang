@@ -2244,10 +2244,15 @@ fn server_execute(
     let ir = crate::ir_generator::IRGenerator::new().generate(&program);
 
     // Execute via runner
+    // §Fase 95.f — bridge the request-scoped tenant task-local to the
+    // executor's EXPLICIT tenant at the boundary, so custody / mint /
+    // session run under the verified tenant (never ambient downstream).
+    let tenant_id = crate::tenant::current_tenant_id();
     let run_res = crate::runner::execute_server_flow(
         &ir,
         flow_name,
         backend,
+        &tenant_id,
         source_file,
         api_key_override,
         request_body,

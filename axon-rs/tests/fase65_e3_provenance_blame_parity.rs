@@ -66,6 +66,7 @@ fn run() -> ServerRunnerMetrics {
         &ir,
         "DueDiligence",
         "stub",
+        "", // §Fase 95.f — tenant scope (empty = pre-fix behavior)
         "fase65_e3.axon",
         None,
         None,
