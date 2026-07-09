@@ -89,6 +89,33 @@ use sqlx::{Column, PgConnection, PgPool, Postgres, Row, TypeInfo};
 use crate::store::epistemic::EpistemicError;
 use crate::store::filter::{self, build_pg_where, FilterError, SqlValue};
 
+/// §Fase 96.a — is eager §37.x.j connection pinning enabled for this
+/// deployment? Read ONCE from `AXON_DB_POOLER_MODE` and cached (the pooler
+/// topology is fixed for a process's life):
+///   - `transaction` (default, or unset) → pinning ON (unchanged behavior;
+///     a transaction-mode pooler needs one connection held per flow so
+///     consecutive ops keep the same physical backend / prepared-statement
+///     session).
+///   - `session` | `direct` → pinning OFF. Each pool connection is already a
+///     coherent session, so store ops acquire per-op and RELEASE the
+///     connection between them — including across a flow's cognition (LLM)
+///     steps, so a slow flow never holds a scarce connection idle under a
+///     bounded pooler. Doctrine `connections_release_across_cognition`.
+pub(crate) fn connection_pinning_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        pinning_enabled_for_mode(&std::env::var("AXON_DB_POOLER_MODE").unwrap_or_default())
+    })
+}
+
+/// The pure decision (testable without the env/`OnceLock`): pinning is ON for
+/// every mode EXCEPT `session`/`direct` (case/space-insensitive). An unset or
+/// unrecognised value defaults to ON (`transaction`) — zero regression for
+/// existing deployments.
+fn pinning_enabled_for_mode(mode: &str) -> bool {
+    !matches!(mode.trim().to_ascii_lowercase().as_str(), "session" | "direct")
+}
+
 /// Upper bound on pooled connections per backend (D7 — bounded).
 const MAX_POOL_CONNECTIONS: u32 = 10;
 /// How long to wait to acquire a pooled connection before failing.
@@ -1421,6 +1448,26 @@ impl PostgresStoreBackend {
     pub async fn acquire_pin(
         &self,
     ) -> Result<sqlx::pool::PoolConnection<sqlx::Postgres>, StoreError> {
+        // §Fase 96.a — under a SESSION pooler or a DIRECT connection, every pool
+        // connection is already a coherent, stable session, so the §37.x.j pin
+        // (one connection held for the WHOLE flow so ops route through the same
+        // physical backend) is REDUNDANT — and harmful: it keeps a scarce
+        // connection checked out across the flow's cognition (LLM) steps,
+        // starving the pool under load. Refuse the pin so every
+        // LAZY caller (`if let Ok(p) = acquire_pin()`) silently falls to its
+        // per-op `StoreConn::Pool` path (acquire → op → release), releasing the
+        // connection across cognition. The EAGER loops skip acquisition entirely
+        // (they'd otherwise log a misleading warn). Only a TRANSACTION-mode
+        // pooler (the default) needs the pin. Doctrine
+        // `connections_release_across_cognition`.
+        if !connection_pinning_enabled() {
+            return Err(StoreError::Connect {
+                source: "connection pinning disabled (AXON_DB_POOLER_MODE=session|direct) \
+                         — store ops acquire per-op so the connection releases across \
+                         cognition steps"
+                    .to_string(),
+            });
+        }
         self.pool
             .acquire()
             .await
@@ -1983,6 +2030,22 @@ impl PostgresStoreBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// §Fase 96.a — the pooler-mode pin decision (`connections_release_across_cognition`).
+    #[test]
+    fn pinning_mode_gate() {
+        // Default / transaction / unrecognised → pin ON (zero regression).
+        assert!(pinning_enabled_for_mode(""));
+        assert!(pinning_enabled_for_mode("transaction"));
+        assert!(pinning_enabled_for_mode("TRANSACTION"));
+        assert!(pinning_enabled_for_mode("pgbouncer-txn"));
+        // Session / direct → pin OFF (release connections across cognition),
+        // case- and space-insensitive.
+        assert!(!pinning_enabled_for_mode("session"));
+        assert!(!pinning_enabled_for_mode(" Session "));
+        assert!(!pinning_enabled_for_mode("direct"));
+        assert!(!pinning_enabled_for_mode("DIRECT"));
+    }
 
     fn txt(s: &str) -> SqlValue {
         SqlValue::Text(s.to_string())

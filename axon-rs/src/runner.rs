@@ -3821,12 +3821,18 @@ pub fn execute_server_flow(
                         >,
                     >,
                 > = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
-                for store_name in &needed_pg_stores {
-                    if let Ok(crate::store::registry::StoreHandle::Postgres(backend_pool)) =
-                        store_registry.resolve(store_name)
-                    {
-                        if let Ok(conn) = backend_pool.acquire_pin().await {
-                            pinned.lock().unwrap().insert(store_name.clone(), conn);
+                // §Fase 96.a — skip the eager pin entirely under a session/direct
+                // pooler (store ops then acquire per-op, releasing across
+                // cognition). `acquire_pin` also refuses in that mode, but
+                // skipping here avoids the loop's work + a misleading warn.
+                if crate::store::postgres_backend::connection_pinning_enabled() {
+                    for store_name in &needed_pg_stores {
+                        if let Ok(crate::store::registry::StoreHandle::Postgres(backend_pool)) =
+                            store_registry.resolve(store_name)
+                        {
+                            if let Ok(conn) = backend_pool.acquire_pin().await {
+                                pinned.lock().unwrap().insert(store_name.clone(), conn);
+                            }
                         }
                     }
                 }
@@ -3995,7 +4001,13 @@ pub fn execute_server_flow(
             // lifetime is bounded by `block_on_store` which is
             // bounded by the enclosing function — so the borrows
             // outlive the future safely.
-            for store_name in &needed_pg_stores {
+            // §Fase 96.a — the filter yields nothing under a session/direct
+            // pooler, so the eager pin loop is skipped (no acquire, no
+            // misleading warn); store ops then release across cognition.
+            for store_name in needed_pg_stores
+                .iter()
+                .filter(|_| crate::store::postgres_backend::connection_pinning_enabled())
+            {
                 match store_registry.resolve(store_name) {
                     Ok(crate::store::registry::StoreHandle::Postgres(backend_pool)) => {
                         match backend_pool.acquire_pin().await {

@@ -1387,6 +1387,10 @@ Body prose.
             // borrowed authority to spend (parametric injection) without
             // reading it or leaving the tool's class (the §94 extension).
             (ReferenceKind::Logic, "selection_without_revelation"),
+            // §Fase 96 — connections release across cognition: a pooled DB
+            // connection is never held idle across an LLM step (pooler-aware
+            // pinning; the resource-lifetime dual of dispatch_vs_cognition).
+            (ReferenceKind::Logic, "connections_release_across_cognition"),
             (ReferenceKind::Compliance, "hipaa"),
             (ReferenceKind::Compliance, "gdpr"),
             (ReferenceKind::Compliance, "pci_dss"),
@@ -1432,7 +1436,8 @@ Body prose.
             cat.reference_count_of(ReferenceKind::Logic),
             // §Fase 94: 14 → 15 with `rotation_without_revelation`.
             // §Fase 95: 15 → 16 with `selection_without_revelation`.
-            16,
+            // §Fase 96: 16 → 17 with `connections_release_across_cognition`.
+            17,
             "logic family count drift"
         );
         assert_eq!(

@@ -319,7 +319,13 @@ pub async fn run_streaming_via_dispatcher(
                 }
             }
         }
-        for store_name in &needed {
+        // §Fase 96.a — the filter yields nothing under a session/direct pooler,
+        // so the streaming path's eager pin is skipped (store ops release across
+        // cognition; no misleading warn). Doctrine `connections_release_across_cognition`.
+        for store_name in needed
+            .iter()
+            .filter(|_| crate::store::postgres_backend::connection_pinning_enabled())
+        {
             match store_registry.resolve(store_name) {
                 Ok(crate::store::registry::StoreHandle::Postgres(backend)) => {
                     match backend.acquire_pin().await {
