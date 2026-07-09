@@ -2268,6 +2268,28 @@ pub fn derive_secret_custody_witness(
             &mut write_violations,
         );
     }
+    // §Fase 95.a — re-derive the `secret_partition:` laws (`axon-T903`)
+    // from the IR's tool specs. The `selection_without_revelation`
+    // containment guarantee holds ONLY if every partitioned tool's
+    // discriminator is a required `String` parameter it declares — this
+    // is the deploy-gate's independent check of that (a hand-edited IR
+    // that points a partition at a ghost/non-string/absent parameter, or
+    // sets one with no `secret:`, or on a technician tool, is REFUTED).
+    let partition_violations: Vec<String> = ir
+        .tools
+        .iter()
+        .filter(|t| !t.secret_partition.is_empty())
+        .filter(|t| {
+            let no_secret = t.secret.is_empty();
+            let technician = t.target.is_some();
+            let param_ok = t
+                .parameters
+                .iter()
+                .any(|p| p.name == t.secret_partition && p.type_name == "String" && !p.optional);
+            no_secret || technician || !param_ok
+        })
+        .map(|t| t.name.clone())
+        .collect();
     Some(super::proof_term::SecretCustodySoundnessWitness {
         stores,
         rotates,
@@ -2275,6 +2297,7 @@ pub fn derive_secret_custody_witness(
         unresolved_tools,
         invalid_classes,
         write_violations,
+        partition_violations,
     })
 }
 

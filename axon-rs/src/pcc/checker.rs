@@ -1062,8 +1062,10 @@ fn check_credential_attenuation(
 /// Re-derives the whole-program witness (secrets stores + recursive rotate
 /// walk + write-verb walk) and rejects on ANY of: a forged/stale witness, a
 /// rotate of an undeclared secrets store (`axon-T898`) or an undeclared tool
-/// (`axon-T899`), a missing/shape-invalid `class:` (`axon-T900`), or a write
-/// verb against a secrets store (`axon-T897`). The dynamic halves of
+/// (`axon-T899`), a missing/shape-invalid `class:` (`axon-T900`), a write
+/// verb against a secrets store (`axon-T897`), or an ill-formed
+/// `secret_partition:` (`axon-T903`, §95 — the injection-key class-containment
+/// law). The dynamic halves of
 /// `rotation_without_revelation` (CAS commit, reveal-only-into-the-exchange)
 /// are enforced fail-closed by the §94.d dispatcher + custody port — by
 /// construction of the wire, no term evaluates to a value — data-dependent,
@@ -1119,6 +1121,18 @@ fn check_secret_custody_soundness(
                 "axon-T897 write verb(s) against a secrets store (custody is written \
                  only by the seed API and the mediated rotate commit): {:?}",
                 actual.write_violations
+            ),
+        };
+    }
+    if !actual.partition_violations.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axon-T903 tool(s) with an ill-formed `secret_partition:` — a partition \
+                 must name a required `String` parameter of the SAME tool, alongside a \
+                 `secret:`, and never on a technician tool. The \
+                 `selection_without_revelation` class-containment guarantee (the resolved \
+                 dispatch key never leaves the tool's class) rests on this: {:?}",
+                actual.partition_violations
             ),
         };
     }

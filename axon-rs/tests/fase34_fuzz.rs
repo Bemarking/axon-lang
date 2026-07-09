@@ -248,6 +248,7 @@ fn fuzz_tool_entry(rng: &mut Lcg) -> ToolEntry {
         effect_row,
         parameters: Vec::new(),
         secret: String::new(),
+        secret_partition: String::new(),
         source: ToolSource::Program,
         is_streaming,
     }

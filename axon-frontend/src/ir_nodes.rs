@@ -761,6 +761,14 @@ pub struct IRToolSpec {
     /// (IR-SHA stability).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub secret: String,
+    /// §Fase 95.a — the `secret_partition:` parameter name whose runtime
+    /// value is appended as a single segment to `secret` at dispatch
+    /// (`selection_without_revelation`). Elided when empty, so every §94 and
+    /// pre-§94 tool serializes byte-identically (IR-SHA stability). The
+    /// class prefix lives in `secret`; this only names the dynamic segment
+    /// source — no value ever rides the IR.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub secret_partition: String,
     pub effect_row: Vec<String>,
     /// §Fase 84.b — Remote Hands. All three fields are `skip_serializing_if`
     /// so a program using none of them serialises **byte-identically** to the

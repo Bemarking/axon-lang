@@ -1122,6 +1122,25 @@ pub struct SecretCustodySoundnessWitness {
     /// custody is written only by the seed API and the mediated `rotate`
     /// commit). Empty for a verifying proof.
     pub write_violations: Vec<(String, String, String)>,
+    /// §Fase 95.a — tool names whose `secret_partition:` is ill-formed
+    /// (`axon-T903`, re-derived from the IR): a partition without a
+    /// `secret:`, a partition naming a parameter the tool does not
+    /// declare (or one that is not a required `String`), or a partition
+    /// on a `target:`-bound technician tool. The `selection_without_revelation`
+    /// containment guarantee — the resolved dispatch key never leaves the
+    /// tool's compile-time class — rests on the partition being a bounded,
+    /// caller-supplied `String` segment; this list is the deploy-gate's
+    /// independent re-derivation of that, so a hand-edited IR that smuggles
+    /// a partition pointing at a ghost/non-string parameter is REFUTED
+    /// before it mounts. Empty for a verifying proof.
+    ///
+    /// `#[serde(default)]` so a proof emitted by a pre-§95 axon-lang
+    /// (no partition concept) still deserializes — the absent field
+    /// defaults to empty, which re-derives equal for any program with no
+    /// partitions (a §95-partitioned program has no pre-§95 proof to skew
+    /// against). Forward-compatible verification across the version bump.
+    #[serde(default)]
+    pub partition_violations: Vec<String>,
 }
 
 /// The property-specific witness. Tagged so the JSON is self-describing

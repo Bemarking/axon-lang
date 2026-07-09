@@ -1,0 +1,42 @@
+---
+name: secret_partition_multitenant
+title: Parametric secret injection — one tool, N sub-tenants, one axon-tenant
+summary: "`tool { secret: <class>  secret_partition: <param> }` (§95): the multi-sub-tenant consumption shape. A SaaS runs as ONE axon-tenant while N business customers each connect their own CRM; each customer's OAuth bundle is custodied under `crm.hubspot.<tenant_id>`. The action tool names one of its own `String` parameters as the partition, so `use CrmCrearContacto(tenant_id = …)` resolves the per-customer custody key and injects that value at dispatch. The class prefix is a compile-time literal and the segment is charset-bounded, so the resolved key can never leave the tool's class — `selection_without_revelation`."
+topic: data
+primitives:
+  - tool
+  - flow
+---
+
+// The multi-sub-tenant shape: one axon-tenant serves N business
+// customers, each with their OWN connected CRM. Their OAuth
+// bundles are custodied under keys `crm.hubspot.<tenant_id>` (seeded by
+// the adopter's OAuth callback via POST /tenant/secrets, one row per
+// customer). §94 lets a daemon enumerate + rotate the whole `crm.*`
+// class; §95 lets a single tool CONSUME the right customer's credential.
+
+// A vendor ACTION tool. `secret: crm.hubspot` is the class key (a
+// compile-time literal); `secret_partition: tenant_id` names one of this
+// tool's OWN `String` parameters whose value becomes a single appended
+// key segment at dispatch. A `use CrmCrearContacto(tenant_id = "acme", …)`
+// resolves the custody key `crm.hubspot.acme` and injects its value under
+// the reserved `axon_secret` field — the flow never touches it, and the
+// segment charset (`[a-z0-9_-]`, no dot) makes the resolved key provably
+// in-class: it can never reach `crm.*` at large or another class like
+// `llm.*` (axon-T903 pins the partition to a declared String parameter).
+tool CrmCrearContacto {
+    secret: crm.hubspot
+    secret_partition: tenant_id
+    parameters: { tenant_id: String, nombre: String, email: String }
+    output_type: String
+}
+
+// The business tenant travels as an ordinary flow parameter (resolved by
+// the adopter's io-layer from the end-user's API key / JWT — the same
+// trust boundary that already decides which tenant a request is for).
+// Consuming the per-customer credential is just calling the tool; the
+// selection is invisible to cognition and the value never binds.
+flow CrearContacto(tenant_id: String, nombre: String, email: String) -> String {
+    use CrmCrearContacto(tenant_id = tenant_id, nombre = nombre, email = email)
+    return CrmCrearContacto.output
+}

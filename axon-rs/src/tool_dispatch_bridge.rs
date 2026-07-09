@@ -401,6 +401,7 @@ mod tests {
             effect_row,
             parameters: Vec::new(),
             secret: String::new(),
+            secret_partition: String::new(),
             source: ToolSource::Program,
             is_streaming,
         }

@@ -95,6 +95,7 @@ fn tampering_the_canonical_artifact_digest_is_rejected() {
         parameters: Vec::new(),
         output_type: None,
         secret: String::new(),
+        secret_partition: String::new(),
         effect_row: Vec::new(),
         target: None,
         risk: None,

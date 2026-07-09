@@ -2419,6 +2419,7 @@ impl Parser {
             parameters: Vec::new(),
             output_type: None,
             secret: String::new(),
+            secret_partition: String::new(),
             target: None,
             risk: None,
             argv: Vec::new(),
@@ -2464,6 +2465,14 @@ impl Parser {
                 // dispatch (`rotation_without_revelation`). Key shape +
                 // technician exclusion are `axon-T902` (type-checker).
                 "secret" => node.secret = self.parse_dotted_identifier()?,
+                // §Fase 95.a — `secret_partition:` names one of this tool's
+                // own `parameters:` (a bare identifier, NOT dotted — it is a
+                // parameter reference, not a key). Its runtime value becomes
+                // a single appended key segment at dispatch. The membership +
+                // `String`-type + technician laws are `axon-T903`.
+                "secret_partition" => {
+                    node.secret_partition = self.consume_any_ident_or_kw()?.value
+                }
                 // §Fase 84.b — Remote Hands technician fields.
                 "target" => node.target = Some(self.consume_any_ident_or_kw()?.value),
                 "risk" => node.risk = Some(self.consume_any_ident_or_kw()?.value),

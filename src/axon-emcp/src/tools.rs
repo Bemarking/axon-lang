@@ -1066,15 +1066,15 @@ mod tests {
         assert_eq!(v["isError"], false);
         let payload: Value =
             serde_json::from_str(v["content"][0]["text"].as_str().unwrap()).unwrap();
-        // Phase 9 ships 23 curated examples (5 composition [+ §58.h
+        // Phase 9 ships 24 curated examples (5 composition [+ §58.h
         // tool_structured_args] + §Fase 51 quant_feature_map + §Fase 91
         // temporal_cognitive_context + 2 session_types + 1 shields +
-        // 1 effects + 1 streaming + 3 data [+ §Fase 94
-        // secret_custody_rotation] + 2 agents + 3 endpoints
-        // [+ §Fase 83 cors_named_origin_policy + §Fase 92
-        // widget_ephemeral_credential] + 1 memory + 2 validation).
-        assert_eq!(payload["count"], 23);
-        assert_eq!(payload["examples"].as_array().unwrap().len(), 23);
+        // 1 effects + 1 streaming + 4 data [+ §Fase 94
+        // secret_custody_rotation + §Fase 95 secret_partition_multitenant]
+        // + 2 agents + 3 endpoints [+ §Fase 83 cors_named_origin_policy +
+        // §Fase 92 widget_ephemeral_credential] + 1 memory + 2 validation).
+        assert_eq!(payload["count"], 24);
+        assert_eq!(payload["examples"].as_array().unwrap().len(), 24);
         // Listing path omits `source` — keeps the payload bounded.
         let first = &payload["examples"][0];
         assert!(first["name"].is_string());

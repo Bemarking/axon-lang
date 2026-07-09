@@ -71,6 +71,7 @@ fn tool_spec(name: &str, provider: &str, runtime: &str, secret: &str) -> IRToolS
         parameters: Vec::new(),
         output_type: None,
         secret: secret.to_string(),
+        secret_partition: String::new(),
         effect_row: Vec::new(),
         target: None,
         risk: None,

@@ -29,6 +29,7 @@ fn tool(name: &str, provider: &str, runtime: &str) -> IRToolSpec {
         parameters: Vec::new(),
         output_type: None,
         secret: String::new(),
+        secret_partition: String::new(),
         effect_row: Vec::new(),
         target: None,
         risk: None,

@@ -2729,6 +2729,7 @@ fn tool_registry_program_tool_stub() {
         effect_row: Vec::new(),
         parameters: Vec::new(),
         secret: String::new(),
+        secret_partition: String::new(),
         source: ToolSource::Program,
         is_streaming: false,
     });
@@ -2765,6 +2766,7 @@ fn tool_registry_from_ir_specs() {
             parameters: Vec::new(),
             output_type: None,
             secret: String::new(),
+            secret_partition: String::new(),
             effect_row: Vec::new(),
             target: None,
             risk: None,
@@ -3116,6 +3118,7 @@ fn http_tool_dispatch_via_registry() {
         effect_row: vec!["network".to_string()],
         parameters: Vec::new(),
         secret: String::new(),
+        secret_partition: String::new(),
         source: ToolSource::Program,
         is_streaming: false,
     });
@@ -3145,6 +3148,7 @@ fn http_tool_empty_url_fails() {
         effect_row: vec![],
         parameters: Vec::new(),
         secret: String::new(),
+        secret_partition: String::new(),
         source: ToolSource::Program,
         is_streaming: false,
     };
@@ -3170,6 +3174,7 @@ fn http_tool_invalid_scheme_fails() {
         effect_row: vec![],
         parameters: Vec::new(),
         secret: String::new(),
+        secret_partition: String::new(),
         source: ToolSource::Program,
         is_streaming: false,
     };
@@ -3197,6 +3202,7 @@ fn http_tool_no_longer_falls_through() {
         effect_row: vec!["network".to_string()],
         parameters: Vec::new(),
         secret: String::new(),
+        secret_partition: String::new(),
         source: ToolSource::Program,
         is_streaming: false,
     });
@@ -3318,6 +3324,7 @@ fn emcp_dispatch_via_registry() {
         effect_row: vec!["network".to_string(), "epistemic:speculate".to_string()],
         parameters: Vec::new(),
         secret: String::new(),
+        secret_partition: String::new(),
         source: ToolSource::Program,
         is_streaming: false,
     });
@@ -3407,6 +3414,7 @@ fn emcp_mcp_no_longer_falls_through() {
         effect_row: vec!["network".to_string(), "io".to_string(), "epistemic:speculate".to_string()],
         parameters: Vec::new(),
         secret: String::new(),
+        secret_partition: String::new(),
         source: ToolSource::Program,
         is_streaming: false,
     });

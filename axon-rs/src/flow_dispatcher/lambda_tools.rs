@@ -234,6 +234,9 @@ async fn dispatch_use_tool_real(
     let entry = registry.get(&node.tool_name)?;
     let parameters = entry.parameters.clone();
     let secret_key = entry.secret.clone();
+    // §Fase 95.a — the partition parameter name (`selection_without_revelation`).
+    // Empty ⇒ the §94 static-key path, unchanged.
+    let secret_partition = entry.secret_partition.clone();
 
     // Assemble the request argument: a structured JSON body for the
     // keyword form (D2), or the interpolated single argument for the
@@ -285,16 +288,10 @@ async fn dispatch_use_tool_real(
                 node.tool_name, secret_key
             ));
         };
-        let revealed = match custody.reveal_for_dispatch(&ctx.tenant_id, &secret_key).await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                return refuse(format!(
-                    "tool '{}' secret injection refused by custody: {e}",
-                    node.tool_name
-                ))
-            }
-        };
+        // The body must be a JSON object BEFORE the reveal now: §95 reads the
+        // partition segment out of it to resolve the custody key, and the
+        // reveal must target the resolved (per-sub-tenant) key, not the class
+        // key. Non-structured argument ⇒ fail closed (unchanged §94 reason).
         let mut body: serde_json::Value = match serde_json::from_str(&argument) {
             Ok(serde_json::Value::Object(map)) => serde_json::Value::Object(map),
             _ => {
@@ -304,6 +301,53 @@ async fn dispatch_use_tool_real(
                      `use {}(k = v, …)` keyword form (the body must be a JSON \
                      object to carry the reserved `axon_secret` field)",
                     node.tool_name, node.tool_name
+                ))
+            }
+        };
+        // §Fase 95.a — resolve the custody KEY (`selection_without_revelation`).
+        // With no partition this is the §94 static class key. With a partition,
+        // the caller-supplied value of that parameter is appended as ONE key
+        // segment: `crm.hubspot` + `.` + `acme` → `crm.hubspot.acme`. The
+        // segment is charset-validated to a single dot-free lowercase run, so
+        // the resolved key can NEVER escape the tool's declared class (no `.`
+        // to widen the prefix, no `/`/`:` to reach a URL). Fail-closed at every
+        // fork: a missing, non-string, empty, or ill-charactered discriminator
+        // refuses the dispatch with a witness — a program NEVER spends the
+        // wrong tenant's credential, and never reaches for a key outside class.
+        let resolved_key = if secret_partition.is_empty() {
+            secret_key.clone()
+        } else {
+            let segment = match body.get(&secret_partition) {
+                Some(serde_json::Value::String(s)) => s.clone(),
+                Some(_) | None => {
+                    return refuse(format!(
+                        "tool '{}' declares `secret_partition: {}` but the call did \
+                         not bind that parameter to a string value — the partition \
+                         segment is unresolved, so the per-sub-tenant secret key \
+                         cannot be addressed (injection fails closed)",
+                        node.tool_name, secret_partition
+                    ))
+                }
+            };
+            if segment.is_empty() || !is_key_segment(&segment) {
+                return refuse(format!(
+                    "tool '{}' partition value for `{}` is not a valid key segment \
+                     ('{}') — a partition segment is a single non-empty run of \
+                     `[a-z0-9_-]` (no `.`, no `/`, no `:`, no uppercase) so the \
+                     resolved custody key can never leave the `{}` class. \
+                     Injection fails closed.",
+                    node.tool_name, secret_partition, segment, secret_key
+                ));
+            }
+            format!("{secret_key}.{segment}")
+        };
+        let revealed = match custody.reveal_for_dispatch(&ctx.tenant_id, &resolved_key).await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                return refuse(format!(
+                    "tool '{}' secret injection refused by custody: {e}",
+                    node.tool_name
                 ))
             }
         };
@@ -332,6 +376,18 @@ async fn dispatch_use_tool_real(
             tool_name: node.tool_name.clone(),
         }),
     }
+}
+
+/// §Fase 95.a — is `s` a single custody-key SEGMENT? A segment is a
+/// non-empty run of `[a-z0-9_-]` — deliberately a SUBSET of the T850 key
+/// charset (`[a-z0-9_.-]`) with the dot REMOVED: the dot is the class
+/// separator, so a partition segment that contained one could widen the
+/// resolved key past the tool's compile-time-pinned class. No `/`, no `:`,
+/// no uppercase either — a URL or credential can never pass as a segment.
+/// (Emptiness is checked by the caller so the refusal message can name it.)
+fn is_key_segment(s: &str) -> bool {
+    s.bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
 }
 
 // ────────────────────────────────────────────────────────────────────

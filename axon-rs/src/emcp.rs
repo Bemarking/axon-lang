@@ -828,6 +828,7 @@ impl Tool for McpStreamingTool {
             // delegate; no typed input schema needed on this path.
             parameters: Vec::new(),
             secret: String::new(),
+            secret_partition: String::new(),
             source: crate::tool_registry::ToolSource::Program,
             is_streaming: false,
         };
@@ -1145,6 +1146,7 @@ mod tests {
             effect_row: vec!["network".to_string(), "epistemic:speculate".to_string()],
             parameters: Vec::new(),
             secret: String::new(),
+            secret_partition: String::new(),
             source: ToolSource::Program,
             // §Fase 34.c — MCP tools default to non-streaming; effect_row
             // carries `network` + `epistemic:speculate` but no `stream:`

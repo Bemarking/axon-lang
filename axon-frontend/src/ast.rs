@@ -1847,6 +1847,23 @@ pub struct ToolDefinition {
     /// `target:`-bound technician tool (execve dispatch, no HTTP request
     /// to inject into) — declaring both is `axon-T902`.
     pub secret: String,
+    /// §Fase 95.a — the `secret_partition:` field (doctrine
+    /// `selection_without_revelation`): the name of one of THIS tool's own
+    /// `parameters:` whose runtime value is appended as a single key
+    /// SEGMENT to `secret:` at dispatch, so one tool serves N sub-tenants
+    /// multiplexed under one axon-tenant. With `secret: crm.hubspot` and
+    /// `secret_partition: tenant_id`, a `use CrmCrearContacto(tenant_id =
+    /// "acme", …)` resolves the custody key `crm.hubspot.acme`. The
+    /// `secret:` class prefix is pinned at compile time (a literal); only
+    /// this bounded segment is dynamic — the resolved key can NEVER leave
+    /// the tool's declared class (the segment is charset-checked to a
+    /// single dot-free run at dispatch, fail-closed). Empty = the §94
+    /// static-key behaviour, unchanged. `axon-T903` governs its laws:
+    /// requires a non-empty `secret:`, must name a `String` parameter of
+    /// this tool, forbidden on a technician tool. The value SELECTED is
+    /// still never revealed to cognition — `secret_partition` chooses
+    /// WHICH borrowed authority to spend, never reads it.
+    pub secret_partition: String,
     /// §Fase 84.b — Remote Hands. The `socket` this technician tool dispatches
     /// over: a program acting on a real machine dials `axon` as a `socket`
     /// client, and a `target:`-bound tool call sends its rendered argv down

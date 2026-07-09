@@ -290,6 +290,7 @@ mod tests {
             parameters: Vec::new(),
             output_type: None,
             secret: String::new(),
+            secret_partition: String::new(),
             effect_row: effects.iter().map(|e| e.to_string()).collect(),
             target: None,
             risk: None,

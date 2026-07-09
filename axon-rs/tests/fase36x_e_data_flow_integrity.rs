@@ -70,6 +70,7 @@ fn echo_tool(name: &str) -> ToolEntry {
         effect_row: vec!["stream:drop_oldest".to_string()],
         parameters: Vec::new(),
         secret: String::new(),
+        secret_partition: String::new(),
         source: ToolSource::Program,
         is_streaming: true,
     }

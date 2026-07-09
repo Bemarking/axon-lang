@@ -61,8 +61,9 @@ flow RotateExpiring() -> Unit {
 // (cognition); the runtime performs every custody-touching act
 // (dispatch) — `dispatch_vs_cognition`, applied to borrowed authority.
 daemon TokenKeeper {
+    requires: [secret.rotate]
     listen "cron:*/5 * * * *" as tick {
-        run RotateExpiring
+        run RotateExpiring()
     }
 }
 

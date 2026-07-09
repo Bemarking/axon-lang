@@ -59,6 +59,7 @@ fn stub_entry(name: &str, parameters: Vec<(String, String)>) -> ToolEntry {
         effect_row: Vec::new(),
         parameters,
         secret: String::new(),
+        secret_partition: String::new(),
         source: ToolSource::Program,
         is_streaming: false,
     }
@@ -76,6 +77,7 @@ fn http_entry(name: &str, url: &str, parameters: Vec<(String, String)>) -> ToolE
         effect_row: vec!["network".to_string()],
         parameters,
         secret: String::new(),
+        secret_partition: String::new(),
         source: ToolSource::Program,
         is_streaming: false,
     }
@@ -298,6 +300,7 @@ async fn llm_routed_provider_falls_back_to_placeholder() {
         effect_row: Vec::new(),
         parameters: Vec::new(),
         secret: String::new(),
+        secret_partition: String::new(),
         source: ToolSource::Program,
         is_streaming: false,
     });

@@ -2173,6 +2173,91 @@ impl<'a> TypeChecker<'a> {
                 );
             }
         }
+        // §Fase 95.a (axon-T903) — the `secret_partition:` laws (doctrine
+        // `selection_without_revelation`). Inert when unset (every §94 and
+        // pre-§94 tool). The partition names one of THIS tool's own
+        // parameters whose value is appended as a single key SEGMENT to
+        // `secret:` at dispatch — so the resolved custody key stays inside
+        // the tool's compile-time-pinned class, and only a bounded,
+        // caller-supplied discriminator is dynamic.
+        if !node.secret_partition.is_empty() {
+            // (a) A partition without a `secret:` selects nothing — the
+            // dynamic segment has no class key to extend.
+            if node.secret.is_empty() {
+                self.emit(
+                    format!(
+                        "axon-T903 tool '{}' declares `secret_partition: {}` but no \
+                         `secret:` — the partition appends a per-call segment to the \
+                         secret class key, so a `secret:` (e.g. `crm.hubspot`) must be \
+                         present for it to extend.",
+                        node.name, node.secret_partition
+                    ),
+                    &node.loc,
+                );
+            }
+            // (b) Technician exclusion — inherits the `secret:` reason (no
+            // request body to inject into); stated on the partition too so
+            // the diagnostic points at the right field even when `secret:`
+            // itself is absent.
+            if node.target.is_some() {
+                self.emit(
+                    format!(
+                        "axon-T903 tool '{}' declares `secret_partition:` on a \
+                         `target:`-bound technician tool — argv dispatch has no request \
+                         body to inject a partitioned secret into (the `axon-T902` \
+                         `secret:` exclusion, applied to its selector).",
+                        node.name
+                    ),
+                    &node.loc,
+                );
+            }
+            // (c) The partition MUST name one of this tool's own declared
+            // `parameters:` — the value is a caller-supplied argument bound
+            // at the `use` site, never ambient state, an LLM output, or a
+            // free identifier. Locally checkable: the tool owns its schema.
+            match node
+                .parameters
+                .iter()
+                .find(|p| p.name == node.secret_partition)
+            {
+                None => {
+                    self.emit(
+                        format!(
+                            "axon-T903 tool '{}' declares `secret_partition: {}` but has \
+                             no parameter named '{}'. The partition selects the custody \
+                             entry by an argument the CALLER passes to this tool — it \
+                             must be one of the tool's declared `parameters:` (add \
+                             `{}: String` to `parameters:`).",
+                            node.name,
+                            node.secret_partition,
+                            node.secret_partition,
+                            node.secret_partition
+                        ),
+                        &node.loc,
+                    );
+                }
+                // (d) That parameter must be a required `String` — it becomes
+                // exactly ONE key segment, so a numeric/optional/generic type
+                // (which could be absent or non-scalar) is unrepresentable.
+                Some(p) if p.type_expr.name != "String" || p.type_expr.optional => {
+                    self.emit(
+                        format!(
+                            "axon-T903 tool '{}' partition parameter '{}' has type '{}{}' \
+                             — a `secret_partition` becomes one key segment, so it must \
+                             be a required `String` (not optional, not numeric, not \
+                             generic). A missing or non-scalar discriminator cannot \
+                             address a custody entry.",
+                            node.name,
+                            node.secret_partition,
+                            p.type_expr.name,
+                            if p.type_expr.optional { "?" } else { "" }
+                        ),
+                        &node.loc,
+                    );
+                }
+                Some(_) => {}
+            }
+        }
         if let Some(v) = node.max_results {
             if v <= 0 {
                 self.emit(

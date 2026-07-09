@@ -53,6 +53,16 @@ pub struct ToolEntry {
     /// key against the `SecretCustody` port — fail-closed when the key is
     /// set and no custody is attached.
     pub secret: String,
+    /// §Fase 95.a — the `secret_partition:` parameter name
+    /// (`selection_without_revelation`). Populated from
+    /// `IRToolSpec.secret_partition`. When non-empty, the dispatch handlers
+    /// read this parameter's resolved value from the structured tool body,
+    /// validate it to a single dot-free key segment, and append it to
+    /// [`secret`] before the custody lookup — so one tool serves N
+    /// sub-tenants while the resolved key never leaves `secret`'s class.
+    /// Empty = the §94 static-key behaviour. Meaningless without `secret`
+    /// (`axon-T903`); inert for the built-ins.
+    pub secret_partition: String,
     pub source: ToolSource,
     /// §Fase 34.c (v1.29.0) — Whether this tool is a stream
     /// producer. Auto-derived at registration time from
@@ -177,6 +187,7 @@ impl ToolRegistry {
                 // they accept the legacy positional `on <arg>` form.
                 parameters: Vec::new(),
                 secret: String::new(),
+                secret_partition: String::new(),
                 source: ToolSource::Builtin,
                 // §Fase 34.c — Calculator declares `compute` effect only.
                 // No stream effect → is_streaming = false.
@@ -197,6 +208,7 @@ impl ToolRegistry {
                 // §Fase 58.f.2 — see Calculator: no typed input schema.
                 parameters: Vec::new(),
                 secret: String::new(),
+                secret_partition: String::new(),
                 source: ToolSource::Builtin,
                 // §Fase 34.c — DateTimeTool declares `read` effect only.
                 is_streaming: false,
@@ -237,6 +249,9 @@ impl ToolRegistry {
                     parameters,
                     // §Fase 94.c — the dispatch-injection secret KEY.
                     secret: spec.secret.clone(),
+                    // §Fase 95.a — the partition parameter (empty for every
+                    // pre-§95 tool; the value never rides the registry).
+                    secret_partition: spec.secret_partition.clone(),
                     source: ToolSource::Program,
                     is_streaming,
                 },
@@ -428,6 +443,7 @@ mod tests {
                 parameters: Vec::new(),
                 output_type: None,
                 secret: String::new(),
+                secret_partition: String::new(),
                 effect_row: vec!["stream:drop_oldest".to_string()],
                 target: None,
                 risk: None,
@@ -450,6 +466,7 @@ mod tests {
                 parameters: Vec::new(),
                 output_type: None,
                 secret: String::new(),
+                secret_partition: String::new(),
                 effect_row: vec!["compute".to_string()],
                 target: None,
                 risk: None,
@@ -504,6 +521,7 @@ mod tests {
             effect_row: Vec::new(),
             parameters: Vec::new(),
             secret: String::new(),
+            secret_partition: String::new(),
             source: ToolSource::Program,
             is_streaming: false,
         });
@@ -537,6 +555,7 @@ mod tests {
                 parameters: Vec::new(),
                 output_type: None,
                 secret: String::new(),
+                secret_partition: String::new(),
                 effect_row: Vec::new(),
                 target: None,
                 risk: None,
@@ -559,6 +578,7 @@ mod tests {
                 parameters: Vec::new(),
                 output_type: None,
                 secret: String::new(),
+                secret_partition: String::new(),
                 effect_row: Vec::new(),
                 target: None,
                 risk: None,
@@ -606,6 +626,7 @@ mod tests {
             effect_row: Vec::new(),
             parameters: Vec::new(),
             secret: String::new(),
+            secret_partition: String::new(),
             source: ToolSource::Program,
             is_streaming: false,
         });
@@ -629,6 +650,7 @@ mod tests {
             effect_row: Vec::new(),
             parameters: Vec::new(),
             secret: String::new(),
+            secret_partition: String::new(),
             source: ToolSource::Program,
             is_streaming: false,
         });
@@ -658,6 +680,7 @@ mod tests {
             effect_row: Vec::new(),
             parameters: Vec::new(),
             secret: String::new(),
+            secret_partition: String::new(),
             source: ToolSource::Program,
             is_streaming: false,
         });
@@ -729,6 +752,7 @@ mod tests {
             effect_row: Vec::new(),
             parameters: Vec::new(),
             secret: String::new(),
+            secret_partition: String::new(),
             source: ToolSource::Program,
             is_streaming: false,
         });
@@ -743,6 +767,7 @@ mod tests {
             effect_row: Vec::new(),
             parameters: Vec::new(),
             secret: String::new(),
+            secret_partition: String::new(),
             source: ToolSource::Program,
             is_streaming: false,
         });
@@ -757,6 +782,7 @@ mod tests {
             effect_row: Vec::new(),
             parameters: Vec::new(),
             secret: String::new(),
+            secret_partition: String::new(),
             source: ToolSource::Program,
             is_streaming: false,
         });
@@ -794,6 +820,7 @@ mod tests {
             effect_row: Vec::new(),
             parameters: Vec::new(),
             secret: String::new(),
+            secret_partition: String::new(),
             source: ToolSource::Program,
             is_streaming: false,
         });
@@ -815,6 +842,7 @@ mod tests {
             effect_row: Vec::new(),
             parameters: Vec::new(),
             secret: String::new(),
+            secret_partition: String::new(),
             source: ToolSource::Program,
             is_streaming: false,
         });
@@ -829,6 +857,7 @@ mod tests {
             effect_row: Vec::new(),
             parameters: Vec::new(),
             secret: String::new(),
+            secret_partition: String::new(),
             source: ToolSource::Program,
             is_streaming: false,
         });

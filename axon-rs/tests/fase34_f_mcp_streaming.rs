@@ -416,6 +416,7 @@ fn registry_with_mcp(name: &str, runtime: &str, effect_row: Vec<&str>) -> Arc<To
         effect_row: effect_row.into_iter().map(String::from).collect(),
         parameters: Vec::new(),
         secret: String::new(),
+        secret_partition: String::new(),
         source: ToolSource::Program,
         is_streaming: true,
     });

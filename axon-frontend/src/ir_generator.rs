@@ -473,6 +473,10 @@ impl IRGenerator {
             // §Fase 94.c — the dispatch-injection secret KEY (elided when
             // empty; the value NEVER rides the IR — it lives in custody).
             secret: n.secret.clone(),
+            // §Fase 95.a — the partition parameter selecting the per-call
+            // key segment (elided when empty; IR-SHA stable for every
+            // pre-§95 tool). Only the parameter NAME travels, never a value.
+            secret_partition: n.secret_partition.clone(),
             effect_row,
             // §Fase 84.b — Remote Hands technician fields (elided from the IR
             // when unset, per the `skip_serializing_if` on `IRToolSpec`).

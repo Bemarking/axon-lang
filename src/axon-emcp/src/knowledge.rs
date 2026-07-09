@@ -1383,6 +1383,10 @@ Body prose.
             // §Fase 94 — rotation without revelation: custodied secrets have
             // lifecycles, not readers (the inbound dual of §92).
             (ReferenceKind::Logic, "rotation_without_revelation"),
+            // §Fase 95 — selection without revelation: a flow chooses which
+            // borrowed authority to spend (parametric injection) without
+            // reading it or leaving the tool's class (the §94 extension).
+            (ReferenceKind::Logic, "selection_without_revelation"),
             (ReferenceKind::Compliance, "hipaa"),
             (ReferenceKind::Compliance, "gdpr"),
             (ReferenceKind::Compliance, "pci_dss"),
@@ -1427,7 +1431,8 @@ Body prose.
         assert_eq!(
             cat.reference_count_of(ReferenceKind::Logic),
             // §Fase 94: 14 → 15 with `rotation_without_revelation`.
-            15,
+            // §Fase 95: 15 → 16 with `selection_without_revelation`.
+            16,
             "logic family count drift"
         );
         assert_eq!(

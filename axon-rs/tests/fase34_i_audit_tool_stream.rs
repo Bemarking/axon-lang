@@ -121,6 +121,7 @@ fn stream_tool_entry(name: &str, effect_row: Vec<&str>) -> ToolEntry {
         effect_row: row,
         parameters: Vec::new(),
         secret: String::new(),
+        secret_partition: String::new(),
         source: ToolSource::Program,
         is_streaming,
     }

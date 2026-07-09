@@ -50,6 +50,9 @@ const EXPECTED: &[(&str, ExampleTopic)] = &[
     // §Fase 94 — the secret-custody rotation lifecycle (backend: secrets
     // + rotate + tool secret injection; `rotation_without_revelation`).
     ("secret_custody_rotation", ExampleTopic::Data),
+    // §Fase 95 — parametric secret injection: one tool, N sub-tenants
+    // (`secret_partition:`; `selection_without_revelation`).
+    ("secret_partition_multitenant", ExampleTopic::Data),
     // Agents (2)
     ("agent_react", ExampleTopic::Agents),
     ("reflex_to_immune", ExampleTopic::Agents),
