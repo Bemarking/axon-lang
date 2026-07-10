@@ -211,6 +211,10 @@ pub mod extraction;
 /// pix-navigable canonical tree). Reads a bounded PGM/PBM raster; real image
 /// decode is the sidecar (§101.e). Scoped to clean machine-print (D101.17).
 pub mod idpe;
+/// §Fase 101.d — the active-inference foveation planner: spend the recognizer on
+/// the highest-information-scent regions until the answer resolves or the budget
+/// (§72) is exhausted; every foveation is a replayable `ledger` trail entry.
+pub mod foveation;
 pub mod inspect;
 /// §Fase 98.e — Native Web Acquisition runtime (`scrape_http` / `scrape_dom` /
 /// `scrape_crawl`); born-Untrusted content, pluggable stealth fetcher.
