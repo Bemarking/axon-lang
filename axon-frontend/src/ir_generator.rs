@@ -303,6 +303,8 @@ impl IRGenerator {
             Declaration::Credential(n) => ir.credentials.push(self.visit_credential(n)),
             // §Fase 87.a — lower the `savant` orchestrator into the IR.
             Declaration::Savant(n) => ir.savants.push(self.visit_savant(n)),
+            // §Fase 99.b — lower the `document` declaration into the IR.
+            Declaration::Document(n) => ir.documents.push(self.visit_document(n)),
             // §Fase 87.d — lower the `synth` tool-synthesis policy into the IR.
             Declaration::Synth(n) => ir.synths.push(self.visit_synth(n)),
             // §Fase 88.a — lower the `scope` authorization policy into the IR.
@@ -332,7 +334,15 @@ impl IRGenerator {
             }
             Declaration::Epistemic(eb) => {
                 for child in &eb.body {
-                    self.visit_declaration(child, ir);
+                    // §Fase 99.d — record the enclosing epistemic mode on a
+                    // document so the barrier re-derives identically at deploy.
+                    if let Declaration::Document(d) = child {
+                        let mut ird = self.visit_document(d);
+                        ird.epistemic_mode = eb.mode.clone();
+                        ir.documents.push(ird);
+                    } else {
+                        self.visit_declaration(child, ir);
+                    }
                 }
             }
             Declaration::Let(_) => {}
@@ -1471,6 +1481,59 @@ impl IRGenerator {
             listeners: n.listeners.iter().map(|l| self.lower_listen(l)).collect(),
             // §Fase 52.d — the daemon's declared capability scope.
             requires_capabilities: n.requires_capabilities.clone(),
+        }
+    }
+
+    /// §Fase 99.b — lower a `document` declaration into the IR. The effect row
+    /// is flattened the same way tool effect rows are (base + `epistemic:`
+    /// synthesis is not needed here — a document row carries `io`/`storage`/
+    /// `sensitive:*`/`legal:*`). Block order is preserved for determinism.
+    fn visit_document(&self, n: &crate::ast::DocumentDefinition) -> crate::ir_nodes::IRDocument {
+        let effect_row = n
+            .effects
+            .as_ref()
+            .map(|e| e.effects.clone())
+            .unwrap_or_default();
+        crate::ir_nodes::IRDocument {
+            node_type: "document",
+            source_line: n.loc.line,
+            source_column: n.loc.column,
+            name: n.name.clone(),
+            target: n.target.clone(),
+            template: n.template.clone(),
+            provenance: n.provenance.clone(),
+            effect_row,
+            epistemic_mode: String::new(),
+            blocks: n.blocks.iter().map(|b| self.visit_doc_block(b)).collect(),
+        }
+    }
+
+    fn visit_doc_block(&self, b: &crate::ast::DocBlock) -> crate::ir_nodes::IRDocBlock {
+        crate::ir_nodes::IRDocBlock {
+            kind: b.kind.clone(),
+            fields: b.fields.iter().map(|(k, v)| self.visit_doc_field(k, v)).collect(),
+            children: b.children.iter().map(|c| self.visit_doc_block(c)).collect(),
+        }
+    }
+
+    fn visit_doc_field(
+        &self,
+        name: &str,
+        value: &crate::ast::DocScalar,
+    ) -> crate::ir_nodes::IRDocField {
+        use crate::ast::DocScalar;
+        let (kind, value_str, items) = match value {
+            DocScalar::Text(s) => ("text", s.clone(), Vec::new()),
+            DocScalar::Ref(s) => ("ref", s.clone(), Vec::new()),
+            DocScalar::Int(i) => ("int", i.to_string(), Vec::new()),
+            DocScalar::Bool(b) => ("bool", b.to_string(), Vec::new()),
+            DocScalar::List(items) => ("list", String::new(), items.clone()),
+        };
+        crate::ir_nodes::IRDocField {
+            name: name.to_string(),
+            kind,
+            value: value_str,
+            items,
         }
     }
 

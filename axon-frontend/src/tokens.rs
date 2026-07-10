@@ -202,6 +202,11 @@ pub enum TokenType {
     // proof: a `pure` tool is safe to cache by construction. Distinct from
     // `memory` (conversational recall state) — see cache.md §"What this is NOT".
     Cache,
+    // §Fase 99 — `document`: the top-level Native Document Synthesis
+    // declaration (docx|pptx|xlsx), the `cache`/`savant` shape. A value LEAVES
+    // the epistemic lattice here into a human artifact — the assertion-
+    // laundering barrier guards the boundary (D99.1).
+    Document,
     // `quant` as a cognitive primitive (§Fase 51.a) — a flow-body block that
     // projects an MEK semantic tensor into a complex Hilbert space, evolves it
     // under a variational / kernel-feature map, and collapses back to classical
@@ -555,6 +560,7 @@ pub fn keyword_type(word: &str) -> TokenType {
         "cors" => TokenType::Cors,
         // `cache` (§Fase 85.a) — the named result-memoization policy.
         "cache" => TokenType::Cache,
+        "document" => TokenType::Document,
         // `savant` (§Fase 87.a) — long-horizon autonomous research primitive.
         "savant" => TokenType::Savant,
         // `synth` (§Fase 87.d) — dynamic tool-synthesis policy.
@@ -669,6 +675,7 @@ pub fn is_declaration_keyword(tt: &TokenType) -> bool {
             | TokenType::Cors
             // §Fase 85.a — the named result-memoization policy declaration
             | TokenType::Cache
+            | TokenType::Document
             // §Fase 87.a — the long-horizon autonomous research primitive
             | TokenType::Savant
             // §Fase 87.d — dynamic tool-synthesis policy

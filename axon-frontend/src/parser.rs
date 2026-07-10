@@ -266,6 +266,10 @@ fn attach_trivia_to_decl(decl: &mut Declaration, leading: Vec<Trivia>, trailing:
             n.leading_trivia = leading;
             n.trailing_trivia = trailing;
         }
+        Declaration::Document(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
         Declaration::Generic(n) => {
             n.leading_trivia = leading;
             n.trailing_trivia = trailing;
@@ -2090,6 +2094,7 @@ impl Parser {
 
             // ── §Fase 85.a — the named result-memoization policy ─
             TokenType::Cache => self.parse_cache().map(Declaration::Cache),
+            TokenType::Document => self.parse_document().map(Declaration::Document),
 
             // ── §Fase 87.a — the long-horizon autonomous research primitive ─
             TokenType::Savant => self.parse_savant().map(Declaration::Savant),
@@ -7304,6 +7309,135 @@ impl Parser {
         }
         self.consume(TokenType::RBrace)?;
         Ok(node)
+    }
+
+    // ── §Fase 99.b — Native Document Synthesis ─────────────────────────────
+
+    /// §Fase 99.b — parse `document <Name> { target:, template:?, provenance:?,
+    /// effects:?, <body blocks> }`. Document-level scalars are handled here;
+    /// anything of the form `ident { … }` is a body block ([`parse_doc_block_body`]).
+    /// Unknown scalar fields are a hard error (the §83/§84 closed-catalog
+    /// discipline); the per-`target` block vocabulary is the §99.c checker's job.
+    fn parse_document(&mut self) -> Result<crate::ast::DocumentDefinition, ParseError> {
+        let tok = self.consume(TokenType::Document)?;
+        let name = self.consume(TokenType::Identifier)?.value;
+        let mut node = crate::ast::DocumentDefinition {
+            name,
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+            ..Default::default()
+        };
+        self.consume(TokenType::LBrace)?;
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            let field = self.current().clone();
+            let field_name = field.value.clone();
+            self.advance();
+            if self.check(TokenType::Colon) {
+                self.advance();
+                match field_name.as_str() {
+                    "target" => node.target = self.consume_any_ident_or_kw()?.value,
+                    "template" => node.template = self.parse_dotted_identifier()?,
+                    "provenance" => node.provenance = self.consume_any_ident_or_kw()?.value,
+                    "effects" => node.effects = Some(self.parse_effect_row()?),
+                    other => {
+                        return Err(self.error(&format!(
+                            "unknown document field `{other}` in document `{}` — expected \
+                             `target:` / `template:` / `provenance:` / `effects:`, or a body \
+                             block (`section {{ … }}` / `slide {{ … }}` / `sheet {{ … }}`)",
+                            node.name
+                        )))
+                    }
+                }
+            } else if self.check(TokenType::LBrace) {
+                node.blocks
+                    .push(self.parse_doc_block_body(field_name, field.line, field.column)?);
+            } else {
+                return Err(self.error(&format!(
+                    "unexpected `{field_name}` in document `{}` body — expected a `field:` or a \
+                     body block `{field_name} {{ … }}`",
+                    node.name
+                )));
+            }
+            if self.check(TokenType::Comma) {
+                self.advance();
+            }
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(node)
+    }
+
+    /// §Fase 99.b — parse a document body block whose `kind` was already
+    /// consumed: `{ (field: value | nested-block { … })* }`. Recursive — a
+    /// `section` holds `para`/`table`/`chart`; a `slide` holds `bullets`/
+    /// `notes`; a `sheet` holds `row`/`formula`. A member is a field iff a
+    /// `:` follows its name; else it must open a nested block (`{`).
+    fn parse_doc_block_body(
+        &mut self,
+        kind: String,
+        line: u32,
+        column: u32,
+    ) -> Result<crate::ast::DocBlock, ParseError> {
+        let mut block = crate::ast::DocBlock {
+            kind,
+            loc: Loc { line, column },
+            ..Default::default()
+        };
+        self.consume(TokenType::LBrace)?;
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            let name_tok = self.current().clone();
+            let name = self.consume_any_ident_or_kw()?.value;
+            if self.check(TokenType::Colon) {
+                self.advance();
+                let value = self.parse_doc_scalar()?;
+                block.fields.push((name, value));
+            } else if self.check(TokenType::LBrace) {
+                let child = self.parse_doc_block_body(name, name_tok.line, name_tok.column)?;
+                block.children.push(child);
+            } else {
+                return Err(self.error(&format!(
+                    "in document block `{}`: `{name}` must be a `field:` value or open a nested \
+                     block `{name} {{ … }}`",
+                    block.kind
+                )));
+            }
+            if self.check(TokenType::Comma) {
+                self.advance();
+            }
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(block)
+    }
+
+    /// §Fase 99.b — parse a document field value into a [`crate::ast::DocScalar`].
+    /// A bare identifier is a REFERENCE (`text: revenue_summary`) — this is what
+    /// the assertion-laundering barrier inspects; a quoted string / int / bool /
+    /// bracketed list are literals.
+    fn parse_doc_scalar(&mut self) -> Result<crate::ast::DocScalar, ParseError> {
+        let tok = self.current().clone();
+        match tok.ttype {
+            TokenType::StringLit => {
+                self.advance();
+                Ok(crate::ast::DocScalar::Text(tok.value))
+            }
+            TokenType::Integer => {
+                self.advance();
+                Ok(crate::ast::DocScalar::Int(tok.value.parse::<i64>().unwrap_or(0)))
+            }
+            TokenType::Bool => {
+                self.advance();
+                Ok(crate::ast::DocScalar::Bool(tok.value == "true"))
+            }
+            TokenType::LBracket => {
+                let items = self.parse_bracketed_strings()?;
+                Ok(crate::ast::DocScalar::List(items))
+            }
+            _ => {
+                let name = self.consume_any_ident_or_kw()?.value;
+                Ok(crate::ast::DocScalar::Ref(name))
+            }
+        }
     }
 
     /// §Fase 87.a — parse `savant <Name> { domain:, cognition{…}, memory{…},

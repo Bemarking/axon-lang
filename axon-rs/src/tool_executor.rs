@@ -18,12 +18,114 @@ pub struct ToolResult {
     pub tool_name: String,
 }
 
-/// Dispatch a tool call by name. Returns `None` if the tool is not a native executor.
+/// §Fase 99 — the closed set of stdlib tool names that have a REAL native
+/// executor here. Distinct from `stdlib::TOOLS`, which also lists LLM-backed
+/// tools (e.g. `WebSearch`) that legitimately fall through to the model. A name
+/// present in `stdlib::TOOLS` but NOT in this set AND not implemented below is
+/// the pre-existing defect (§99 §8): it silently degrades into the model
+/// *hallucinating* the tool's output. `DocumentRenderer` (whose whole premise
+/// is attestable, non-invented artifacts) MUST NOT ship into that behaviour.
+const NATIVE_EXECUTOR_TOOLS: &[&str] = &["Calculator", "DateTimeTool", "DocumentRenderer"];
+
+/// Dispatch a tool call by name. Returns `None` if the tool is not a native
+/// executor AND is not a declared-but-unimplemented stdlib tool (those legacy
+/// names still fall through to the LLM — see `dispatch_or_reject` for the
+/// stricter contract the runtime uses at real call sites).
 pub fn dispatch(tool_name: &str, argument: &str) -> Option<ToolResult> {
     match tool_name {
         "Calculator" => Some(calculator_execute(argument)),
         "DateTimeTool" => Some(datetime_execute(argument)),
+        // §Fase 99.e — Native Document Synthesis: render a `document` IR + bound
+        // values into deterministic OOXML bytes (D99.14: returns the artifact
+        // value, never a filesystem write).
+        "DocumentRenderer" => Some(document_render_execute(argument)),
         _ => None, // Not a native tool — fall through to LLM
+    }
+}
+
+/// §Fase 99 §8 — the honest dispatch: a tool name DECLARED in `stdlib::TOOLS`
+/// but with no native executor and no LLM provider is a **typed refusal**, not
+/// a silent hand-off to the model. This closes the pre-existing defect where
+/// calling e.g. `PDFExtractor` (declared, unimplemented) returned the model
+/// *inventing* the PDF's contents, shaped exactly like a real extraction.
+/// Returns `Err` for such names; `Ok(Some)` for a real native result;
+/// `Ok(None)` for a name with a legitimate non-native (LLM/provider) path.
+pub fn dispatch_or_reject(tool_name: &str, argument: &str) -> Result<Option<ToolResult>, String> {
+    if let Some(r) = dispatch(tool_name, argument) {
+        return Ok(Some(r));
+    }
+    // Declared in the stdlib catalog but not natively executable here.
+    let declared = crate::stdlib::TOOLS.iter().any(|t| t.name == tool_name);
+    if declared && !NATIVE_EXECUTOR_TOOLS.contains(&tool_name) {
+        // Only tools with a real provider (`requires_api_key` / a `provider`)
+        // may legitimately reach a non-native backend; a declared tool with
+        // neither a native executor nor a provider would silently become model
+        // invention, so refuse.
+        let has_provider = crate::stdlib::TOOLS
+            .iter()
+            .find(|t| t.name == tool_name)
+            .map(|t| !t.provider.is_empty() || t.requires_api_key)
+            .unwrap_or(false);
+        if !has_provider {
+            return Err(format!(
+                "tool '{tool_name}' is declared in the stdlib catalog but has no native \
+                 implementation and no provider — refusing to silently hand the call to the \
+                 model, which would fabricate its output (§Fase 99 §8). Implement the tool, give \
+                 it a provider, or remove it from the catalog."
+            ));
+        }
+    }
+    Ok(None)
+}
+
+/// §Fase 99.e — render a `document` into OOXML bytes. The argument is JSON:
+/// `{ "document": <IRDocument>, "values": { "<ref>": "<resolved text>" } }`.
+/// Returns a typed artifact descriptor (sha256 + content type + base64 bytes)
+/// as JSON — the HOST decides where the bytes land (D99.14).
+fn document_render_execute(argument: &str) -> ToolResult {
+    use base64::Engine;
+    let name = "DocumentRenderer";
+    let parsed: serde_json::Value = match serde_json::from_str(argument) {
+        Ok(v) => v,
+        Err(e) => return err(name, format!("invalid render request JSON: {e}")),
+    };
+    let doc_val = match parsed.get("document") {
+        Some(d) => d.clone(),
+        None => return err(name, "render request missing `document`".into()),
+    };
+    let spec: crate::ooxml::DocumentSpec = match serde_json::from_value(doc_val) {
+        Ok(s) => s,
+        Err(e) => return err(name, format!("malformed document IR: {e}")),
+    };
+    let values: std::collections::BTreeMap<String, String> = parsed
+        .get("values")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+    match crate::ooxml::render(&spec, &values) {
+        Ok(out) => {
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&out.bytes);
+            let descriptor = serde_json::json!({
+                "sha256": out.sha256_hex,
+                "content_type": out.content_type,
+                "extension": out.extension,
+                "size_bytes": out.bytes.len(),
+                "bytes_base64": b64,
+            });
+            ToolResult {
+                success: true,
+                output: descriptor.to_string(),
+                tool_name: name.to_string(),
+            }
+        }
+        Err(e) => err(name, e.to_string()),
+    }
+}
+
+fn err(tool: &str, msg: String) -> ToolResult {
+    ToolResult {
+        success: false,
+        output: format!("DocumentRenderer: {msg}"),
+        tool_name: tool.to_string(),
     }
 }
 

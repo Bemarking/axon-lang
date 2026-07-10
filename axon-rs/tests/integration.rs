@@ -1401,7 +1401,7 @@ fn repl_eval_parse_error() {
 #[test]
 fn stdlib_total_count() {
     use axon::stdlib;
-    assert_eq!(stdlib::total_count(), 36, "8 personas + 12 anchors + 8 flows + 8 tools");
+    assert_eq!(stdlib::total_count(), 37, "8 personas + 12 anchors + 8 flows + 9 tools");
 }
 
 #[test]

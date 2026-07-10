@@ -188,8 +188,109 @@ pub enum Declaration {
     /// that a primitive's `claim` beats a cheaper `baseline` by a `metric` above
     /// a `threshold` on real `data` (doctrine `axon://logic/no_unwitnessed_advantage`).
     Witness(WitnessDefinition),
+    /// §Fase 99.a — Native Document Synthesis: a declarative, compile-time-
+    /// validated DOCX/PPTX/XLSX structure that is the point where a value LEAVES
+    /// the epistemic lattice and becomes a human artifact. `target:` selects a
+    /// serializer, not a capability (D99.6 — identical effect rows). The
+    /// assertion-laundering barrier (D99.1) refuses a value below `believe` in
+    /// an assertive slot without an `attribute:` or a shield
+    /// (docs/fase/fase_99_native_document_synthesis.md).
+    Document(DocumentDefinition),
     /// Tier 3+ declarations parsed structurally (balanced braces, no detailed AST).
     Generic(GenericDeclaration),
+}
+
+// ── §Fase 99 — Native Document Synthesis ─────────────────────────────────────
+
+/// §Fase 99.b — a declarative document. `target:` picks the serializer
+/// (docx|pptx|xlsx); `provenance:` picks how the provenance part is emitted
+/// (none|embedded|signed); `template:` names an enterprise template; `effects:`
+/// carries the propagated `sensitive:`/`legal:` basis. `blocks` is the body —
+/// a closed-catalog tree of [`DocBlock`]s whose vocabulary the checker validates
+/// against `target` (a `slide` in a `docx` is `axon-T9xx`, D99.6).
+#[derive(Debug, Default)]
+pub struct DocumentDefinition {
+    pub name: String,
+    /// `docx | pptx | xlsx` — closed catalog (axon-T910).
+    pub target: String,
+    /// Optional enterprise template reference (`.dotx/.potx/.xltx`, §99.g).
+    pub template: String,
+    /// `none | embedded | signed` — how the provenance part is emitted
+    /// (D99.2). Empty ⇒ `none`. Closed catalog (axon-T911).
+    pub provenance: String,
+    /// The propagated effect row — `io`, `storage` (blob sink), and any
+    /// `sensitive:<cat>`/`legal:<basis>` the bound data carries (D99.4).
+    pub effects: Option<EffectRow>,
+    /// The document body — the closed-catalog block tree.
+    pub blocks: Vec<DocBlock>,
+    pub loc: Loc,
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
+}
+
+/// §Fase 99.b — one block in a document body. A generic-but-closed node: `kind`
+/// is validated against the `target`'s vocabulary, `fields` against the kind's
+/// allowed set, and `children` are nested blocks (a `section` holds `para`s; a
+/// `slide` holds `bullets`; a `sheet` holds `row`s). Keeping the node generic
+/// (rather than one struct per block kind) keeps the grammar/IR small while the
+/// checker (`check_document`) enforces the same closed-catalog discipline.
+#[derive(Debug, Default)]
+pub struct DocBlock {
+    /// `section|heading|para|table|chart|image|toc|page_break|footnote|slide|
+    /// placeholder|bullets|notes|sheet|row|formula|range|format` — validated
+    /// per `target` at check time.
+    pub kind: String,
+    /// Scalar/list fields (`text:`, `columns:`, `range:`, `attribute:`, …).
+    pub fields: Vec<(String, DocScalar)>,
+    /// Nested child blocks.
+    pub children: Vec<DocBlock>,
+    pub loc: Loc,
+}
+
+impl DocBlock {
+    /// Look up a scalar field by name.
+    pub fn field(&self, name: &str) -> Option<&DocScalar> {
+        self.fields.iter().find(|(k, _)| k == name).map(|(_, v)| v)
+    }
+    /// Whether a field is present.
+    pub fn has_field(&self, name: &str) -> bool {
+        self.fields.iter().any(|(k, _)| k == name)
+    }
+}
+
+/// §Fase 99.b — a document field value. A `Ref` is a binding to a flow value
+/// (the epistemic-egress barrier reads its level); a `Text` is a literal; a
+/// `List` is a bracketed set; `Int` is a scalar count.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DocScalar {
+    /// A quoted string literal (`"Q3 Results"`, `"B2:B9"`).
+    Text(String),
+    /// A bare identifier — a reference to a flow value / declared name. THIS is
+    /// what the assertion-laundering barrier inspects at an assertive slot.
+    Ref(String),
+    /// A bracketed list of strings/identifiers (`["Region","Revenue"]`).
+    List(Vec<String>),
+    /// An integer scalar.
+    Int(i64),
+    /// A boolean scalar.
+    Bool(bool),
+}
+
+impl DocScalar {
+    /// The referenced name, if this value is a `Ref`.
+    pub fn as_ref_name(&self) -> Option<&str> {
+        match self {
+            DocScalar::Ref(s) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+    /// The literal text, if this value is `Text`.
+    pub fn as_text(&self) -> Option<&str> {
+        match self {
+            DocScalar::Text(s) => Some(s.as_str()),
+            _ => None,
+        }
+    }
 }
 
 // ── §λ-L-E Fase 1 — Resource primitive ───────────────────────────────────────

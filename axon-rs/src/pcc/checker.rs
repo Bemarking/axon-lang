@@ -156,6 +156,9 @@ pub fn check_proof(proof: &ProofTerm, ir: &IRProgram) -> CheckOutcome {
         (PropertyClass::ScrapeProvenanceSoundness, Witness::ScrapeProvenanceSoundness(w)) => {
             check_scrape_provenance_soundness(w, ir)
         }
+        (PropertyClass::DocumentProvenanceSoundness, Witness::DocumentProvenanceSoundness(w)) => {
+            check_document_provenance_soundness(w, ir)
+        }
         _ => CheckOutcome::UnknownProperty,
     }
 }
@@ -1689,6 +1692,57 @@ fn check_scrape_provenance_soundness(
                 "axon-T908 content-injection barrier: flow(s) feed web content to an agent's \
                  beliefs with no shield: {:?}",
                 actual.unshielded_flows
+            ),
+        };
+    }
+    CheckOutcome::Verified
+}
+
+/// §99.d — verify a [`DocumentProvenanceSoundnessWitness`]. The checker
+/// independently RE-DERIVES the whole-program egress provenance from
+/// `ir.documents` and rejects on ANY of: a forged/stale witness, a bad
+/// `target` (T910), a `sensitive:*` document with no `legal:*` basis (T913), or
+/// an assertive slot binding an unattributed flow value (T916, the assertion-
+/// laundering barrier).
+fn check_document_provenance_soundness(
+    claimed: &super::proof_term::DocumentProvenanceSoundnessWitness,
+    ir: &IRProgram,
+) -> CheckOutcome {
+    let actual = match super::generate::derive_document_provenance_soundness_witness(ir) {
+        Some(w) => w,
+        None => {
+            return CheckOutcome::Refuted {
+                reason: "no document contract exists in this artifact (no `document`) — forged or \
+                         stale proof"
+                    .to_string(),
+            }
+        }
+    };
+    if actual != *claimed {
+        return CheckOutcome::Refuted {
+            reason: "witness disagrees with artifact re-derivation (forged or stale proof)"
+                .to_string(),
+        };
+    }
+    if !actual.bad_targets.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!("axon-T910 document(s) with an invalid target: {:?}", actual.bad_targets),
+        };
+    }
+    if !actual.sensitive_without_legal.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axon-T913 document(s) bind sensitive data with no legal basis: {:?}",
+                actual.sensitive_without_legal
+            ),
+        };
+    }
+    if !actual.unattributed_slots.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axon-T916 assertion-laundering barrier: unattributed flow value(s) in assertive \
+                 slots: {:?}",
+                actual.unattributed_slots
             ),
         };
     }

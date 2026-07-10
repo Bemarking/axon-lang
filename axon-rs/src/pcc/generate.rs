@@ -23,7 +23,7 @@ use super::proof_term::{
     EffectRowSoundnessWitness, InterruptibleSessionSoundnessWitness, JsonShapeSoundnessWitness,
     ParkedResidualSoundnessWitness, ProofTerm, PropertyClass,
     CacheSoundnessWitness, ForgeSoundnessWitness, ResourceBoundsWitness, SavantSoundnessWitness,
-    ScrapeProvenanceSoundnessWitness, WardenSoundnessWitness,
+    DocumentProvenanceSoundnessWitness, ScrapeProvenanceSoundnessWitness, WardenSoundnessWitness,
     ShieldHaltGuaranteeWitness, TechnicianCommandSafetyWitness, ToolCallSoundnessWitness,
     UpstreamProjectionSoundnessWitness, Witness,
     CALL_INTERRUPT_CAUSES, MAX_RETRIES, VALID_BREACH_POLICIES, VALID_BUDGET_PERIODS,
@@ -2662,6 +2662,105 @@ pub fn generate_scrape_provenance_soundness_proofs(
     }
 }
 
+// ── §Fase 99.d — DocumentProvenanceSoundness ─────────────────────────────────
+
+const DOC_TARGETS: &[&str] = &["docx", "pptx", "xlsx"];
+
+/// §99.d — the ASSERTIVE SLOT of a block kind (mirror of the frontend
+/// `type_checker::doc_assertive_slot`). Must stay in lockstep — the barrier
+/// re-derivation depends on it.
+fn doc_assertive_slot(kind: &str) -> Option<&'static str> {
+    match kind {
+        "para" | "notes" | "footnote" | "heading" => Some("text"),
+        "table" => Some("rows"),
+        "chart" => Some("series"),
+        "formula" => Some("expr"),
+        "bullets" => Some("items"),
+        "placeholder" => Some("text"),
+        "row" => Some("cells"),
+        _ => None,
+    }
+}
+
+fn effect_base_doc(e: &str) -> &str {
+    e.split_once(':').map(|(b, _)| b).unwrap_or(e)
+}
+
+/// Recurse a document block tree, flagging unattributed assertive-slot flow
+/// values (mirror of the frontend barrier). `epistemic_ok` short-circuits.
+fn walk_doc_blocks_for_barrier(
+    doc_name: &str,
+    blocks: &[crate::ir_nodes::IRDocBlock],
+    epistemic_ok: bool,
+    out: &mut Vec<String>,
+) {
+    for b in blocks {
+        if let Some(slot) = doc_assertive_slot(&b.kind) {
+            if let Some(f) = b.fields.iter().find(|f| f.name == slot) {
+                if f.kind == "ref" {
+                    let attributed = b.fields.iter().any(|x| x.name == "attribute");
+                    if !attributed && !epistemic_ok {
+                        out.push(format!("{doc_name}.{}.{slot}", b.kind));
+                    }
+                }
+            }
+        }
+        walk_doc_blocks_for_barrier(doc_name, &b.children, epistemic_ok, out);
+    }
+}
+
+/// §99.d — re-derive the whole-program document-provenance witness from
+/// `ir.documents`. "No contract → no proof": a document-less program → `None`.
+pub fn derive_document_provenance_soundness_witness(
+    ir: &IRProgram,
+) -> Option<DocumentProvenanceSoundnessWitness> {
+    if ir.documents.is_empty() {
+        return None;
+    }
+    let documents: Vec<(String, String)> = ir
+        .documents
+        .iter()
+        .map(|d| (d.name.clone(), d.target.clone()))
+        .collect();
+    let mut bad_targets = Vec::new();
+    let mut sensitive_without_legal = Vec::new();
+    let mut unattributed_slots = Vec::new();
+    for d in &ir.documents {
+        if !DOC_TARGETS.contains(&d.target.as_str()) {
+            bad_targets.push(d.name.clone());
+        }
+        let has_sensitive = d.effect_row.iter().any(|e| effect_base_doc(e) == "sensitive");
+        let has_legal = d.effect_row.iter().any(|e| effect_base_doc(e) == "legal");
+        if has_sensitive && !has_legal {
+            sensitive_without_legal.push(d.name.clone());
+        }
+        let epistemic_ok = matches!(d.epistemic_mode.as_str(), "believe" | "know");
+        walk_doc_blocks_for_barrier(&d.name, &d.blocks, epistemic_ok, &mut unattributed_slots);
+    }
+    Some(DocumentProvenanceSoundnessWitness {
+        documents,
+        bad_targets,
+        sensitive_without_legal,
+        unattributed_slots,
+    })
+}
+
+/// §99.d — generate the (at most one) DocumentProvenanceSoundness proof for `ir`.
+pub fn generate_document_provenance_soundness_proofs(
+    ir: &IRProgram,
+    axon_version: &str,
+) -> Vec<ProofTerm> {
+    match derive_document_provenance_soundness_witness(ir) {
+        Some(witness) => vec![ProofTerm {
+            property: PropertyClass::DocumentProvenanceSoundness,
+            artifact_digest: artifact_digest(ir),
+            witness: Witness::DocumentProvenanceSoundness(witness),
+            axon_version: axon_version.to_string(),
+        }],
+        None => Vec::new(),
+    }
+}
+
 // ── §Fase 86.c — ForgeSoundness ──────────────────────────────────────────────
 
 const FORGE_MODES: &[&str] = &["combinatorial", "exploratory", "transformational"];
@@ -2948,6 +3047,7 @@ pub fn generate_all_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm>
     proofs.extend(generate_technician_command_safety_proofs(ir, axon_version));
     proofs.extend(generate_cache_soundness_proofs(ir, axon_version));
     proofs.extend(generate_scrape_provenance_soundness_proofs(ir, axon_version));
+    proofs.extend(generate_document_provenance_soundness_proofs(ir, axon_version));
     proofs.extend(generate_forge_soundness_proofs(ir, axon_version));
     proofs.extend(generate_savant_soundness_proofs(ir, axon_version));
     proofs.extend(generate_warden_soundness_proofs(ir, axon_version));

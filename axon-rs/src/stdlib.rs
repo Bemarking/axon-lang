@@ -3,11 +3,11 @@
 //! This module provides a static registry of all stdlib components,
 //! mirroring the Python `axon.stdlib` module with hardcoded definitions.
 //!
-//! 4 namespaces × 36 total entries:
+//! 4 namespaces × 37 total entries:
 //!   - 8 personas (Analyst, LegalExpert, Coder, Researcher, Writer, Summarizer, Critic, Translator)
 //!   - 12 anchors (8 core + 4 logic/epistemic)
 //!   - 8 flows (Summarize, ExtractEntities, CompareDocuments, etc.)
-//!   - 8 tools (WebSearch, CodeExecutor, FileReader, etc.)
+//!   - 9 tools (WebSearch, CodeExecutor, DocumentRenderer, etc.)
 
 // ── Entry types ─────────────────────────────────────────────────────────────
 
@@ -361,7 +361,7 @@ pub const FLOWS: &[StdlibFlow] = &[
     },
 ];
 
-// ── Tools (8) ───────────────────────────────────────────────────────────────
+// ── Tools (9) ───────────────────────────────────────────────────────────────
 
 pub const TOOLS: &[StdlibTool] = &[
     StdlibTool {
@@ -433,6 +433,19 @@ pub const TOOLS: &[StdlibTool] = &[
         provider: "",
         timeout: 30,
         requires_api_key: true,
+        sandbox: false,
+        version: "0.1.0",
+    },
+    // §Fase 99.e — Native Document Synthesis: renders a `document` IR + bound
+    // values into deterministic OOXML (DOCX/PPTX/XLSX) bytes. A REAL native
+    // executor (`tool_executor::document_render_execute`), never a fall-through
+    // to the model (§99 §8).
+    StdlibTool {
+        name: "DocumentRenderer",
+        description: "Render a declared `document` into deterministic DOCX/PPTX/XLSX bytes (native).",
+        provider: "native",
+        timeout: 30,
+        requires_api_key: false,
         sandbox: false,
         version: "0.1.0",
     },

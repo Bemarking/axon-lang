@@ -546,6 +546,14 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         doc_status: DocStatus::Documented,
     },
     PrimitiveInfo {
+        name: "document",
+        category: "operators",
+        top_level: true,
+        since: "Fase 99 (v2.53.0)",
+        summary: "Native Document Synthesis — a declarative, compile-time-validated DOCX/PPTX/XLSX structure. The egress boundary where a value LEAVES the epistemic lattice into a human artifact: the assertion-laundering barrier refuses a flow value below `believe` in an assertive slot without `attribute:` or a shield. Byte-deterministic output; provenance travels inside the artifact.",
+        doc_status: DocStatus::Documented,
+    },
+    PrimitiveInfo {
         name: "mandate",
         category: "operators",
         top_level: true,
@@ -779,9 +787,10 @@ mod tests {
         // §Fase 92 added `credential` (the ephemeral-credential contract) +
         // `mint` (the minting flow verb) → 62→64.
         // §Fase 94 added `rotate` (the mediated secret-renewal verb) → 64→65.
+        // §Fase 99 added `document` (Native Document Synthesis) → 65→66.
         assert_eq!(
             PRIMITIVE_REGISTRY.len(),
-            65,
+            66,
             "PRIMITIVE_REGISTRY count drift — add/remove the primitive intentionally + update this assertion"
         );
     }
@@ -880,6 +889,8 @@ mod tests {
             "cors",
             // §Fase 85 — the named, referenced result-memoization policy.
             "cache",
+            // §Fase 99 — Native Document Synthesis (DOCX/PPTX/XLSX egress).
+            "document",
             // §Fase 87 — the long-horizon autonomous research primitive + its
             // dynamic tool-synthesis policy.
             "savant", "synth",
@@ -915,13 +926,13 @@ mod tests {
         // §Fase 88: 60 → 62 with `warden` + `scope`.
         // §Fase 92: 62 → 64 with `credential` + `mint`.
         // §Fase 94: 64 → 65 with `rotate` (the mediated secret-renewal verb).
-        assert_eq!(s.total, 65);
+        assert_eq!(s.total, 66);
         assert_eq!(s.documented + s.pending, s.total);
         // §Fase 6.d achieves **100% coverage** — every entry in the
         // registry has a `.md` and a passing drift-gated canonical
         // program. Pending count is 0; any future drop is a
         // regression the gate catches.
-        assert_eq!(s.documented, 65);
+        assert_eq!(s.documented, 66);
         assert_eq!(s.pending, 0);
     }
 

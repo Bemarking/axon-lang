@@ -193,6 +193,9 @@ pub mod graph_export;
 pub mod health_check;
 pub mod hooks;
 pub mod http_tool;
+/// §Fase 99.e/f — the deterministic OOXML writer (DOCX/PPTX/XLSX) behind the
+/// `DocumentRenderer` native tool. Byte-deterministic + provenance-embedding.
+pub mod ooxml;
 pub mod inspect;
 /// §Fase 98.e — Native Web Acquisition runtime (`scrape_http` / `scrape_dom` /
 /// `scrape_crawl`); born-Untrusted content, pluggable stealth fetcher.

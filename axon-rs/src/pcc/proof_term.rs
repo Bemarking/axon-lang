@@ -349,6 +349,15 @@ pub enum PropertyClass {
     /// content reach an agent's beliefs unscanned is refuted BEFORE deploy.
     /// Program-wide, 0-or-1 proof; no scrape tool → no proof.
     ScrapeProvenanceSoundness,
+    /// §99.d — for a program declaring any `document`, re-derives the §99.d
+    /// egress invariants the type-checker proved: every document's `target` is
+    /// in the catalog (T910); a document binding `sensitive:*` carries a
+    /// `legal:*` basis (T913); and every assertive-slot flow-value binding is
+    /// attributed or sits inside `epistemic { believe|know }` (T916, the
+    /// assertion-laundering barrier). A stored/hand-edited IR that would launder
+    /// an unattributed assertion into a signed-looking document is refuted
+    /// BEFORE deploy. Program-wide, 0-or-1 proof; no `document` → no proof.
+    DocumentProvenanceSoundness,
 }
 
 /// §72.f — the closed period catalog for `budget` quotas. The checker's own
@@ -405,6 +414,7 @@ impl PropertyClass {
             PropertyClass::CredentialAttenuation => "credential_attenuation",
             PropertyClass::SecretCustodySoundness => "secret_custody_soundness",
             PropertyClass::ScrapeProvenanceSoundness => "scrape_provenance_soundness",
+            PropertyClass::DocumentProvenanceSoundness => "document_provenance_soundness",
         }
     }
 }
@@ -1178,6 +1188,28 @@ pub struct ScrapeProvenanceSoundnessWitness {
     pub unshielded_flows: Vec<String>,
 }
 
+/// §99.d — witness for [`PropertyClass::DocumentProvenanceSoundness`], one per
+/// program (the egress laws are whole-module). The checker RE-DERIVES every
+/// field from `ir.documents` and rejects on disagreement. A verifying proof has
+/// every violation list empty.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DocumentProvenanceSoundnessWitness {
+    /// `(name, target)` for every document, source order.
+    pub documents: Vec<(String, String)>,
+    /// Documents whose `target` is outside the catalog (`axon-T910`, re-
+    /// derived). Empty for a verifying proof.
+    pub bad_targets: Vec<String>,
+    /// Documents binding `sensitive:*` data with no `legal:*` basis
+    /// (`axon-T913`, re-derived). Empty for a verifying proof.
+    pub sensitive_without_legal: Vec<String>,
+    /// `document.block.slot` triples where an assertive slot binds an
+    /// unattributed flow value outside an `epistemic { believe|know }` block
+    /// (`axon-T916`, the assertion-laundering barrier, re-derived). A hand-
+    /// edited IR that smuggles an unattributed assertion into a signed-looking
+    /// document is REFUTED before it mounts. Empty for a verifying proof.
+    pub unattributed_slots: Vec<String>,
+}
+
 /// The property-specific witness. Tagged so the JSON is self-describing
 /// + a future class adds a variant without ambiguity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1210,6 +1242,7 @@ pub enum Witness {
     CredentialAttenuation(CredentialAttenuationWitness),
     SecretCustodySoundness(SecretCustodySoundnessWitness),
     ScrapeProvenanceSoundness(ScrapeProvenanceSoundnessWitness),
+    DocumentProvenanceSoundness(DocumentProvenanceSoundnessWitness),
 }
 
 impl Witness {
@@ -1257,6 +1290,7 @@ impl Witness {
             // §94.e — program-wide property, no single named subject.
             Witness::SecretCustodySoundness(_) => "<program>",
             Witness::ScrapeProvenanceSoundness(_) => "<program>",
+            Witness::DocumentProvenanceSoundness(_) => "<program>",
         }
     }
 }

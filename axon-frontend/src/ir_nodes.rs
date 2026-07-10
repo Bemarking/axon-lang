@@ -137,6 +137,12 @@ pub struct IRProgram {
     /// (a savant-less program's IR JSON stays byte-identical — zero drift).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub savants: Vec<IRSavant>,
+    /// §Fase 99.b — compiled document declarations. Same
+    /// `skip_serializing_if = empty` IR-SHA discipline (a document-less
+    /// program's IR JSON stays byte-identical). Consumed by the runtime
+    /// `DocumentRenderer` tool + the `DocumentProvenanceSoundness` PCC class.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub documents: Vec<IRDocument>,
     /// §Fase 87.d — dynamic tool-synthesis policies (compiled). Same
     /// `skip_serializing_if = empty` IR-SHA discipline as `savants`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -218,6 +224,7 @@ impl IRProgram {
             caches: Vec::new(),
             credentials: Vec::new(),
             savants: Vec::new(),
+            documents: Vec::new(),
             synths: Vec::new(),
             scopes: Vec::new(),
             effects: Vec::new(),
@@ -2002,6 +2009,61 @@ pub struct IRSavantMandate {
     pub name: String,
     pub objective: String,
     pub output_type: String,
+}
+
+// ── §Fase 99.b — Native Document Synthesis IR ─────────────────────────────────
+
+/// §Fase 99.b — a compiled document declaration. The runtime `DocumentRenderer`
+/// tool serialises this to deterministic OOXML bytes (§99.e); the
+/// `DocumentProvenanceSoundness` PCC class (§99.d) re-derives the barrier from
+/// it. `blocks` is the closed-catalog body tree.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRDocument {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub name: String,
+    /// `docx | pptx | xlsx`.
+    pub target: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub template: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub provenance: String,
+    /// The propagated effect row (`io`, `storage`, `sensitive:*`, `legal:*`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effect_row: Vec<String>,
+    /// §Fase 99.d — the enclosing `epistemic { mode: … }` at compile time
+    /// (`believe`/`know` vouch the whole document is ≥ believe, satisfying the
+    /// assertion-laundering barrier without per-field `attribute:`). Empty at
+    /// top level. Recorded so the `DocumentProvenanceSoundness` PCC class
+    /// re-derives the barrier identically (no false refutation).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub epistemic_mode: String,
+    pub blocks: Vec<IRDocBlock>,
+}
+
+/// §Fase 99.b — one compiled document block. `fields` preserves declaration
+/// order (a `Vec` of `(name, value)`), so the render is deterministic.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRDocBlock {
+    pub kind: String,
+    pub fields: Vec<IRDocField>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<IRDocBlock>,
+}
+
+/// §Fase 99.b — a compiled `(field, value)` pair. `kind` tags the value shape
+/// (`text`|`ref`|`list`|`int`|`bool`) so the renderer + the barrier can
+/// discriminate a literal from a flow-value reference without re-parsing.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRDocField {
+    pub name: String,
+    /// `text | ref | list | int | bool`.
+    pub kind: &'static str,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub value: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<String>,
 }
 
 /// §Fase 87.d — a compiled `synth` dynamic tool-synthesis policy. The IR carries

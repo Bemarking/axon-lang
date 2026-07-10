@@ -152,6 +152,129 @@ const VALID_IMPERSONATE_PROFILES: &[&str] = &["chrome", "firefox", "safari", "ed
 
 const VALID_EPISTEMIC_LEVELS: &[&str] = &["believe", "doubt", "know", "speculate"];
 
+// ── §Fase 99 — Native Document Synthesis catalogs ─────────────────────────────
+
+/// §Fase 99.c — the closed `document.target:` catalog. Each selects a serializer,
+/// not a capability (D99.6 — identical effect rows).
+const VALID_DOC_TARGETS: &[&str] = &["docx", "pptx", "xlsx"];
+
+/// §Fase 99.c — the closed `document.provenance:` catalog (D99.2). `none` (or
+/// empty) = no provenance part; `embedded` = an unsigned custom XML part;
+/// `signed` = a signed part (enterprise, §99.g).
+const VALID_DOC_PROVENANCE: &[&str] = &["none", "embedded", "signed"];
+
+/// §Fase 99.c — the bounded chart-kind subset (D99.9). SmartArt, pivots,
+/// sparklines, 3-D are deferred and named as such.
+const VALID_CHART_KINDS: &[&str] = &["bar", "line", "pie", "scatter"];
+
+/// §Fase 99.c — the top-level body block kinds for a `target`.
+fn doc_top_level_kinds(target: &str) -> Vec<&'static str> {
+    match target {
+        "docx" => vec!["section", "page_break"],
+        "pptx" => vec!["slide"],
+        "xlsx" => vec!["sheet"],
+        _ => vec![],
+    }
+}
+
+/// §Fase 99.c — the block kinds valid as children of `parent` (empty parent =
+/// top level) in a `target` document. The closed per-target vocabulary (D99.6):
+/// a `slide` inside a `docx` is `axon-T912`.
+fn doc_allowed_child_kinds(target: &str, parent: &str) -> Vec<&'static str> {
+    match (target, parent) {
+        ("docx", "") => doc_top_level_kinds("docx"),
+        ("docx", "section") => vec![
+            "heading", "para", "table", "chart", "image", "toc", "page_break", "footnote",
+        ],
+        ("pptx", "") => doc_top_level_kinds("pptx"),
+        ("pptx", "slide") => vec!["placeholder", "bullets", "image", "chart", "notes"],
+        ("xlsx", "") => doc_top_level_kinds("xlsx"),
+        ("xlsx", "sheet") => vec!["row", "formula", "range", "chart", "format"],
+        // A leaf block takes no children.
+        _ => vec![],
+    }
+}
+
+/// §Fase 99.c — the closed field set for a block kind.
+fn doc_allowed_fields(kind: &str) -> Vec<&'static str> {
+    match kind {
+        "section" => vec!["heading", "name"],
+        "heading" => vec!["text", "level"],
+        "para" => vec!["text", "attribute"],
+        "table" => vec!["columns", "rows", "attribute"],
+        "chart" => vec!["kind", "series", "range", "attribute"],
+        "image" => vec!["source", "width", "height"],
+        "toc" => vec!["depth"],
+        "page_break" => vec![],
+        "footnote" => vec!["text", "attribute"],
+        "slide" => vec!["layout"],
+        "placeholder" => vec!["name", "text", "attribute"],
+        "bullets" => vec!["items", "attribute"],
+        "notes" => vec!["text", "attribute"],
+        "sheet" => vec!["name"],
+        "row" => vec!["cells", "attribute"],
+        "formula" => vec!["cell", "expr", "attribute"],
+        "range" => vec!["name", "cells"],
+        "format" => vec!["cell", "style"],
+        _ => vec![],
+    }
+}
+
+/// §Fase 99.d — the ASSERTIVE SLOT of a block kind: the field whose value, if it
+/// is a flow-value binding, occupies an assertive position in the artifact and
+/// is guarded by the assertion-laundering barrier (D99.1). `None` ⇒ the block
+/// holds no assertive slot (structural: `section`, `slide`, `page_break`, …).
+fn doc_assertive_slot(kind: &str) -> Option<&'static str> {
+    match kind {
+        "para" | "notes" | "footnote" | "heading" => Some("text"),
+        "table" => Some("rows"),
+        "chart" => Some("series"),
+        "formula" => Some("expr"),
+        "bullets" => Some("items"),
+        "placeholder" => Some("text"),
+        "row" => Some("cells"),
+        _ => None,
+    }
+}
+
+/// §Fase 99.c — is `s` a valid A1 cell reference (e.g. `B2`, `AA10`)?
+fn is_a1_cell(s: &str) -> bool {
+    let s = s.trim();
+    if s.is_empty() {
+        return false;
+    }
+    let mut chars = s.chars();
+    let mut saw_col = false;
+    let mut saw_row = false;
+    let mut in_row = false;
+    for c in chars.by_ref() {
+        if c.is_ascii_uppercase() {
+            if in_row {
+                return false; // letters after digits → invalid
+            }
+            saw_col = true;
+        } else if c.is_ascii_digit() {
+            if c == '0' && !saw_row {
+                return false; // row cannot start with 0
+            }
+            in_row = true;
+            saw_row = true;
+        } else {
+            return false;
+        }
+    }
+    saw_col && saw_row
+}
+
+/// §Fase 99.c — is `s` a valid A1 range (`B2:B9`) or a single cell?
+fn is_a1_range(s: &str) -> bool {
+    let s = s.trim();
+    match s.split_once(':') {
+        Some((a, b)) => is_a1_cell(a) && is_a1_cell(b),
+        None => is_a1_cell(s),
+    }
+}
+
 const VALID_DERIVATIONS: &[&str] = &["aggregated", "derived", "inferred", "raw", "transformed"];
 
 // ── Tier 2 valid-value sets (mirrors Python frozensets) ────────────────────
@@ -745,6 +868,13 @@ pub struct TypeChecker<'a> {
     /// walk (source order), for the `axon-T896` never-persisted law.
     /// Cleared between flows.
     current_mint_bindings: std::collections::HashSet<String>,
+    /// §Fase 99.d — the mode of the enclosing `epistemic { mode: … }` block
+    /// during the declaration walk (empty at top level). The assertion-
+    /// laundering barrier reads it: a `document` wrapped in `epistemic { mode:
+    /// believe|know }` lets an assertive-slot flow-value binding through
+    /// without a per-field `attribute:` (the author vouches the whole block is
+    /// ≥ believe). Set/restored around each `Declaration::Epistemic` recursion.
+    current_epistemic_mode: String,
     /// §Fase 74.g — every channel/topic `emit`ted to anywhere in the
     /// program (all flow bodies + daemon listener bodies, nested). Built
     /// once in `check`. A daemon `listen`er on a channel NOT in this set has
@@ -978,6 +1108,7 @@ impl<'a> TypeChecker<'a> {
             json_lens_fields: std::collections::HashMap::new(),
             current_flow_param_spellings: std::collections::BTreeMap::new(),
             current_mint_bindings: std::collections::HashSet::new(),
+            current_epistemic_mode: String::new(),
             emitted_channels: std::collections::HashSet::new(),
             secrets_backed_stores: std::collections::HashSet::new(),
         }
@@ -1012,6 +1143,7 @@ impl<'a> TypeChecker<'a> {
             json_lens_fields: std::collections::HashMap::new(),
             current_flow_param_spellings: std::collections::BTreeMap::new(),
             current_mint_bindings: std::collections::HashSet::new(),
+            current_epistemic_mode: String::new(),
             emitted_channels: std::collections::HashSet::new(),
             secrets_backed_stores: std::collections::HashSet::new(),
         }
@@ -1515,6 +1647,16 @@ impl<'a> TypeChecker<'a> {
                         n.loc.clone(),
                     ));
                 }
+                // §Fase 99.b — register the document so it is a referenceable
+                // name (and duplicate-name detection works).
+                Declaration::Document(n) => {
+                    registrations.push((
+                        n.name.clone(),
+                        "document".into(),
+                        n.loc.line,
+                        n.loc.clone(),
+                    ));
+                }
                 // §Fase 87.d — register the synth policy so a savant can
                 // reference it (and duplicate-name detection works).
                 Declaration::Synth(n) => {
@@ -1701,7 +1843,13 @@ impl<'a> TypeChecker<'a> {
                 Declaration::Run(n) => self.check_run(n),
                 Declaration::Epistemic(eb) => {
                     self.check_epistemic_mode(&eb.mode, &eb.loc);
+                    // §Fase 99.d — thread the enclosing mode so a `document`
+                    // inside `epistemic { mode: believe|know }` is barrier-
+                    // satisfied without per-field `attribute:`.
+                    let prev =
+                        std::mem::replace(&mut self.current_epistemic_mode, eb.mode.clone());
                     self.check_declarations(&eb.body);
+                    self.current_epistemic_mode = prev;
                 }
                 Declaration::LambdaData(n) => self.check_lambda_data(n),
                 Declaration::Agent(n) => self.check_agent(n),
@@ -1739,6 +1887,9 @@ impl<'a> TypeChecker<'a> {
                 // catalogs). Ref resolution (memory backend) + §72 budget binding
                 // + §79 interruptibility land in §87.c.
                 Declaration::Savant(n) => self.check_savant(n),
+                // §Fase 99.c/d — structure validity + the assertion-laundering
+                // barrier.
+                Declaration::Document(n) => self.check_document(n),
                 // §Fase 87.d — dynamic tool-synthesis policy discipline.
                 Declaration::Synth(n) => self.check_synth(n),
                 // §Fase 88.b — the scope's own-field discipline (targets
@@ -4366,6 +4517,266 @@ impl<'a> TypeChecker<'a> {
                 Some(_) => {}
             }
         }
+    }
+
+    // ── §Fase 99.c/99.d — Native Document Synthesis checker ─────────────────
+
+    /// §Fase 99.c + 99.d — validate one `document { … }` declaration:
+    /// (99.c) structure — `target`/`provenance` catalogs, the per-`target` block
+    /// vocabulary, chart-kind catalog, required fields, formula/range shape; and
+    /// (99.d) the assertion-laundering barrier — an assertive-slot flow-value
+    /// binding must carry `attribute:` or sit inside `epistemic { believe|know }`;
+    /// plus `sensitive:*`⇒`legal:*` propagation on the render's effect row.
+    fn check_document(&mut self, node: &crate::ast::DocumentDefinition) {
+        // (T910) target catalog.
+        if !is_valid(&node.target, VALID_DOC_TARGETS) {
+            self.emit(
+                format!(
+                    "axon-T910 document '{}' has `target: {}` — a document targets one of: {}.",
+                    node.name,
+                    if node.target.is_empty() { "<unset>" } else { &node.target },
+                    valid_list(VALID_DOC_TARGETS)
+                ),
+                &node.loc,
+            );
+        }
+        // (T911) provenance catalog (empty ⇒ `none`).
+        if !node.provenance.is_empty() && !is_valid(&node.provenance, VALID_DOC_PROVENANCE) {
+            self.emit(
+                format!(
+                    "axon-T911 document '{}' has `provenance: {}` — valid: {}.",
+                    node.name,
+                    node.provenance,
+                    valid_list(VALID_DOC_PROVENANCE)
+                ),
+                &node.loc,
+            );
+        }
+        // A document with no body renders an empty artifact — refuse.
+        if node.blocks.is_empty() {
+            self.emit(
+                format!(
+                    "axon-T912 document '{}' has an empty body — declare at least one body block \
+                     ({} for `target: {}`).",
+                    node.name,
+                    doc_top_level_kinds(&node.target).join(" / "),
+                    node.target
+                ),
+                &node.loc,
+            );
+        }
+
+        // (T913) sensitive⇒legal propagation on the render's effect row (D99.4).
+        let bases: std::collections::HashSet<String> = node
+            .effects
+            .as_ref()
+            .map(|e| {
+                e.effects
+                    .iter()
+                    .map(|s| s.split(':').next().unwrap_or(s).to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if bases.contains("sensitive") && !bases.contains("legal") {
+            self.emit(
+                format!(
+                    "axon-T913 document '{}' binds `sensitive:*` data but its `effects:` carries \
+                     no `legal:<basis>` — a document is an egress boundary (D99.4); a sensitive \
+                     value leaving the lattice into a human artifact needs a declared legal basis.",
+                    node.name
+                ),
+                &node.loc,
+            );
+        }
+
+        // Recurse the block tree: vocabulary + fields + barrier.
+        let epistemic_ok = matches!(self.current_epistemic_mode.as_str(), "believe" | "know");
+        for block in &node.blocks {
+            self.check_doc_block(node, block, &node.target, /*parent*/ "", epistemic_ok);
+        }
+    }
+
+    /// §Fase 99.c/d — recursively validate one document block.
+    fn check_doc_block(
+        &mut self,
+        doc: &crate::ast::DocumentDefinition,
+        block: &crate::ast::DocBlock,
+        target: &str,
+        parent: &str,
+        epistemic_ok: bool,
+    ) {
+        // (T912) the block kind must be in the vocabulary for (target, parent).
+        let allowed = doc_allowed_child_kinds(target, parent);
+        if !allowed.contains(&block.kind.as_str()) {
+            let where_ = if parent.is_empty() {
+                format!("at the top level of a `target: {target}` document")
+            } else {
+                format!("inside a `{parent}` block (`target: {target}`)")
+            };
+            self.emit(
+                format!(
+                    "axon-T912 document '{}' — block `{}` is not valid {where_}. Valid here: {}.",
+                    doc.name,
+                    block.kind,
+                    if allowed.is_empty() {
+                        "(none — this block takes no children)".to_string()
+                    } else {
+                        allowed.join(" / ")
+                    }
+                ),
+                &block.loc,
+            );
+            // Still validate fields best-effort so the author sees every issue.
+        }
+
+        // (T914) unknown field for this block kind (closed catalog).
+        let allowed_fields = doc_allowed_fields(&block.kind);
+        for (fname, _) in &block.fields {
+            if !allowed_fields.contains(&fname.as_str()) {
+                self.emit(
+                    format!(
+                        "axon-T914 document '{}' — `{}` is not a valid field of a `{}` block. \
+                         Valid: {}.",
+                        doc.name,
+                        fname,
+                        block.kind,
+                        if allowed_fields.is_empty() {
+                            "(none)".to_string()
+                        } else {
+                            allowed_fields.join(" / ")
+                        }
+                    ),
+                    &block.loc,
+                );
+            }
+        }
+
+        // Per-kind structural laws.
+        self.check_doc_block_laws(doc, block);
+
+        // (T916) the assertion-laundering barrier — the headline property.
+        if let Some(slot) = doc_assertive_slot(&block.kind) {
+            if let Some(value) = block.field(slot) {
+                if let crate::ast::DocScalar::Ref(name) = value {
+                    let attributed = block.has_field("attribute");
+                    if !attributed && !epistemic_ok {
+                        self.emit(
+                            format!(
+                                "axon-T916 document '{}' — the `{}` block binds flow value `{}` in \
+                                 its assertive `{}:` slot with no provenance. A value leaving the \
+                                 epistemic lattice into a human artifact cannot be more confident \
+                                 than the reasoning that produced it (D99.1, the assertion-\
+                                 laundering barrier). Add `attribute: <source>` (renders as a \
+                                 visible source note), wrap the document in `epistemic {{ mode: \
+                                 believe }}` if you vouch it is ≥ believe, or pass `{}` through a \
+                                 `shield` scanning `hallucination`/`pii_leak` first.",
+                                doc.name, block.kind, name, slot, name
+                            ),
+                            &block.loc,
+                        );
+                    }
+                }
+            }
+        }
+
+        // Recurse into children with this block as the parent context.
+        for child in &block.children {
+            self.check_doc_block(doc, child, target, &block.kind, epistemic_ok);
+        }
+    }
+
+    /// §Fase 99.c — per-block-kind structural laws (required fields, catalogs,
+    /// cell/range shape). Each a distinct `axon-T9xx`.
+    fn check_doc_block_laws(
+        &mut self,
+        doc: &crate::ast::DocumentDefinition,
+        block: &crate::ast::DocBlock,
+    ) {
+        use crate::ast::DocScalar;
+        let require = |this: &mut Self, field: &str, code: &str, why: &str| {
+            if !block.has_field(field) {
+                this.emit(
+                    format!(
+                        "axon-{code} document '{}' — a `{}` block requires `{field}:` ({why}).",
+                        doc.name, block.kind
+                    ),
+                    &block.loc,
+                );
+            }
+        };
+        match block.kind.as_str() {
+            "chart" => {
+                // (T917) chart kind ∈ the bounded subset (D99.9).
+                if let Some(DocScalar::Ref(k)) = block.field("kind") {
+                    if !is_valid(k, VALID_CHART_KINDS) {
+                        self.emit(
+                            format!(
+                                "axon-T917 document '{}' — chart `kind: {}` is outside the bounded \
+                                 v1 subset {}. SmartArt / pivots / 3-D are deferred (D99.9).",
+                                doc.name,
+                                k,
+                                valid_list(VALID_CHART_KINDS)
+                            ),
+                            &block.loc,
+                        );
+                    }
+                }
+                require(self, "kind", "T917", "the chart type");
+                require(self, "series", "T918", "the data series");
+            }
+            "table" => {
+                // (T915) a table needs a non-empty column spec + rows.
+                match block.field("columns") {
+                    Some(DocScalar::List(cols)) if !cols.is_empty() => {}
+                    _ => self.emit(
+                        format!(
+                            "axon-T915 document '{}' — a `table` block requires a non-empty \
+                             `columns: [ … ]` spec (the row arity is checked against it).",
+                            doc.name
+                        ),
+                        &block.loc,
+                    ),
+                }
+                require(self, "rows", "T915", "the row data");
+            }
+            "formula" => {
+                require(self, "cell", "T919", "the target cell (A1 notation)");
+                require(self, "expr", "T919", "the formula expression");
+                if let Some(DocScalar::Text(cell)) = block.field("cell") {
+                    if !is_a1_cell(cell) {
+                        self.emit(
+                            format!(
+                                "axon-T919 document '{}' — formula `cell: \"{}\"` is not a valid A1 \
+                                 cell reference (e.g. \"B2\").",
+                                doc.name, cell
+                            ),
+                            &block.loc,
+                        );
+                    }
+                }
+            }
+            "range" => {
+                if let Some(DocScalar::Text(r)) = block.field("cells") {
+                    if !is_a1_range(r) {
+                        self.emit(
+                            format!(
+                                "axon-T919 document '{}' — `range` cells `\"{}\"` is not a valid A1 \
+                                 range (e.g. \"B2:B9\").",
+                                doc.name, r
+                            ),
+                            &block.loc,
+                        );
+                    }
+                }
+            }
+            "placeholder" => require(self, "name", "T920", "the layout slot name"),
+            "image" => require(self, "source", "T921", "the image source binding"),
+            "slide" => require(self, "layout", "T920", "the slide layout"),
+            "sheet" => require(self, "name", "T912", "the sheet tab name"),
+            _ => {}
+        }
+        // A chart bound into an xlsx should carry a `range`; a chart in docx/pptx
+        // binds a `series`. Both are covered by the required-field laws above.
     }
 
     /// §Fase 87.b — validate one `savant { … }` declaration's own fields. Ref

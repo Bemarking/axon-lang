@@ -72,6 +72,7 @@ pub use generate::{
     // §Fase 98.d — the web-acquisition provenance obligation (born-Untrusted
     // + the content-injection barrier).
     derive_scrape_provenance_soundness_witness, generate_scrape_provenance_soundness_proofs,
+    derive_document_provenance_soundness_witness, generate_document_provenance_soundness_proofs,
 };
 pub use proof_term::{
     CallSoundnessCertificate, CapabilityContainmentWitness, CapabilityGrantabilityWitness,
@@ -84,6 +85,7 @@ pub use proof_term::{
     ProofBundle, ProofTerm,
     PropertyClass, ResourceBoundsWitness,
     ScrapeProvenanceSoundnessWitness,
+    DocumentProvenanceSoundnessWitness,
     SecretCustodySoundnessWitness,
     ShieldHaltGuaranteeWitness, TemporalContextSoundnessWitness, ToolCallSoundnessWitness,
     UpstreamProjectionSoundnessWitness,
@@ -3180,6 +3182,66 @@ mod tests {
         match check_proof(&proofs[0], &ir) {
             CheckOutcome::Refuted { reason } => assert!(reason.contains("T908"), "{reason}"),
             other => panic!("expected Refuted (content-injection barrier), got {other:?}"),
+        }
+    }
+
+    // ── §Fase 99.d — DocumentProvenanceSoundness ─────────────────────────
+
+    const DOC_PROGRAM: &str = concat!(
+        "document quarterly_report {\n",
+        "  target: docx\n",
+        "  provenance: embedded\n",
+        "  effects: <io, storage>\n",
+        "  section {\n",
+        "    heading: \"Q3\"\n",
+        "    para { text: \"Audited.\" }\n",
+        "    para { text: revenue_summary  attribute: analyst_agent }\n",
+        "  }\n",
+        "}\n",
+    );
+
+    #[test]
+    fn document_provenance_round_trips_and_verifies() {
+        let ir = ir_from_source(DOC_PROGRAM);
+        let proofs = super::generate::generate_document_provenance_soundness_proofs(&ir, "test");
+        assert_eq!(proofs.len(), 1, "one whole-program document proof");
+        assert_eq!(proofs[0].property, PropertyClass::DocumentProvenanceSoundness);
+        if let Witness::DocumentProvenanceSoundness(ref w) = proofs[0].witness {
+            assert_eq!(w.documents.len(), 1);
+            assert!(w.bad_targets.is_empty());
+            assert!(w.sensitive_without_legal.is_empty());
+            assert!(w.unattributed_slots.is_empty(), "attributed ⇒ no barrier violation");
+        } else {
+            panic!("expected a DocumentProvenanceSoundness witness");
+        }
+        assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
+    }
+
+    #[test]
+    fn document_less_program_carries_no_proof() {
+        let ir = ir_from_source("flow Chat() -> Unit { step S { ask: \"hi\" } }\n");
+        assert!(
+            super::generate::generate_document_provenance_soundness_proofs(&ir, "test").is_empty(),
+            "no document → no proof"
+        );
+    }
+
+    #[test]
+    fn document_provenance_refutes_unattributed_slot() {
+        // Tamper the stored IR: strip the `attribute` field, laundering an
+        // unattributed flow value into an assertive slot.
+        let mut ir = ir_from_source(DOC_PROGRAM);
+        for d in ir.documents.iter_mut() {
+            for section in d.blocks.iter_mut() {
+                for block in section.children.iter_mut() {
+                    block.fields.retain(|f| f.name != "attribute");
+                }
+            }
+        }
+        let proofs = super::generate::generate_document_provenance_soundness_proofs(&ir, "test");
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => assert!(reason.contains("T916"), "{reason}"),
+            other => panic!("expected Refuted (assertion-laundering barrier), got {other:?}"),
         }
     }
 
