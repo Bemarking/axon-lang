@@ -1021,7 +1021,8 @@ async fn fuzz_s4_parity_determinism_stress() {
             None, // §Fase 74.f — event_outbox (test: in-process emit)
             None, // §Fase 92.c — credential minter (test: none)
             None, // §Fase 94.d — secret custody (test: none)
-        );
+                None, // §Fase 102 scrape_overrides
+);
         if let Ok(sync_metrics) = sync {
             if sync_metrics.success != baseline.success {
                 nondeterministic.push(format!(

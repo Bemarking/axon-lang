@@ -132,7 +132,8 @@ fn e2e_mint_without_a_port_fails_the_flow_loudly() {
         &ir, "Bootstrap", "stub", "", "<fase92>", None, None, &empty, &empty, None, None, None,
         None, None, None,
         None, // §Fase 94.d — secret custody (test: none)
-    )
+        None, // §Fase 102 scrape_overrides
+)
     .expect("execute returns metrics");
     assert!(!m.success, "mint without a port must fail the flow");
     let err = m.error.expect("honest failure detail");

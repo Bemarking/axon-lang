@@ -2285,7 +2285,8 @@ fn server_execute(
         // concern); rotate / secrets-retrieve / secret-bearing tool
         // dispatch fail closed with a loud missing-dependency error.
         None,
-    )?;
+        None, // §Fase 102 scrape_overrides
+)?;
 
     // Count anchors from IR
     let anchor_count = ir.anchors.len();

@@ -3565,6 +3565,15 @@ pub fn execute_server_flow(
     // fails CLOSED with a loud missing-dependency error, never a silent
     // stub and never a fabricated result.
     secret_custody: Option<std::sync::Arc<dyn crate::secret_custody::SecretCustody>>,
+    // §Fase 102 (D102.9) — per-tenant scrape overrides (proxy / crawl
+    // concurrency) resolved by the deployed executor's `SecretResolver`, applied
+    // to the request-scoped registry before any scrape dispatch (the same
+    // per-tenant-rewrite shape as `tool_base_url`). `None` for every caller that
+    // does no per-tenant scrape config (HTTP/CLI/tests/daemon) — the
+    // source-declared scrape config then stands. The tenant is stamped onto the
+    // scrape entries regardless (from `tenant_id`), so the §102.d selector
+    // memory is keyed even without overrides.
+    scrape_overrides: Option<&crate::tool_registry::ScrapeOverrides>,
 ) -> Result<ServerRunnerMetrics, String> {
     let mut target_run = None;
     for run in &ir.runs {
@@ -3694,6 +3703,12 @@ pub fn execute_server_flow(
     if let Some(base) = tool_base_url {
         registry.resolve_relative_endpoints(base);
     }
+    // §Fase 102 (D102.9) — stamp the dispatching tenant onto every scrape entry
+    // (keys the §102.d adaptive-selector memory) + apply the per-tenant
+    // proxy/concurrency overrides (§102.b). Request-scoped registry → no
+    // cross-tenant leakage. Runs even without overrides so the tenant is always
+    // stamped for the memory key.
+    registry.apply_scrape_tenant_context(tenant_id, scrape_overrides);
 
     // §Fase 35.e — build the axonstore registry from the program's
     // declarations. The D2 closed-catalog gate runs here: an unknown
@@ -4911,7 +4926,8 @@ flow Recall(q: Text) -> Text {
             None, // §Fase 74.f — event outbox (test: no durable sink)
             None, // §Fase 92.c — credential minter (test: none)
             None, // §Fase 94.d — secret custody (test: none)
-        )
+                None, // §Fase 102 scrape_overrides
+)
         .expect("flow runs");
 
         assert!(metrics.success, "the flow succeeds with zero LLM calls");
@@ -5038,7 +5054,8 @@ flow Echo(p: Text) -> Text {
             None, // outbox
             None, // §Fase 92.c — credential minter (test: none)
             None, // §Fase 94.d — secret custody (test: none)
-        )
+                None, // §Fase 102 scrape_overrides
+)
         .expect("flow runs");
         assert!(metrics.success, "the flow runs");
         let ret = metrics.step_results.last().expect("a return value");
@@ -5075,7 +5092,8 @@ flow Learn(tenant_id: Text, session_id_generic: Text) -> Text {
             None, None, None, None, None,
             None, // §Fase 92.c — credential minter (test: none)
             None, // §Fase 94.d — secret custody (test: none)
-        )
+                None, // §Fase 102 scrape_overrides
+)
         .expect("flow runs");
         assert!(metrics.success);
         let ret = metrics.step_results.last().expect("a return value");
@@ -5129,7 +5147,8 @@ flow Producer(tenant_id: Text) -> Text {
             Some(probe.clone() as std::sync::Arc<dyn EventOutbox>),
             None, // §Fase 92.c — credential minter (test: none)
             None, // §Fase 94.d — secret custody (test: none)
-        )
+                None, // §Fase 102 scrape_overrides
+)
         .expect("flow runs");
 
         assert!(metrics.success, "the producer flow runs to completion");

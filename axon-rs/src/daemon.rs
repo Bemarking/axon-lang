@@ -231,7 +231,8 @@ pub fn execute_listener_body(
                 None,
                 None, // §Fase 92.c — no minter on the OSS daemon path (mint fails closed)
                 None, // §Fase 94.d — no custody on the OSS daemon path (rotate/secrets fail closed)
-            );
+                        None, // §Fase 102 scrape_overrides
+);
             (run.flow_name.clone(), result)
         })
         .collect()
@@ -287,7 +288,8 @@ pub fn deliver_typed_event(
                     None,
                     None, // §Fase 92.c — no minter on the OSS daemon path (mint fails closed)
                     None, // §Fase 94.d — no custody on the OSS daemon path (rotate/secrets fail closed)
-                );
+                                None, // §Fase 102 scrape_overrides
+);
                 out.push((daemon.name.clone(), run.flow_name.clone(), result));
             }
         }
@@ -441,7 +443,8 @@ pub fn deliver_typed_event_reliable(
                         None,
                         None, // §Fase 92.c — no minter on the OSS daemon path (mint fails closed)
                     None, // §Fase 94.d — no custody on the OSS daemon path (rotate/secrets fail closed)
-                    );
+                                        None, // §Fase 102 scrape_overrides
+);
                     if let Err(e) = r {
                         return Err(format!("flow '{}': {e}", run.flow_name));
                     }

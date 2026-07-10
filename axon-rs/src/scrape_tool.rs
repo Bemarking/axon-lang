@@ -233,6 +233,62 @@ pub fn has_registered_fetcher() -> bool {
     SCRAPE_FETCHER.get().is_some()
 }
 
+/// §Fase 102.d — the per-tenant adaptive-selector memory seam. The extractor
+/// consults a registered memory to (a) **recall** a previously-learned selector
+/// for a drifted field before scanning, and (b) **learn** the selector a
+/// relocation just recovered — so the lead pipeline *heals* a target's HTML
+/// drift across runs instead of a human rewriting selectors. Strictly
+/// tenant-keyed. OSS ships none (recall → `None`, learn → noop); the enterprise
+/// Postgres store (§102.d) registers here, exactly the [`register_scrape_fetcher`]
+/// shape. The `(tenant, tool, field, domain)` key is supplied per-call by the
+/// extractor (the tenant rides `ScrapeConfig.tenant`, D102.9).
+pub trait SelectorMemory: Send + Sync {
+    /// A previously-learned selector for this coordinate, if any.
+    fn recall(&self, tenant: &str, tool: &str, field: &str, domain: &str) -> Option<String>;
+    /// Record a selector a relocation recovered (last-writer-wins — the most
+    /// recent successful relocation is the best current guess).
+    fn learn(&self, tenant: &str, tool: &str, field: &str, domain: &str, selector: &str);
+}
+
+fn selector_memory_reg() -> &'static std::sync::RwLock<Option<Arc<dyn SelectorMemory>>> {
+    static REG: OnceLock<std::sync::RwLock<Option<Arc<dyn SelectorMemory>>>> = OnceLock::new();
+    REG.get_or_init(|| std::sync::RwLock::new(None))
+}
+
+/// §Fase 102.d — register the enterprise durable selector store (the host calls
+/// this once at boot). Replaces any prior registration.
+pub fn register_selector_memory(memory: Arc<dyn SelectorMemory>) {
+    *selector_memory_reg().write().expect("selector memory poisoned") = Some(memory);
+}
+
+/// Clear the registered memory (back to the OSS no-memory default).
+pub fn clear_selector_memory() {
+    *selector_memory_reg().write().expect("selector memory poisoned") = None;
+}
+
+/// Recall a learned selector — `None` if no memory is registered or the tenant
+/// is unstamped (an unscoped read must never cross tenants).
+fn recall_selector(tenant: &str, tool: &str, field: &str, domain: &str) -> Option<String> {
+    if tenant.is_empty() {
+        return None;
+    }
+    selector_memory_reg()
+        .read()
+        .expect("selector memory poisoned")
+        .as_ref()
+        .and_then(|m| m.recall(tenant, tool, field, domain))
+}
+
+/// Learn a selector a relocation recovered — noop without a memory or a tenant.
+fn learn_selector(tenant: &str, tool: &str, field: &str, domain: &str, selector: &str) {
+    if tenant.is_empty() {
+        return;
+    }
+    if let Some(m) = selector_memory_reg().read().expect("selector memory poisoned").as_ref() {
+        m.learn(tenant, tool, field, domain, selector);
+    }
+}
+
 /// Resolve the active fetcher: the registered enterprise engine, or the OSS
 /// plain-`reqwest` fallback.
 fn fetch_page(req: &FetchRequest) -> Result<RawPage, ScrapeError> {
@@ -490,23 +546,42 @@ fn run_scrape_dom(name: &str, cfg: &ScrapeConfig, args: &serde_json::Value) -> S
     // The `page:` argument is a `RawPage` (from a prior scrape_http), or a bare
     // HTML string. Either way, the taint is PRESERVED — scrape_dom does no I/O,
     // it only processes already-Untrusted content, so its output stays ⊥.
-    let html = match args.get("page") {
+    // Capture the source domain from the RawPage's `final_url` so the §102.d
+    // selector memory keys a learned selector to the site (a selector learned on
+    // `news.acme.com` must not leak into `shop.acme.com`). A bare-HTML input has
+    // no URL → empty domain → the memory is simply not consulted.
+    let domain_of = |url: &str| split_url(url).map(|(_, host, _)| host).unwrap_or_default();
+    let (html, domain) = match args.get("page") {
         Some(serde_json::Value::String(s)) => {
             // Could be a JSON-encoded RawPage or raw HTML.
             match serde_json::from_str::<RawPage>(s) {
-                Ok(p) => p.body,
-                Err(_) => s.clone(),
+                Ok(p) => {
+                    let d = domain_of(&p.final_url);
+                    (p.body, d)
+                }
+                Err(_) => (s.clone(), String::new()),
             }
         }
         Some(v @ serde_json::Value::Object(_)) => match serde_json::from_value::<RawPage>(v.clone())
         {
-            Ok(p) => p.body,
+            Ok(p) => {
+                let d = domain_of(&p.final_url);
+                (p.body, d)
+            }
             Err(e) => return ScrapeOutcome::err(name, ScrapeError::MalformedPage(e.to_string())),
         },
         _ => return ScrapeOutcome::err(name, ScrapeError::MissingArgument("page".into())),
     };
 
-    let extracted = extract_fields(&html, &cfg.extract, cfg.adaptive, cfg.similarity_floor);
+    let extracted = extract_fields(
+        &html,
+        &cfg.extract,
+        cfg.adaptive,
+        cfg.similarity_floor,
+        &cfg.tenant,
+        name,
+        &domain,
+    );
     match serde_json::to_string(&extracted) {
         Ok(json) => ScrapeOutcome::ok(name, json),
         Err(e) => ScrapeOutcome::err(name, ScrapeError::MalformedPage(format!("encode: {e}"))),
@@ -676,6 +751,9 @@ fn extract_fields(
     specs: &[String],
     adaptive: bool,
     similarity_floor: f64,
+    tenant: &str,
+    tool: &str,
+    domain: &str,
 ) -> serde_json::Value {
     let elements = scan_elements(html);
     let mut obj = serde_json::Map::new();
@@ -688,12 +766,34 @@ fn extract_fields(
                 continue;
             }
         };
+        // §Fase 102.d — (1) recall: a previously-learned selector for this
+        // (tenant, tool, field, domain) that STILL matches heals a prior drift
+        // before we even try the declared selector.
+        if let Some(learned) = recall_selector(tenant, tool, field, domain) {
+            let lsel = parse_selector(&learned);
+            if let Some(el) = elements.iter().find(|el| matches(el, &lsel)) {
+                obj.insert(field.to_string(), serde_json::Value::String(el.text.clone()));
+                continue;
+            }
+        }
+        // (2) the declared selector, exact.
         let sel = parse_selector(selector_str);
-        let found = elements.iter().find(|el| matches(el, &sel));
-        let value = match found {
-            Some(el) => Some(el.text.clone()),
-            None if adaptive => relocate(&elements, &sel, similarity_floor),
-            None => None,
+        if let Some(el) = elements.iter().find(|el| matches(el, &sel)) {
+            obj.insert(field.to_string(), serde_json::Value::String(el.text.clone()));
+            continue;
+        }
+        // (3) adaptive relocation — and LEARN the selector it recovered, so the
+        // next run recalls it directly (§102.d, the drift-healing loop).
+        let value = if adaptive {
+            match relocate(&elements, &sel, similarity_floor) {
+                Some((text, learned_selector)) => {
+                    learn_selector(tenant, tool, field, domain, &learned_selector);
+                    Some(text)
+                }
+                None => None,
+            }
+        } else {
+            None
         };
         obj.insert(
             field.to_string(),
@@ -714,7 +814,7 @@ fn extract_fields(
 /// to selectors). Deterministic: ties resolve to document order. This is still a
 /// HEURISTIC (D98.4), not a proof; the enterprise tier's durable per-tenant
 /// selector memory (§102.d) is what turns a good relocation into learned drift.
-fn relocate(elements: &[Element], sel: &Selector, similarity_floor: f64) -> Option<String> {
+fn relocate(elements: &[Element], sel: &Selector, similarity_floor: f64) -> Option<(String, String)> {
     // A selector with no distinguishing components cannot be relocated.
     if sel.tag.is_none() && sel.id.is_none() && sel.class.is_none() {
         return None;
@@ -735,7 +835,22 @@ fn relocate(elements: &[Element], sel: &Selector, similarity_floor: f64) -> Opti
             _ => best = Some((score, el)),
         }
     }
-    best.map(|(_, el)| el.text.clone())
+    // Return the recovered text + a reconstructed selector that will MATCH this
+    // element again — so §102.d can learn it for the next run.
+    best.map(|(_, el)| (el.text.clone(), reconstruct_selector(el)))
+}
+
+/// Reconstruct a stable selector from a matched element: `tag#id` if it has an
+/// id, else `tag.class` on its first class, else the bare `tag`. By construction
+/// `matches(el, parse_selector(reconstruct_selector(el)))` holds.
+fn reconstruct_selector(el: &Element) -> String {
+    if !el.id.is_empty() {
+        format!("{}#{}", el.tag, el.id)
+    } else if let Some(c) = el.classes.first() {
+        format!("{}.{}", el.tag, c)
+    } else {
+        el.tag.clone()
+    }
 }
 
 /// Similarity of a candidate element to a drifted selector's signature, in
@@ -1110,6 +1225,7 @@ mod tests {
             ],
             false,
             0.0,
+            "", "", "",
         );
         assert_eq!(out["price"], "$9");
         assert_eq!(out["cta"], "buy");
@@ -1118,7 +1234,7 @@ mod tests {
     #[test]
     fn dom_miss_without_adaptive_is_null() {
         let html = "<h1>Title</h1>";
-        let out = extract_fields(html, &["x=.nope".to_string()], false, 0.0);
+        let out = extract_fields(html, &["x=.nope".to_string()], false, 0.0, "", "", "");
         assert_eq!(out["x"], serde_json::Value::Null);
     }
 
@@ -1126,7 +1242,7 @@ mod tests {
     fn dom_adaptive_relocates_by_tag() {
         // Selector `h1.headline` misses (no class), adaptive relocates to <h1>.
         let html = "<h1>Relocated</h1>";
-        let out = extract_fields(html, &["t=h1.headline".to_string()], true, 0.5);
+        let out = extract_fields(html, &["t=h1.headline".to_string()], true, 0.5, "", "", "");
         assert_eq!(out["t"], "Relocated");
     }
 
@@ -1134,7 +1250,7 @@ mod tests {
     fn dom_adaptive_respects_floor() {
         // The class shares no token with the element → similarity 0 < floor → null.
         let html = "<h1>X</h1>";
-        let out = extract_fields(html, &["t=.only-class".to_string()], true, 0.5);
+        let out = extract_fields(html, &["t=.only-class".to_string()], true, 0.5, "", "", "");
         assert_eq!(out["t"], serde_json::Value::Null);
     }
 
@@ -1143,7 +1259,7 @@ mod tests {
         // §102.c — the target renamed `.price` to `.product-price`; token
         // similarity (price ∈ {product, price}) relocates instead of empty.
         let html = r#"<span class="product-price">$42</span>"#;
-        let out = extract_fields(html, &["p=span.price".to_string()], true, 0.6);
+        let out = extract_fields(html, &["p=span.price".to_string()], true, 0.6, "", "", "");
         assert_eq!(out["p"], "$42");
     }
 
@@ -1153,7 +1269,7 @@ mod tests {
         // The pre-§102 stub returned the FIRST same-tag element at confidence 1.0
         // — a silent wrong field. Real scoring falls below the floor → null.
         let html = r#"<span class="footer-legal">unrelated</span>"#;
-        let out = extract_fields(html, &["p=span.price".to_string()], true, 0.75);
+        let out = extract_fields(html, &["p=span.price".to_string()], true, 0.75, "", "", "");
         assert_eq!(
             out["p"],
             serde_json::Value::Null,
@@ -1165,8 +1281,70 @@ mod tests {
     fn dom_adaptive_picks_best_scoring_candidate() {
         // The span sharing the `price` token wins over an unrelated same-tag span.
         let html = r#"<span class="nav">Home</span><span class="unit-price">$9</span>"#;
-        let out = extract_fields(html, &["p=span.price".to_string()], true, 0.6);
+        let out = extract_fields(html, &["p=span.price".to_string()], true, 0.6, "", "", "");
         assert_eq!(out["p"], "$9");
+    }
+
+    /// §Fase 102.d — the drift-healing loop: a relocation LEARNS the recovered
+    /// selector; a later run RECALLS it directly. Serialised because the memory
+    /// registry is process-global.
+    #[test]
+    fn dom_selector_memory_learns_then_recalls_a_drift() {
+        use std::collections::HashMap;
+        use std::sync::Mutex;
+        static LOCK: Mutex<()> = Mutex::new(());
+        let _g = LOCK.lock().unwrap();
+
+        #[derive(Default)]
+        struct Mem {
+            map: Mutex<HashMap<String, String>>,
+        }
+        impl SelectorMemory for Mem {
+            fn recall(&self, t: &str, tool: &str, f: &str, d: &str) -> Option<String> {
+                self.map.lock().unwrap().get(&format!("{t}|{tool}|{f}|{d}")).cloned()
+            }
+            fn learn(&self, t: &str, tool: &str, f: &str, d: &str, sel: &str) {
+                self.map.lock().unwrap().insert(format!("{t}|{tool}|{f}|{d}"), sel.to_string());
+            }
+        }
+        let mem = Arc::new(Mem::default());
+        register_selector_memory(mem.clone());
+
+        // Run 1: declared `.price` misses; relocation recovers via `product-price`
+        // and LEARNS `span.product-price`.
+        let html = r#"<span class="product-price">$42</span>"#;
+        let out = extract_fields(
+            html,
+            &["p=span.price".to_string()],
+            true,
+            0.6,
+            "kivi",
+            "Harvest",
+            "shop.acme.com",
+        );
+        assert_eq!(out["p"], "$42");
+        assert_eq!(
+            mem.recall("kivi", "Harvest", "p", "shop.acme.com").as_deref(),
+            Some("span.product-price"),
+            "the recovered selector must be learned"
+        );
+
+        // Run 2: even with adaptive OFF, the LEARNED selector is recalled first
+        // and matches — the pipeline healed the drift without re-relocating.
+        let out2 = extract_fields(
+            html,
+            &["p=span.price".to_string()],
+            false,
+            1.0,
+            "kivi",
+            "Harvest",
+            "shop.acme.com",
+        );
+        assert_eq!(out2["p"], "$42", "the learned selector heals the drift on recall");
+
+        // Isolation: a DIFFERENT tenant does not see kivi's learned selector.
+        assert!(mem.recall("other", "Harvest", "p", "shop.acme.com").is_none());
+        clear_selector_memory();
     }
 
     #[test]

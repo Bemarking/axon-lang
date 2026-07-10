@@ -126,7 +126,8 @@ fn run_sync(source: &str, source_file: &str, flow_name: &str) -> Result<ServerRu
         None, // §Fase 74.f — event_outbox (test: in-process emit)
         None, // §Fase 92.c — credential minter (test: none)
         None, // §Fase 94.d — secret custody (test: none)
-    )
+        None, // §Fase 102 scrape_overrides
+)
 }
 
 /// Drive the async dispatcher path on the same inputs + collect the

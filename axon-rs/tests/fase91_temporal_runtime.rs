@@ -26,7 +26,8 @@ fn run(source: &str, flow: &str) -> axon::runner::ServerRunnerMetrics {
         &ir, flow, "stub", "", "<fase91-test>", None, None, &empty, &empty, None, None, None,
         None, None, None,
         None, // §Fase 94.d — secret custody (test: none)
-    )
+        None, // §Fase 102 scrape_overrides
+)
     .expect("execute")
 }
 

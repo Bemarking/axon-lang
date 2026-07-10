@@ -109,6 +109,12 @@ pub struct ScrapeConfig {
     pub render_wait: String,
     /// Per-tenant proxy-pool config KEY (resolved via SecretResolver).
     pub proxy: String,
+    /// §Fase 102 (D102.9) — the dispatching tenant, stamped onto the
+    /// request-scoped registry by [`ToolRegistry::apply_scrape_tenant_context`]
+    /// (from `execute_server_flow`'s `tenant_id`). Empty until stamped. It keys
+    /// the per-tenant adaptive-selector memory (§102.d) and is the coordinate the
+    /// enterprise fetcher/store isolate on — the seam that was missing in §98.
+    pub tenant: String,
     /// Whether `robots.txt` is honored (default TRUE — D98.6).
     pub respect_robots: bool,
     /// `scrape_dom` extraction FieldSpecs, each `name=selector`.
@@ -131,6 +137,20 @@ pub struct ScrapeConfig {
     pub checkpoint: String,
 }
 
+/// §Fase 102 (D102.9) — per-tenant scrape overrides resolved by the deployed
+/// executor (the `SecretResolver` reveal, §102.b), threaded into
+/// `execute_server_flow` and applied via
+/// [`ToolRegistry::apply_scrape_tenant_context`]. `None` fields leave the
+/// source-declared config untouched. The per-tenant browser-sidecar URL rides
+/// the enterprise fetcher (not `ScrapeConfig`), so it is not represented here.
+#[derive(Debug, Clone, Default)]
+pub struct ScrapeOverrides {
+    /// Resolved per-tenant proxy URL, substituted into `ScrapeConfig.proxy`.
+    pub proxy: Option<String>,
+    /// Per-tenant crawl-concurrency ceiling (≥ 1).
+    pub concurrency: Option<i64>,
+}
+
 impl ScrapeConfig {
     /// §Fase 98.b — resolve an `IRScrapeSpec` into the runtime config,
     /// applying the documented defaults (engine ⇒ `impersonate`,
@@ -141,6 +161,8 @@ impl ScrapeConfig {
             impersonate: spec.impersonate.clone().unwrap_or_default(),
             render_wait: spec.render_wait.clone().unwrap_or_default(),
             proxy: spec.proxy.clone(),
+            // §Fase 102 — stamped per-request by the executor (empty at IR time).
+            tenant: String::new(),
             // Default-secure: robots honored unless explicitly disabled.
             respect_robots: spec.respect_robots.unwrap_or(true),
             extract: spec.extract.clone(),
@@ -383,6 +405,38 @@ impl ToolRegistry {
                 continue;
             }
             entry.runtime = resolve_tool_endpoint(&entry.runtime, &entry.name, base_url);
+        }
+    }
+
+    /// §Fase 102 (D102.9) — stamp the dispatching tenant + apply per-tenant
+    /// scrape overrides onto the request-scoped registry, BEFORE any dispatch.
+    /// Mirrors [`Self::resolve_relative_endpoints`]: the registry is per-request,
+    /// so this is zero cross-tenant leakage (§58 D10). The tenant stamp keys the
+    /// §102.d adaptive-selector memory; the overrides (resolved by the deployed
+    /// executor's `SecretResolver`, §102.b) substitute the per-tenant proxy +
+    /// crawl-concurrency ceiling so the flow never sees the proxy credential.
+    pub fn apply_scrape_tenant_context(
+        &mut self,
+        tenant_id: &str,
+        overrides: Option<&ScrapeOverrides>,
+    ) {
+        for entry in self.tools.values_mut() {
+            let Some(cfg) = entry.scrape.as_mut() else {
+                continue;
+            };
+            cfg.tenant = tenant_id.to_string();
+            if let Some(ov) = overrides {
+                if let Some(p) = ov.proxy.as_deref() {
+                    if !p.trim().is_empty() {
+                        cfg.proxy = p.to_string();
+                    }
+                }
+                if let Some(c) = ov.concurrency {
+                    if c >= 1 {
+                        cfg.concurrency = c;
+                    }
+                }
+            }
         }
     }
 
