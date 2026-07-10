@@ -470,10 +470,10 @@ fn s6_tool_registry_is_streaming_field_present_post_34_c() {
         secret_partition: String::new(),
         source: axon::tool_registry::ToolSource::Program,
         is_streaming: derive_is_streaming(&[
-        scrape: None,
             "compute".to_string(),
             "read".to_string(),
         ]),
+        scrape: None,
     };
     assert!(
         !plain_entry.is_streaming,

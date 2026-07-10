@@ -88,8 +88,8 @@ fn entry(
         secret_partition: String::new(),
         source: ToolSource::Program,
         is_streaming,
+        scrape: None,
     }
-    scrape: None,
 }
 
 fn http_entry(name: &str, runtime: &str, effect_row: Vec<&str>) -> ToolEntry {

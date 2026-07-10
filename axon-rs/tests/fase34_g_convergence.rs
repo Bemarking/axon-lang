@@ -139,8 +139,8 @@ fn stream_tool_entry(
         secret_partition: String::new(),
         source: ToolSource::Program,
         is_streaming,
+        scrape: None,
     }
-    scrape: None,
 }
 
 fn perform_yield(arg: &str) -> Instruction {
