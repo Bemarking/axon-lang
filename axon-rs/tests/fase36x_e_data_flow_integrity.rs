@@ -73,6 +73,7 @@ fn echo_tool(name: &str) -> ToolEntry {
         secret_partition: String::new(),
         source: ToolSource::Program,
         is_streaming: true,
+        scrape: None,
     }
 }
 

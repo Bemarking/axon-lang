@@ -485,6 +485,25 @@ impl IRGenerator {
             argv: n.argv.clone(),
             // §Fase 85.b — the cache-policy reference (elided when empty).
             cache: n.cache.clone(),
+            // §Fase 98.b — the web-acquisition config (elided from the IR
+            // when absent, per the `skip_serializing_if` on `IRToolSpec`).
+            scrape: n.scrape.as_ref().map(|s| crate::ir_nodes::IRScrapeSpec {
+                node_type: "scrape_spec",
+                engine: s.engine.clone(),
+                impersonate: s.impersonate.clone(),
+                render_wait: s.render_wait.clone(),
+                proxy: s.proxy.clone(),
+                respect_robots: s.respect_robots,
+                extract: s.extract.clone(),
+                adaptive: s.adaptive,
+                similarity_floor: s.similarity_floor,
+                follow: s.follow.clone(),
+                max_depth: s.max_depth,
+                max_pages: s.max_pages,
+                concurrency: s.concurrency,
+                politeness: s.politeness.clone(),
+                checkpoint: s.checkpoint.clone(),
+            }),
         }
     }
 

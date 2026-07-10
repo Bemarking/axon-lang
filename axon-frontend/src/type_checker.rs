@@ -85,6 +85,15 @@ const VALID_EFFECTS: &[&str] = &[
     "sensitive",
     "legal",
     "ots",
+    // §Fase 98.c — `web` (native web acquisition). A first-class base
+    // (D98.10), NOT `network`: a `provider: http` call to a TRUSTED API is
+    // `<network>`; a value acquired from the OPEN, ADVERSARIAL web carries
+    // `<web>` and is born epistemically Untrusted (⊥, D98.1). It is what
+    // lets a shield say "web-tainted content must pass `prompt_injection`
+    // before an agent's belief" — the content-injection barrier (§98.d),
+    // the §84 command-injection discipline applied to fetched content.
+    // Precedented by the `legal`/`ots` additions above.
+    "web",
 ];
 
 /// §Fase 85.c — the closed `cache.backend:` catalog. `in_process` is the OSS
@@ -125,6 +134,21 @@ const VALID_SCOPE_DEPTHS: &[&str] = &["static_artifact", "memory_dump", "live_ne
 /// creativity types (*The Creative Mind*, 1990). Each maps to a distinct
 /// sampling-parameter profile at runtime (D86.3).
 const VALID_FORGE_MODES: &[&str] = &["combinatorial", "exploratory", "transformational"];
+
+/// §Fase 98.d — the closed catalog of web-acquisition providers. A tool whose
+/// `provider:` is one of these acquires content from the open, adversarial web
+/// (born Untrusted, D98.1) and is governed by the §98 scrape laws.
+const VALID_SCRAPE_PROVIDERS: &[&str] = &["scrape_http", "scrape_dom", "scrape_crawl"];
+
+/// §Fase 98.d — the closed `scrape.engine:` catalog. `impersonate` (HTTP-
+/// fingerprint stealth, the GA tier — OSS fallback is plain reqwest) |
+/// `browser` (headless-render sidecar, the gray/pilot tier, D98.6).
+const VALID_SCRAPE_ENGINES: &[&str] = &["impersonate", "browser"];
+
+/// §Fase 98.d — the closed `scrape.impersonate:` fingerprint-profile catalog.
+/// The declared family; the concrete JA3/JA4 + HTTP/2 profile is resolved by
+/// the enterprise engine (§98.g).
+const VALID_IMPERSONATE_PROFILES: &[&str] = &["chrome", "firefox", "safari", "edge"];
 
 const VALID_EPISTEMIC_LEVELS: &[&str] = &["believe", "doubt", "know", "speculate"];
 
@@ -2122,10 +2146,300 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// §Fase 98.d — Native Web Acquisition laws. Inert unless the tool is a
+    /// scrape provider or declares a `scrape:` block. Enforces:
+    ///
+    /// - **axon-T905** — a `scrape:` block only on a scrape provider; a scrape
+    ///   provider's `engine:`/`impersonate:` in the closed catalog; per-field
+    ///   provider applicability (`extract` only on `scrape_dom`, `follow`/
+    ///   crawl fields only on `scrape_crawl`, `render_wait` only with the
+    ///   `browser` engine).
+    /// - **axon-T904** — effect honesty (D98.2): a scrape provider's `effects:`
+    ///   MUST carry `web`; `scrape_http`/`scrape_crawl` MUST carry `network`;
+    ///   `scrape_dom` MUST NOT carry `network` (it does no I/O — it processes
+    ///   already-fetched, already-tainted content); an `adaptive:` DOM tool
+    ///   MUST carry `storage` (the per-tenant selector memory, §98.h).
+    /// - **axon-T906** — each `extract` FieldSpec is a single `name=selector`.
+    /// - **axon-T907** — `similarity_floor` ∈ [0,1].
+    /// - **axon-T909** — `politeness:`/`checkpoint:` resolve to declared
+    ///   symbols. (`proxy:` is a config KEY resolved via SecretResolver at
+    ///   deploy, never a source symbol — its shape is checked, not resolved.)
+    fn check_scrape_tool(&mut self, node: &ToolDefinition) {
+        let is_scrape_provider = VALID_SCRAPE_PROVIDERS.contains(&node.provider.as_str());
+        let scrape = match &node.scrape {
+            Some(s) => s,
+            None => {
+                // A scrape provider with NO `scrape:` block is legal (defaults
+                // apply). Nothing to check on the block; effect honesty still
+                // applies below via the early is_scrape_provider guard.
+                if is_scrape_provider {
+                    self.check_scrape_effect_honesty(node, false);
+                }
+                return;
+            }
+        };
+
+        // (T905) a `scrape:` block on a non-scrape tool is meaningless.
+        if !is_scrape_provider {
+            self.emit(
+                format!(
+                    "axon-T905 tool '{}' declares a `scrape:` block but its `provider:` is \
+                     '{}', not a web-acquisition engine. The scrape config only applies to a \
+                     tool whose provider is one of: {}.",
+                    node.name,
+                    if node.provider.is_empty() { "<unset>" } else { &node.provider },
+                    valid_list(VALID_SCRAPE_PROVIDERS)
+                ),
+                &node.loc,
+            );
+            // Continue — validate the block's internal shape regardless.
+        }
+
+        // (T905) engine + impersonate closed catalogs.
+        if let Some(engine) = &scrape.engine {
+            if !is_valid(engine, VALID_SCRAPE_ENGINES) {
+                self.emit(
+                    format!(
+                        "axon-T905 tool '{}' scrape `engine: {}` is not a known engine. Valid: {}.",
+                        node.name,
+                        engine,
+                        valid_list(VALID_SCRAPE_ENGINES)
+                    ),
+                    &scrape.loc,
+                );
+            }
+        }
+        if let Some(profile) = &scrape.impersonate {
+            if !is_valid(profile, VALID_IMPERSONATE_PROFILES) {
+                self.emit(
+                    format!(
+                        "axon-T905 tool '{}' scrape `impersonate: {}` is not a known \
+                         fingerprint profile. Valid: {}.",
+                        node.name,
+                        profile,
+                        valid_list(VALID_IMPERSONATE_PROFILES)
+                    ),
+                    &scrape.loc,
+                );
+            }
+        }
+
+        // (T905) `render_wait` is a browser-tier concept — the impersonate
+        // engine has no JS runtime, so a settle wait is silently meaningless.
+        let engine_is_browser = scrape.engine.as_deref() == Some("browser");
+        if scrape.render_wait.is_some() && !engine_is_browser {
+            self.emit(
+                format!(
+                    "axon-T905 tool '{}' sets `render_wait:` but its `engine:` is not \
+                     `browser` — the impersonate engine renders no JS, so a settle wait has \
+                     no effect. Set `engine: browser` or drop `render_wait:`.",
+                    node.name
+                ),
+                &scrape.loc,
+            );
+        }
+        // (T905) `impersonate:` profile only applies with the impersonate
+        // engine (the browser sidecar carries its own real fingerprint).
+        if scrape.impersonate.is_some() && engine_is_browser {
+            self.emit(
+                format!(
+                    "axon-T905 tool '{}' sets `impersonate:` but `engine: browser` — the \
+                     browser sidecar presents its own real fingerprint; profile impersonation \
+                     is an `engine: impersonate` concept.",
+                    node.name
+                ),
+                &scrape.loc,
+            );
+        }
+
+        // (T905) per-provider field applicability.
+        let dom_only = [
+            (!scrape.extract.is_empty(), "extract"),
+            (scrape.adaptive.is_some(), "adaptive"),
+            (scrape.similarity_floor.is_some(), "similarity_floor"),
+        ];
+        let crawl_only = [
+            (!scrape.follow.is_empty(), "follow"),
+            (scrape.max_depth.is_some(), "max_depth"),
+            (scrape.max_pages.is_some(), "max_pages"),
+            (scrape.concurrency.is_some(), "concurrency"),
+            (!scrape.politeness.is_empty(), "politeness"),
+            (!scrape.checkpoint.is_empty(), "checkpoint"),
+        ];
+        if node.provider != "scrape_dom" {
+            for (present, field) in dom_only {
+                if present {
+                    self.emit(
+                        format!(
+                            "axon-T905 tool '{}' sets scrape `{}:` but its provider is '{}' — \
+                             extraction fields (`extract`/`adaptive`/`similarity_floor`) apply \
+                             only to `scrape_dom`.",
+                            node.name, field, node.provider
+                        ),
+                        &scrape.loc,
+                    );
+                }
+            }
+        }
+        if node.provider != "scrape_crawl" {
+            for (present, field) in crawl_only {
+                if present {
+                    self.emit(
+                        format!(
+                            "axon-T905 tool '{}' sets scrape `{}:` but its provider is '{}' — \
+                             crawl fields (`follow`/`max_depth`/`max_pages`/`concurrency`/\
+                             `politeness`/`checkpoint`) apply only to `scrape_crawl`.",
+                            node.name, field, node.provider
+                        ),
+                        &scrape.loc,
+                    );
+                }
+            }
+        }
+
+        // (T906) each `extract` FieldSpec is a single `name=selector` pair.
+        for spec in &scrape.extract {
+            let ok = match spec.split_once('=') {
+                Some((name, sel)) => !name.trim().is_empty() && !sel.trim().is_empty(),
+                None => false,
+            };
+            if !ok {
+                self.emit(
+                    format!(
+                        "axon-T906 tool '{}' scrape `extract` entry '{}' is malformed — each \
+                         FieldSpec must be `name=selector` (e.g. `\"title=h1\"`).",
+                        node.name, spec
+                    ),
+                    &scrape.loc,
+                );
+            }
+        }
+
+        // (T907) similarity_floor ∈ [0,1].
+        if let Some(f) = scrape.similarity_floor {
+            if !(0.0..=1.0).contains(&f) {
+                self.emit(
+                    format!(
+                        "axon-T907 tool '{}' scrape `similarity_floor: {}` is out of range — \
+                         the adaptive-relocation threshold must be in [0, 1].",
+                        node.name, f
+                    ),
+                    &scrape.loc,
+                );
+            }
+        }
+
+        // (T909) reference resolution for `politeness:` (a declared budget/…)
+        // and `checkpoint:` (a declared store). Conservative: the referenced
+        // name must resolve to SOME declared symbol.
+        for (name, field) in [
+            (&scrape.politeness, "politeness"),
+            (&scrape.checkpoint, "checkpoint"),
+        ] {
+            if !name.is_empty() && self.symbols.lookup(name).is_none() {
+                self.emit(
+                    format!(
+                        "axon-T909 tool '{}' scrape `{}: {}` references an undeclared name — \
+                         it must resolve to a declared {} in this program.",
+                        node.name,
+                        field,
+                        name,
+                        if field == "politeness" { "budget" } else { "store" }
+                    ),
+                    &scrape.loc,
+                );
+            }
+        }
+
+        // (T904) effect honesty — the load-bearing law. Only meaningful for a
+        // real scrape provider.
+        if is_scrape_provider {
+            self.check_scrape_effect_honesty(node, scrape.adaptive == Some(true));
+        }
+    }
+
+    /// §Fase 98.d (axon-T904) — the effect-honesty half of §98.d: a scrape
+    /// tool's declared `effects:` row must match the bases it actually
+    /// exercises. This is what lets the content-injection barrier (T908) and
+    /// the PCC `ScrapeProvenanceSoundness` class reason about `web` at all.
+    fn check_scrape_effect_honesty(&mut self, node: &ToolDefinition, adaptive: bool) {
+        let bases: std::collections::HashSet<String> = node
+            .effects
+            .as_ref()
+            .map(|e| {
+                e.effects
+                    .iter()
+                    .map(|s| s.split(':').next().unwrap_or(s).to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let mut require = |this: &mut Self, base: &str, why: &str| {
+            if !bases.contains(base) {
+                this.emit(
+                    format!(
+                        "axon-T904 web-acquisition tool '{}' (`provider: {}`) must declare the \
+                         `{}` effect — {}. Add it to `effects: <…>`.",
+                        node.name, node.provider, base, why
+                    ),
+                    &node.loc,
+                );
+            }
+        };
+
+        // Every scrape provider acquires open-web content: `web` is mandatory.
+        require(
+            self,
+            "web",
+            "web content is born epistemically Untrusted (D98.1) and cannot reach an agent's \
+             belief without a shield",
+        );
+
+        match node.provider.as_str() {
+            "scrape_http" | "scrape_crawl" => {
+                require(self, "network", "it performs live network I/O");
+            }
+            "scrape_dom" => {
+                // scrape_dom does NO I/O — it processes already-fetched
+                // content. Declaring `network` would be dishonest.
+                if bases.contains("network") {
+                    self.emit(
+                        format!(
+                            "axon-T904 tool '{}' (`provider: scrape_dom`) declares `network` but \
+                             performs NO network I/O — it processes an already-fetched, already-\
+                             tainted `page:`. Drop `network`; keep `web` (the taint is \
+                             preserved, not re-acquired).",
+                            node.name
+                        ),
+                        &node.loc,
+                    );
+                }
+            }
+            _ => {}
+        }
+
+        // An adaptive DOM tool persists per-tenant selector memory → `storage`.
+        if adaptive && !bases.contains("storage") {
+            self.emit(
+                format!(
+                    "axon-T904 tool '{}' sets `adaptive: true` but does not declare `storage` — \
+                     adaptive relocation persists per-tenant selector memory (§98.h), a real \
+                     `<storage>` effect. Add `storage` to `effects: <…>`.",
+                    node.name
+                ),
+                &node.loc,
+            );
+        }
+    }
+
     fn check_tool(&mut self, node: &ToolDefinition) {
         // §Fase 84.c — Remote Hands technician-command laws (T858–T862). Inert
         // for any tool that does not set `target:`/`risk:`/`argv:`.
         self.check_technician_tool(node);
+        // §Fase 98.d — Native Web Acquisition laws (T904–T907, T909). Inert
+        // for any tool whose `provider:` is not a scrape engine and which
+        // declares no `scrape:` block.
+        self.check_scrape_tool(node);
         // §Fase 85.c — cache-reference resolution + non-pure-needs-ttl.
         self.check_tool_cache_ref(node);
         // §Fase 94.c (axon-T902) — the dispatch-injection `secret:` laws.
@@ -2954,6 +3268,164 @@ impl<'a> TypeChecker<'a> {
         //      otherwise the untrusted payload is being consumed
         //      without verification.
         self.check_refinement_and_stream_contracts(node);
+
+        // §Fase 98.d (axon-T908) — the content-injection barrier: a
+        // `web`-tainted value reaching an agent's belief context without an
+        // intervening shield is a compile error (D98.1 — the §84 command-
+        // injection discipline applied to fetched content).
+        self.check_content_injection_barrier(node);
+    }
+
+    /// §Fase 98.d (axon-T908) — the content-injection barrier. The web is
+    /// adversarial and the type system knows it: if a flow reaches a
+    /// web-acquisition tool (a value carrying the `web` effect, born Untrusted
+    /// — D98.1) AND drives a cognitive/agent step (a belief position), then it
+    /// MUST also apply a `shield` — otherwise scraped content reaches the
+    /// agent's beliefs unscanned. Sound + conservative (flow-granularity),
+    /// mirroring the established `Untrusted<T>` → `trust:<proof>` obligation.
+    ///
+    /// The barrier is satisfied by EITHER a `shield <S> on <v>` step anywhere
+    /// in the flow, OR the belief step's referenced agent carrying its own
+    /// `shield:` gate. A flow that scrapes but never reasons (e.g. scrape →
+    /// `persist`) carries no obligation.
+    fn check_content_injection_barrier(&mut self, flow: &FlowDefinition) {
+        // Build {tool_name → effect bases} program-wide.
+        let mut tool_effects: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        self.collect_tool_effects(&self.program.declarations, &mut tool_effects);
+        let is_web_tool = |name: &str| -> bool {
+            tool_effects
+                .get(name)
+                .map(|effs| {
+                    effs.iter()
+                        .any(|e| e.split(':').next().unwrap_or(e) == "web")
+                })
+                .unwrap_or(false)
+        };
+
+        // Agents carrying a shield gate — a belief step through such an agent
+        // is shielded at cognition.
+        let mut shielded_agents: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        self.collect_shielded_agents(&self.program.declarations, &mut shielded_agents);
+
+        let mut web_producer = false;
+        let mut unshielded_belief = false;
+        let mut shield_step_present = false;
+        self.walk_flow_for_injection(
+            &flow.body,
+            &is_web_tool,
+            &shielded_agents,
+            &mut web_producer,
+            &mut unshielded_belief,
+            &mut shield_step_present,
+        );
+
+        if web_producer && unshielded_belief && !shield_step_present {
+            self.emit(
+                format!(
+                    "axon-T908 flow '{}' acquires web content (a tool carrying the `web` \
+                     effect, born Untrusted — D98.1) and feeds a cognitive step whose agent \
+                     declares no shield, with no `shield` applied in the flow. Scraped content \
+                     is adversarial: scan it before it reaches an agent's beliefs. Add a \
+                     `shield <S> on <page>` step (scanning e.g. `prompt_injection`) before the \
+                     reasoning step, or give the agent a `shield:` gate.",
+                    flow.name
+                ),
+                &flow.loc,
+            );
+        }
+    }
+
+    /// Collect agent names that carry a non-empty `shield_ref` — reused by the
+    /// content-injection barrier to treat a belief step through such an agent
+    /// as shielded.
+    fn collect_shielded_agents<'d>(
+        &self,
+        decls: &'d [Declaration],
+        out: &mut std::collections::HashSet<&'d str>,
+    ) {
+        for d in decls {
+            match d {
+                Declaration::Agent(a) if !a.shield_ref.is_empty() => {
+                    out.insert(a.name.as_str());
+                }
+                Declaration::Epistemic(eb) => self.collect_shielded_agents(&eb.body, out),
+                _ => {}
+            }
+        }
+    }
+
+    /// Walk a flow body accumulating the three barrier signals. Recurses into
+    /// `if`/`for` bodies (same shape as `walk_flow_steps_for_effects`).
+    #[allow(clippy::only_used_in_recursion)]
+    fn walk_flow_for_injection(
+        &self,
+        steps: &[FlowStep],
+        is_web_tool: &dyn Fn(&str) -> bool,
+        shielded_agents: &std::collections::HashSet<&str>,
+        web_producer: &mut bool,
+        unshielded_belief: &mut bool,
+        shield_step_present: &mut bool,
+    ) {
+        for step in steps {
+            match step {
+                FlowStep::Step(s) => {
+                    // A tool-bearing step reaching a `web` tool is a producer.
+                    for tref in [&s.apply_ref, &s.navigate_ref] {
+                        if !tref.is_empty() && is_web_tool(tref) {
+                            *web_producer = true;
+                        }
+                    }
+                    // A cognitive step is a belief position: it poses an `ask:`
+                    // to the model (reasoning over `given`), or it binds a
+                    // persona/agent. It is "unshielded" unless it reasons
+                    // through an agent that carries its own shield gate.
+                    let is_cognitive = !s.ask.is_empty() || !s.persona_ref.is_empty();
+                    let agent_shielded = !s.persona_ref.is_empty()
+                        && shielded_agents.contains(s.persona_ref.as_str());
+                    if is_cognitive && !agent_shielded {
+                        *unshielded_belief = true;
+                    }
+                }
+                FlowStep::UseTool(u) => {
+                    if is_web_tool(&u.tool_name) {
+                        *web_producer = true;
+                    }
+                }
+                FlowStep::ShieldApply(_) => {
+                    *shield_step_present = true;
+                }
+                FlowStep::If(c) => {
+                    self.walk_flow_for_injection(
+                        &c.then_body,
+                        is_web_tool,
+                        shielded_agents,
+                        web_producer,
+                        unshielded_belief,
+                        shield_step_present,
+                    );
+                    self.walk_flow_for_injection(
+                        &c.else_body,
+                        is_web_tool,
+                        shielded_agents,
+                        web_producer,
+                        unshielded_belief,
+                        shield_step_present,
+                    );
+                }
+                FlowStep::ForIn(f) => {
+                    self.walk_flow_for_injection(
+                        &f.body,
+                        is_web_tool,
+                        shielded_agents,
+                        web_producer,
+                        unshielded_belief,
+                        shield_step_present,
+                    );
+                }
+                _ => {}
+            }
+        }
     }
 
     // ── §λ-L-E Fase 11.a — refinement + stream flow-level checks ─

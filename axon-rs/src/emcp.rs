@@ -831,6 +831,7 @@ impl Tool for McpStreamingTool {
             secret_partition: String::new(),
             source: crate::tool_registry::ToolSource::Program,
             is_streaming: false,
+            scrape: None,
         };
         let args_owned = args;
         match tokio::task::spawn_blocking(move || dispatch_mcp(&entry, &args_owned)).await {
@@ -1153,6 +1154,7 @@ mod tests {
             // prefix. MCP streaming via partial-response notifications
             // lands in Fase 34.f.
             is_streaming: false,
+            scrape: None,
         }
     }
 

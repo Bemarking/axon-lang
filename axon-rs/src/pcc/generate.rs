@@ -23,7 +23,7 @@ use super::proof_term::{
     EffectRowSoundnessWitness, InterruptibleSessionSoundnessWitness, JsonShapeSoundnessWitness,
     ParkedResidualSoundnessWitness, ProofTerm, PropertyClass,
     CacheSoundnessWitness, ForgeSoundnessWitness, ResourceBoundsWitness, SavantSoundnessWitness,
-    WardenSoundnessWitness,
+    ScrapeProvenanceSoundnessWitness, WardenSoundnessWitness,
     ShieldHaltGuaranteeWitness, TechnicianCommandSafetyWitness, ToolCallSoundnessWitness,
     UpstreamProjectionSoundnessWitness, Witness,
     CALL_INTERRUPT_CAUSES, MAX_RETRIES, VALID_BREACH_POLICIES, VALID_BUDGET_PERIODS,
@@ -2496,6 +2496,172 @@ pub fn generate_cache_soundness_proofs(ir: &IRProgram, axon_version: &str) -> Ve
     }
 }
 
+// ── §Fase 98.d — ScrapeProvenanceSoundness ───────────────────────────────────
+
+/// §98.d — the closed web-acquisition provider set (mirror of
+/// `type_checker::VALID_SCRAPE_PROVIDERS`). The checker's own statement of
+/// "what a scrape tool is" (D51.2).
+const SCRAPE_PROVIDERS: &[&str] = &["scrape_http", "scrape_dom", "scrape_crawl"];
+
+fn effect_base(e: &str) -> &str {
+    e.split_once(':').map(|(b, _)| b).unwrap_or(e)
+}
+
+/// Recursively accumulate the three content-injection-barrier signals over an
+/// `IRFlow`'s step tree (mirror of the frontend `walk_flow_for_injection`).
+fn walk_ir_for_injection(
+    steps: &[crate::ir_nodes::IRFlowNode],
+    is_web_tool: &dyn Fn(&str) -> bool,
+    shielded_agents: &std::collections::HashSet<String>,
+    web_producer: &mut bool,
+    unshielded_belief: &mut bool,
+    shield_present: &mut bool,
+) {
+    use crate::ir_nodes::IRFlowNode;
+    for step in steps {
+        match step {
+            IRFlowNode::Step(s) => {
+                for tref in [&s.apply_ref, &s.navigate_ref] {
+                    if !tref.is_empty() && is_web_tool(tref) {
+                        *web_producer = true;
+                    }
+                }
+                let is_cognitive = !s.ask.is_empty() || !s.persona_ref.is_empty();
+                let agent_shielded =
+                    !s.persona_ref.is_empty() && shielded_agents.contains(&s.persona_ref);
+                if is_cognitive && !agent_shielded {
+                    *unshielded_belief = true;
+                }
+            }
+            IRFlowNode::UseTool(u) => {
+                if is_web_tool(&u.tool_name) {
+                    *web_producer = true;
+                }
+            }
+            IRFlowNode::ShieldApply(_) => {
+                *shield_present = true;
+            }
+            IRFlowNode::Conditional(c) => {
+                walk_ir_for_injection(
+                    &c.then_body,
+                    is_web_tool,
+                    shielded_agents,
+                    web_producer,
+                    unshielded_belief,
+                    shield_present,
+                );
+                walk_ir_for_injection(
+                    &c.else_body,
+                    is_web_tool,
+                    shielded_agents,
+                    web_producer,
+                    unshielded_belief,
+                    shield_present,
+                );
+            }
+            IRFlowNode::ForIn(f) => {
+                walk_ir_for_injection(
+                    &f.body,
+                    is_web_tool,
+                    shielded_agents,
+                    web_producer,
+                    unshielded_belief,
+                    shield_present,
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
+/// §98.d — re-derive the whole-program scrape-provenance witness from
+/// `ir.tools` + `ir.flows` + `ir.agents`. "No contract → no proof": a program
+/// declaring no web-acquisition tool returns `None`.
+pub fn derive_scrape_provenance_soundness_witness(
+    ir: &IRProgram,
+) -> Option<ScrapeProvenanceSoundnessWitness> {
+    let scrape_tools: Vec<(String, String)> = ir
+        .tools
+        .iter()
+        .filter(|t| SCRAPE_PROVIDERS.contains(&t.provider.as_str()))
+        .map(|t| (t.name.clone(), t.provider.clone()))
+        .collect();
+    if scrape_tools.is_empty() {
+        return None;
+    }
+
+    // (T904) effect honesty.
+    let mut tools_missing_web = Vec::new();
+    let mut dom_tools_with_network = Vec::new();
+    for t in ir
+        .tools
+        .iter()
+        .filter(|t| SCRAPE_PROVIDERS.contains(&t.provider.as_str()))
+    {
+        let has = |b: &str| t.effect_row.iter().any(|e| effect_base(e) == b);
+        if !has("web") {
+            tools_missing_web.push(t.name.clone());
+        }
+        if t.provider == "scrape_dom" && has("network") {
+            dom_tools_with_network.push(t.name.clone());
+        }
+    }
+
+    // (T908) content-injection barrier, per flow.
+    let web_tool_names: std::collections::HashSet<String> = ir
+        .tools
+        .iter()
+        .filter(|t| t.effect_row.iter().any(|e| effect_base(e) == "web"))
+        .map(|t| t.name.clone())
+        .collect();
+    let is_web_tool = |name: &str| web_tool_names.contains(name);
+    let shielded_agents: std::collections::HashSet<String> = ir
+        .agents
+        .iter()
+        .filter(|a| !a.shield_ref.is_empty())
+        .map(|a| a.name.clone())
+        .collect();
+
+    let mut unshielded_flows = Vec::new();
+    for flow in &ir.flows {
+        let (mut web_producer, mut unshielded_belief, mut shield_present) = (false, false, false);
+        walk_ir_for_injection(
+            &flow.steps,
+            &is_web_tool,
+            &shielded_agents,
+            &mut web_producer,
+            &mut unshielded_belief,
+            &mut shield_present,
+        );
+        if web_producer && unshielded_belief && !shield_present {
+            unshielded_flows.push(flow.name.clone());
+        }
+    }
+
+    Some(ScrapeProvenanceSoundnessWitness {
+        scrape_tools,
+        tools_missing_web,
+        dom_tools_with_network,
+        unshielded_flows,
+    })
+}
+
+/// §98.d — generate the (at most one) ScrapeProvenanceSoundness proof for `ir`.
+pub fn generate_scrape_provenance_soundness_proofs(
+    ir: &IRProgram,
+    axon_version: &str,
+) -> Vec<ProofTerm> {
+    match derive_scrape_provenance_soundness_witness(ir) {
+        Some(witness) => vec![ProofTerm {
+            property: PropertyClass::ScrapeProvenanceSoundness,
+            artifact_digest: artifact_digest(ir),
+            witness: Witness::ScrapeProvenanceSoundness(witness),
+            axon_version: axon_version.to_string(),
+        }],
+        None => Vec::new(),
+    }
+}
+
 // ── §Fase 86.c — ForgeSoundness ──────────────────────────────────────────────
 
 const FORGE_MODES: &[&str] = &["combinatorial", "exploratory", "transformational"];
@@ -2781,6 +2947,7 @@ pub fn generate_all_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm>
     proofs.extend(generate_cors_policy_consistency_proofs(ir, axon_version));
     proofs.extend(generate_technician_command_safety_proofs(ir, axon_version));
     proofs.extend(generate_cache_soundness_proofs(ir, axon_version));
+    proofs.extend(generate_scrape_provenance_soundness_proofs(ir, axon_version));
     proofs.extend(generate_forge_soundness_proofs(ir, axon_version));
     proofs.extend(generate_savant_soundness_proofs(ir, axon_version));
     proofs.extend(generate_warden_soundness_proofs(ir, axon_version));

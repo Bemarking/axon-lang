@@ -447,6 +447,7 @@ fn s6_tool_registry_is_streaming_field_present_post_34_c() {
         source: axon::tool_registry::ToolSource::Program,
         // §Fase 34.c — Caller sets explicitly OR uses derive helper.
         is_streaming: derive_is_streaming(&["stream:drop_oldest".to_string()]),
+        scrape: None,
     };
     assert!(
         stream_entry.is_streaming,
@@ -469,6 +470,7 @@ fn s6_tool_registry_is_streaming_field_present_post_34_c() {
         secret_partition: String::new(),
         source: axon::tool_registry::ToolSource::Program,
         is_streaming: derive_is_streaming(&[
+        scrape: None,
             "compute".to_string(),
             "read".to_string(),
         ]),

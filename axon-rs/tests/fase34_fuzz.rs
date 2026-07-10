@@ -251,6 +251,7 @@ fn fuzz_tool_entry(rng: &mut Lcg) -> ToolEntry {
         secret_partition: String::new(),
         source: ToolSource::Program,
         is_streaming,
+        scrape: None,
     }
 }
 

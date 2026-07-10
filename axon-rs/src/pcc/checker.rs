@@ -153,6 +153,9 @@ pub fn check_proof(proof: &ProofTerm, ir: &IRProgram) -> CheckOutcome {
         (PropertyClass::SecretCustodySoundness, Witness::SecretCustodySoundness(w)) => {
             check_secret_custody_soundness(w, ir)
         }
+        (PropertyClass::ScrapeProvenanceSoundness, Witness::ScrapeProvenanceSoundness(w)) => {
+            check_scrape_provenance_soundness(w, ir)
+        }
         _ => CheckOutcome::UnknownProperty,
     }
 }
@@ -1631,6 +1634,61 @@ fn check_cache_soundness(
             reason: format!(
                 "axon-T864 unresolved cache/channel reference(s): {:?}",
                 actual.unresolved_refs
+            ),
+        };
+    }
+    CheckOutcome::Verified
+}
+
+/// §98.d — verify a [`ScrapeProvenanceSoundnessWitness`]. The checker
+/// independently RE-DERIVES the whole-program web-acquisition provenance from
+/// `ir.tools` + `ir.flows` + `ir.agents` and rejects on ANY of: a forged/stale
+/// witness, a scrape tool missing `web` (T904), a `scrape_dom` dishonestly
+/// declaring `network` (T904), or a flow that lets web content reach an agent's
+/// beliefs unshielded (T908, the content-injection barrier).
+fn check_scrape_provenance_soundness(
+    claimed: &super::proof_term::ScrapeProvenanceSoundnessWitness,
+    ir: &IRProgram,
+) -> CheckOutcome {
+    let actual = match super::generate::derive_scrape_provenance_soundness_witness(ir) {
+        Some(w) => w,
+        None => {
+            return CheckOutcome::Refuted {
+                reason: "no web-acquisition contract exists in this artifact (no scrape tool) — \
+                         forged or stale proof"
+                    .to_string(),
+            }
+        }
+    };
+    if actual != *claimed {
+        return CheckOutcome::Refuted {
+            reason: "witness disagrees with artifact re-derivation (forged or stale proof)"
+                .to_string(),
+        };
+    }
+    if !actual.tools_missing_web.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axon-T904 scrape tool(s) omit the `web` effect (scraped values must be born \
+                 Untrusted): {:?}",
+                actual.tools_missing_web
+            ),
+        };
+    }
+    if !actual.dom_tools_with_network.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axon-T904 scrape_dom tool(s) dishonestly declare `network` (they do no I/O): {:?}",
+                actual.dom_tools_with_network
+            ),
+        };
+    }
+    if !actual.unshielded_flows.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axon-T908 content-injection barrier: flow(s) feed web content to an agent's \
+                 beliefs with no shield: {:?}",
+                actual.unshielded_flows
             ),
         };
     }

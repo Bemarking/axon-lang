@@ -77,6 +77,7 @@ fn tool_spec(name: &str, provider: &str, runtime: &str, secret: &str) -> IRToolS
         risk: None,
         argv: Vec::new(),
         cache: String::new(),
+        scrape: None,
     }
 }
 

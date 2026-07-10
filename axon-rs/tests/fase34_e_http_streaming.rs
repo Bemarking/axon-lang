@@ -529,6 +529,7 @@ async fn s4_from_entry_rejects_invalid_url_scheme() {
         secret_partition: String::new(),
         source: ToolSource::Program,
         is_streaming: true,
+        scrape: None,
     };
     let result = HttpStreamingTool::from_entry(&bad);
     assert!(result.is_err());
@@ -577,6 +578,7 @@ fn registry_with_http(name: &str, runtime: &str, effect_row: Vec<&str>) -> Arc<T
         secret_partition: String::new(),
         source: ToolSource::Program,
         is_streaming: true,
+        scrape: None,
     });
     Arc::new(reg)
 }

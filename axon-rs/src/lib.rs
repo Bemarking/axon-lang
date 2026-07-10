@@ -194,6 +194,9 @@ pub mod health_check;
 pub mod hooks;
 pub mod http_tool;
 pub mod inspect;
+/// §Fase 98.e — Native Web Acquisition runtime (`scrape_http` / `scrape_dom` /
+/// `scrape_crawl`); born-Untrusted content, pluggable stealth fetcher.
+pub mod scrape_tool;
 pub mod lambda_data;
 pub mod lambda_runtime;
 pub mod logging;

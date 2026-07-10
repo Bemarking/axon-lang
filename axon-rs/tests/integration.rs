@@ -2732,6 +2732,7 @@ fn tool_registry_program_tool_stub() {
         secret_partition: String::new(),
         source: ToolSource::Program,
         is_streaming: false,
+        scrape: None,
     });
 
     assert_eq!(reg.len(), 3);
@@ -2772,6 +2773,7 @@ fn tool_registry_from_ir_specs() {
             risk: None,
             argv: Vec::new(),
             cache: String::new(),
+            scrape: None,
         },
     ]);
 
@@ -3121,6 +3123,7 @@ fn http_tool_dispatch_via_registry() {
         secret_partition: String::new(),
         source: ToolSource::Program,
         is_streaming: false,
+        scrape: None,
     });
 
     // HTTP provider is now handled (returns Some, not None)
@@ -3151,6 +3154,7 @@ fn http_tool_empty_url_fails() {
         secret_partition: String::new(),
         source: ToolSource::Program,
         is_streaming: false,
+        scrape: None,
     };
 
     let result = dispatch_http(&entry, "arg");
@@ -3177,6 +3181,7 @@ fn http_tool_invalid_scheme_fails() {
         secret_partition: String::new(),
         source: ToolSource::Program,
         is_streaming: false,
+        scrape: None,
     };
 
     let result = dispatch_http(&entry, "arg");
@@ -3205,6 +3210,7 @@ fn http_tool_no_longer_falls_through() {
         secret_partition: String::new(),
         source: ToolSource::Program,
         is_streaming: false,
+        scrape: None,
     });
 
     // dispatch returns Some (not None) — HTTP provider is handled
@@ -3327,6 +3333,7 @@ fn emcp_dispatch_via_registry() {
         secret_partition: String::new(),
         source: ToolSource::Program,
         is_streaming: false,
+        scrape: None,
     });
 
     // MCP provider is handled (returns Some, not None)
@@ -3417,6 +3424,7 @@ fn emcp_mcp_no_longer_falls_through() {
         secret_partition: String::new(),
         source: ToolSource::Program,
         is_streaming: false,
+        scrape: None,
     });
 
     let result = reg.dispatch("FhirAPI", r#"{"patient_id": "123"}"#);

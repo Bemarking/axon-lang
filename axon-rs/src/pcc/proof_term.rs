@@ -338,6 +338,17 @@ pub enum PropertyClass {
     /// Program-wide, 0-or-1 proof; no secrets store and no `rotate` →
     /// no proof.
     SecretCustodySoundness,
+    /// §98.d — for a program declaring any web-acquisition tool, re-derives
+    /// the §98.d provenance invariants the type-checker proved: every scrape
+    /// provider's `effects:` carries `web` (T904 — scraped values are born
+    /// Untrusted, D98.1); no `scrape_dom` dishonestly declares `network`
+    /// (T904 — it does no I/O); and every flow that acquires web content and
+    /// feeds an unshielded belief step applies a shield (T908 — the content-
+    /// injection barrier). Belt-and-suspenders against a stored/hand-edited IR
+    /// whose compile-time proof has gone stale: an artifact that lets scraped
+    /// content reach an agent's beliefs unscanned is refuted BEFORE deploy.
+    /// Program-wide, 0-or-1 proof; no scrape tool → no proof.
+    ScrapeProvenanceSoundness,
 }
 
 /// §72.f — the closed period catalog for `budget` quotas. The checker's own
@@ -393,6 +404,7 @@ impl PropertyClass {
             PropertyClass::TemporalContextSoundness => "temporal_context_soundness",
             PropertyClass::CredentialAttenuation => "credential_attenuation",
             PropertyClass::SecretCustodySoundness => "secret_custody_soundness",
+            PropertyClass::ScrapeProvenanceSoundness => "scrape_provenance_soundness",
         }
     }
 }
@@ -1143,6 +1155,29 @@ pub struct SecretCustodySoundnessWitness {
     pub partition_violations: Vec<String>,
 }
 
+/// §98.d — witness for [`PropertyClass::ScrapeProvenanceSoundness`], one per
+/// program (the web-acquisition provenance laws are whole-module). The checker
+/// RE-DERIVES every field from `ir.tools` + `ir.flows` + `ir.agents` and
+/// rejects on disagreement. A verifying proof has every violation list empty.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScrapeProvenanceSoundnessWitness {
+    /// `(tool_name, provider)` for every web-acquisition tool, source order.
+    pub scrape_tools: Vec<(String, String)>,
+    /// Scrape tools whose `effects:` omits the `web` base (`axon-T904`, re-
+    /// derived): the born-Untrusted provenance would be unrepresentable.
+    /// Empty for a verifying proof.
+    pub tools_missing_web: Vec<String>,
+    /// `scrape_dom` tools that dishonestly declare `network` though they do no
+    /// I/O (`axon-T904`, re-derived). Empty for a verifying proof.
+    pub dom_tools_with_network: Vec<String>,
+    /// Flow names that acquire web content, feed a belief step through an
+    /// unshielded agent, and apply no `shield` (`axon-T908`, the content-
+    /// injection barrier, re-derived). A hand-edited IR that smuggles scraped
+    /// content into an agent's beliefs unscanned is REFUTED before it mounts.
+    /// Empty for a verifying proof.
+    pub unshielded_flows: Vec<String>,
+}
+
 /// The property-specific witness. Tagged so the JSON is self-describing
 /// + a future class adds a variant without ambiguity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1174,6 +1209,7 @@ pub enum Witness {
     TemporalContextSoundness(TemporalContextSoundnessWitness),
     CredentialAttenuation(CredentialAttenuationWitness),
     SecretCustodySoundness(SecretCustodySoundnessWitness),
+    ScrapeProvenanceSoundness(ScrapeProvenanceSoundnessWitness),
 }
 
 impl Witness {
@@ -1220,6 +1256,7 @@ impl Witness {
             Witness::CredentialAttenuation(_) => "<program>",
             // §94.e — program-wide property, no single named subject.
             Witness::SecretCustodySoundness(_) => "<program>",
+            Witness::ScrapeProvenanceSoundness(_) => "<program>",
         }
     }
 }

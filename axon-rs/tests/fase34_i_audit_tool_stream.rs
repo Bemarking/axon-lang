@@ -124,6 +124,7 @@ fn stream_tool_entry(name: &str, effect_row: Vec<&str>) -> ToolEntry {
         secret_partition: String::new(),
         source: ToolSource::Program,
         is_streaming,
+        scrape: None,
     }
 }
 

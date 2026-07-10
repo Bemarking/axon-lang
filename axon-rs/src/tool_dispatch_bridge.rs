@@ -116,6 +116,13 @@ pub fn resolve_streaming_tool(entry: &ToolEntry) -> Box<dyn Tool> {
                 "mcp".to_string(),
             )),
         },
+        // §Fase 98.e — the streaming crawl provider. A bounded, checkpointed
+        // BFS spider emitting each fetched RawPage as a chunk. `scrape_http` /
+        // `scrape_dom` are synchronous (registry `dispatch`), so only
+        // `scrape_crawl` needs the streaming surface here.
+        "scrape_crawl" => {
+            Box::new(crate::scrape_tool::ScrapeStreamingTool::from_entry(entry))
+        }
         // Unknown provider → synchronous fallback. Adopters declaring
         // a custom provider see the honest error-terminator at the
         // wire layer.
@@ -404,6 +411,7 @@ mod tests {
             secret_partition: String::new(),
             source: ToolSource::Program,
             is_streaming,
+            scrape: None,
         }
     }
 

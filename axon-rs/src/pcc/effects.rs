@@ -33,6 +33,13 @@ pub const EFFECT_BASES: &[&str] = &[
     "sensitive",
     "legal",
     "ots",
+    // §Fase 98.c — `web` (native web acquisition). Lockstep mirror of the
+    // 11th member added to `axon_frontend::type_checker::VALID_EFFECTS`.
+    // A first-class base (D98.10), distinct from `network`: web-acquired
+    // content is born Untrusted (D98.1). Both catalogs MUST agree — if the
+    // frontend accepts `<web>` but this checker does not, every scrape
+    // tool's proof is wrongly refuted (the §53.c.2 class of drift).
+    "web",
 ];
 
 /// Effects that REQUIRE a `:qualifier` to be sound. `stream` needs a

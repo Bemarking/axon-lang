@@ -1893,6 +1893,17 @@ pub struct ToolDefinition {
     /// if one exists and this tool is eligible (`pure`, or covered by the
     /// default's `apply_to_effects`). Distinct from `memory` (D85.6).
     pub cache: String,
+    /// §Fase 98.b — Native Web Acquisition. The closed-catalog scrape
+    /// configuration for a tool whose `provider:` is one of the three
+    /// web-acquisition engines (`scrape_http` | `scrape_dom` |
+    /// `scrape_crawl`). `None` ⇒ this is not a scrape tool — the entire
+    /// §98 surface is inert (zero regression). Present ⇒ the tool acquires
+    /// content from the OPEN, ADVERSARIAL web: its output is born
+    /// epistemically Untrusted (⊥, D98.1) and its `effects:` row MUST
+    /// carry the first-class `web` base (`axon-T904`, effect honesty).
+    /// The sub-block is a closed catalog — an unknown field is a hard
+    /// parse error (the §83/§84 discipline, D98.2).
+    pub scrape: Option<ScrapeSpec>,
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia attached to this declaration
     /// (comments preceding the declaration's first token, since the
@@ -1901,6 +1912,74 @@ pub struct ToolDefinition {
     /// Fase 14.b — trailing comment trivia (same line as the
     /// declaration's last effective token). Empty by default.
     pub trailing_trivia: Vec<crate::tokens::Trivia>,
+}
+
+/// §Fase 98.b — the closed-catalog scrape configuration block
+/// (`scrape: { … }`) on a web-acquisition `tool`. Every field is
+/// optional/defaulted so a minimal `scrape: {}` is legal; the fields
+/// that apply depend on the tool's `provider:` (the type-checker cross-
+/// validates provider ↔ field applicability, `axon-T905`). The whole
+/// struct is deliberately flat + serializable-friendly (`Option`/`Vec`/
+/// scalar), mirroring the §84 technician-field discipline, so the IR
+/// stays byte-stable and the runtime classifies identically.
+#[derive(Debug, Default)]
+pub struct ScrapeSpec {
+    /// The acquisition engine: `impersonate` (HTTP-fingerprint stealth,
+    /// the GA tier) | `browser` (headless-render sidecar, the gray tier).
+    /// `None` ⇒ `impersonate` (D98.3). Closed catalog (`axon-T905`).
+    /// Applies to `scrape_http` / `scrape_crawl`.
+    pub engine: Option<String>,
+    /// The browser-fingerprint impersonation PROFILE name
+    /// (`chrome`, `firefox`, `safari` — closed catalog). Only meaningful
+    /// with `engine: impersonate`. The concrete JA3/JA4 + HTTP/2 profile
+    /// is resolved by the enterprise engine (§98.g); OSS records the
+    /// declared intent. `None` ⇒ the engine's default profile.
+    pub impersonate: Option<String>,
+    /// The post-navigation settle wait for `engine: browser` (a Duration,
+    /// e.g. `2s`) — how long to let JS render before snapshotting. Bounded
+    /// (D98.11). Ignored by the impersonate engine (no JS runtime).
+    pub render_wait: Option<String>,
+    /// The per-tenant proxy-pool config KEY (a dotted key, resolved via
+    /// the same SecretResolver `secret:`/`tool.base_url` use — D98.9),
+    /// never a proxy URL literal. Empty ⇒ direct connection.
+    pub proxy: String,
+    /// Whether `robots.txt` is honored (default TRUE, D98.6). Setting
+    /// `respect_robots: false` is the audited, `scrape.aggressive`-gated
+    /// override (enforced enterprise-side, §98.h); in OSS it is recorded.
+    pub respect_robots: Option<bool>,
+    /// `scrape_dom` extraction spec: an ordered list of `name=selector`
+    /// FieldSpecs (`["title=h1", "price=.amount"]`). A closed, bracketed
+    /// string list (reuses the §83/§84 list helper). Each entry must be a
+    /// single `name=selector` pair (`axon-T906`).
+    pub extract: Vec<String>,
+    /// `scrape_dom` adaptive relocation: when a declared selector misses,
+    /// the engine attempts a HEURISTIC relocation above `similarity_floor`
+    /// (D98.4 — a heuristic, NOT a proof). `None`/`false` ⇒ strict
+    /// selectors only. Enabling it makes the tool carry `<storage>` (the
+    /// per-tenant selector-memory, §98.h).
+    pub adaptive: Option<bool>,
+    /// The similarity threshold ∈ [0,1] governing adaptive relocation
+    /// (`axon-T907`). Only meaningful with `adaptive: true`.
+    pub similarity_floor: Option<f64>,
+    /// `scrape_crawl` link-follow selector/pattern: which links to enqueue
+    /// from each fetched page. Empty ⇒ no expansion (single-page crawl).
+    pub follow: String,
+    /// `scrape_crawl` maximum link depth from the seed (bounded, D98.11).
+    pub max_depth: Option<i64>,
+    /// `scrape_crawl` maximum total pages fetched (bounded, D98.11). A
+    /// hostile/infinite site can never exhaust the crawler (`axon-T908`).
+    pub max_pages: Option<i64>,
+    /// `scrape_crawl` fetch concurrency (bounded, ≥ 1).
+    pub concurrency: Option<i64>,
+    /// `scrape_crawl` politeness/rate reference: a declared `budget`
+    /// (`budget{rate:/max:}`, §72) governing per-host request pacing
+    /// (D98 reuse of the budget kernel). Empty ⇒ engine default pacing.
+    pub politeness: String,
+    /// `scrape_crawl` checkpoint store reference: a declared `axonstore`
+    /// the crawler persists frontier/visited state into for resumable,
+    /// at-least-once crawling. Empty ⇒ in-memory (non-resumable).
+    pub checkpoint: String,
+    pub loc: Loc,
 }
 
 #[derive(Debug)]

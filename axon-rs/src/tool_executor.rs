@@ -11,7 +11,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Result of a tool execution.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ToolResult {
     pub success: bool,
     pub output: String,

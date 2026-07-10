@@ -35,6 +35,7 @@ fn tool(name: &str, provider: &str, runtime: &str) -> IRToolSpec {
         risk: None,
         argv: Vec::new(),
         cache: String::new(),
+        scrape: None,
     }
 }
 

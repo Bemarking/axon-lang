@@ -330,6 +330,7 @@ impl Tool for HttpStreamingTool {
             secret_partition: String::new(),
             source: crate::tool_registry::ToolSource::Program,
             is_streaming: false,
+            scrape: None,
         };
         match tokio::task::spawn_blocking(move || dispatch_http(&entry, &args)).await {
             Ok(result) => result,
@@ -634,6 +635,7 @@ mod tests {
             // carries `network` but no `stream:` prefix. HTTP streaming
             // (SSE-aware adapter consuming upstream SSE) lands in Fase 34.e.
             is_streaming: false,
+            scrape: None,
         }
     }
 

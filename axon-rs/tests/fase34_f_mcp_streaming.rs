@@ -419,6 +419,7 @@ fn registry_with_mcp(name: &str, runtime: &str, effect_row: Vec<&str>) -> Arc<To
         secret_partition: String::new(),
         source: ToolSource::Program,
         is_streaming: true,
+        scrape: None,
     });
     Arc::new(reg)
 }

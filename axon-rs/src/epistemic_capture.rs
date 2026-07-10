@@ -296,6 +296,7 @@ mod tests {
             risk: None,
             argv: Vec::new(),
             cache: String::new(),
+            scrape: None,
         }
     }
 

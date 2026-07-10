@@ -79,6 +79,95 @@ pub struct ToolEntry {
     /// `false`; tools declaring `effects: <stream:<policy>>` in
     /// their AST get `true` automatically.
     pub is_streaming: bool,
+    /// §Fase 98.b — the resolved web-acquisition config for a tool whose
+    /// `provider:` is `scrape_http` / `scrape_dom` / `scrape_crawl`.
+    /// Populated from `IRToolSpec.scrape` at
+    /// [`ToolRegistry::register_from_ir`]; `None` for every non-scrape tool
+    /// and the built-ins. The scrape dispatch (`crate::scrape_tool`) reads
+    /// it to select the engine, extraction specs, and crawl bounds. Both
+    /// the synchronous (`dispatch`) and streaming (`resolve_streaming_tool`)
+    /// paths receive the `&ToolEntry`, so the config reaches both.
+    pub scrape: Option<ScrapeConfig>,
+}
+
+/// §Fase 98.b — the runtime mirror of `ir_nodes::IRScrapeSpec`: the closed
+/// web-acquisition configuration a scrape tool dispatches with. Owned +
+/// `Clone` so a `ToolEntry` stays cheap to clone into a request-scoped
+/// registry. Every field defaults to its inert form so a bare `scrape: {}`
+/// tool is well-formed. See [`crate::scrape_tool`] for how each field
+/// steers dispatch.
+#[derive(Debug, Clone, Default)]
+pub struct ScrapeConfig {
+    /// `impersonate` (HTTP-fingerprint stealth; the OSS fallback is plain
+    /// `reqwest`) | `browser` (headless-render sidecar). Empty ⇒ default
+    /// `impersonate` (D98.3).
+    pub engine: String,
+    /// The declared impersonation fingerprint profile (`chrome`/…). Empty ⇒
+    /// engine default. Consumed by the enterprise engine (§98.g).
+    pub impersonate: String,
+    /// Browser-tier post-navigation settle wait (a Duration string).
+    pub render_wait: String,
+    /// Per-tenant proxy-pool config KEY (resolved via SecretResolver).
+    pub proxy: String,
+    /// Whether `robots.txt` is honored (default TRUE — D98.6).
+    pub respect_robots: bool,
+    /// `scrape_dom` extraction FieldSpecs, each `name=selector`.
+    pub extract: Vec<String>,
+    /// `scrape_dom` adaptive relocation toggle (heuristic — D98.4).
+    pub adaptive: bool,
+    /// `scrape_dom` adaptive similarity threshold ∈ [0,1].
+    pub similarity_floor: f64,
+    /// `scrape_crawl` link-follow selector.
+    pub follow: String,
+    /// `scrape_crawl` maximum link depth (bounded — D98.11).
+    pub max_depth: i64,
+    /// `scrape_crawl` maximum total pages (bounded — D98.11).
+    pub max_pages: i64,
+    /// `scrape_crawl` fetch concurrency.
+    pub concurrency: i64,
+    /// `scrape_crawl` politeness budget reference (§72 budget kernel).
+    pub politeness: String,
+    /// `scrape_crawl` checkpoint store reference (resumable crawls).
+    pub checkpoint: String,
+}
+
+impl ScrapeConfig {
+    /// §Fase 98.b — resolve an `IRScrapeSpec` into the runtime config,
+    /// applying the documented defaults (engine ⇒ `impersonate`,
+    /// `respect_robots` ⇒ true, `concurrency` ⇒ 1).
+    pub fn from_ir(spec: &crate::ir_nodes::IRScrapeSpec) -> Self {
+        ScrapeConfig {
+            engine: spec.engine.clone().unwrap_or_default(),
+            impersonate: spec.impersonate.clone().unwrap_or_default(),
+            render_wait: spec.render_wait.clone().unwrap_or_default(),
+            proxy: spec.proxy.clone(),
+            // Default-secure: robots honored unless explicitly disabled.
+            respect_robots: spec.respect_robots.unwrap_or(true),
+            extract: spec.extract.clone(),
+            adaptive: spec.adaptive.unwrap_or(false),
+            similarity_floor: spec.similarity_floor.unwrap_or(0.0),
+            follow: spec.follow.clone(),
+            max_depth: spec.max_depth.unwrap_or(0),
+            max_pages: spec.max_pages.unwrap_or(0),
+            concurrency: spec.concurrency.unwrap_or(1),
+            politeness: spec.politeness.clone(),
+            checkpoint: spec.checkpoint.clone(),
+        }
+    }
+
+    /// Whether the effective engine is the browser (sidecar) tier.
+    pub fn is_browser(&self) -> bool {
+        self.engine == "browser"
+    }
+
+    /// The effective engine slug, applying the `impersonate` default.
+    pub fn effective_engine(&self) -> &str {
+        if self.engine.is_empty() {
+            "impersonate"
+        } else {
+            &self.engine
+        }
+    }
 }
 
 /// §Fase 34.c (v1.29.0) — Canonical derivation rule for the
@@ -192,6 +281,7 @@ impl ToolRegistry {
                 // §Fase 34.c — Calculator declares `compute` effect only.
                 // No stream effect → is_streaming = false.
                 is_streaming: false,
+                scrape: None,
             },
         );
         self.tools.insert(
@@ -212,6 +302,7 @@ impl ToolRegistry {
                 source: ToolSource::Builtin,
                 // §Fase 34.c — DateTimeTool declares `read` effect only.
                 is_streaming: false,
+                scrape: None,
             },
         );
     }
@@ -254,6 +345,10 @@ impl ToolRegistry {
                     secret_partition: spec.secret_partition.clone(),
                     source: ToolSource::Program,
                     is_streaming,
+                    // §Fase 98.b — resolve the web-acquisition config (None
+                    // for every non-scrape tool; the value never rides the
+                    // registry for a non-scrape program).
+                    scrape: spec.scrape.as_ref().map(ScrapeConfig::from_ir),
                 },
             );
         }
@@ -323,6 +418,16 @@ impl ToolRegistry {
 
             // ℰMCP provider: epistemic MCP transducer (JSON-RPC + blame + taint)
             "mcp" => Some(emcp::dispatch_mcp(entry, argument)),
+
+            // §Fase 98.e — Native Web Acquisition. `scrape_http` (fetch) +
+            // `scrape_dom` (parse, no I/O). `scrape_crawl` is streaming and
+            // routes through `resolve_streaming_tool`; a synchronous dispatch
+            // of it degrades to a single seed fetch. Every output is born
+            // Untrusted (D98.1) — the taint rides the internal ScrapeOutcome;
+            // the ToolResult integrates with the registry as usual.
+            "scrape_http" | "scrape_dom" | "scrape_crawl" => {
+                Some(crate::scrape_tool::dispatch_scrape(entry, argument))
+            }
 
             // Known providers that currently fall through to LLM
             // Future: "grpc" adapters
@@ -449,6 +554,7 @@ mod tests {
                 risk: None,
                 argv: Vec::new(),
                 cache: String::new(),
+                scrape: None,
             },
             IRToolSpec {
                 node_type: "ToolDefinition",
@@ -472,6 +578,7 @@ mod tests {
                 risk: None,
                 argv: Vec::new(),
                 cache: String::new(),
+                scrape: None,
             },
         ];
         reg.register_from_ir(&specs);
@@ -524,6 +631,7 @@ mod tests {
             secret_partition: String::new(),
             source: ToolSource::Program,
             is_streaming: false,
+            scrape: None,
         });
 
         assert!(reg.contains("WebSearch"));
@@ -561,6 +669,7 @@ mod tests {
                 risk: None,
                 argv: Vec::new(),
                 cache: String::new(),
+                scrape: None,
             },
             IRToolSpec {
                 node_type: "ToolDefinition",
@@ -584,6 +693,7 @@ mod tests {
                 risk: None,
                 argv: Vec::new(),
                 cache: String::new(),
+                scrape: None,
             },
         ];
 
@@ -629,6 +739,7 @@ mod tests {
             secret_partition: String::new(),
             source: ToolSource::Program,
             is_streaming: false,
+            scrape: None,
         });
 
         let result = reg.dispatch("TestTool", "hello world").unwrap();
@@ -653,6 +764,7 @@ mod tests {
             secret_partition: String::new(),
             source: ToolSource::Program,
             is_streaming: false,
+            scrape: None,
         });
 
         // brave provider not handled locally → falls through to LLM
@@ -683,6 +795,7 @@ mod tests {
             secret_partition: String::new(),
             source: ToolSource::Program,
             is_streaming: false,
+            scrape: None,
         });
 
         let entry = reg.get("Calculator").unwrap();
@@ -755,6 +868,7 @@ mod tests {
             secret_partition: String::new(),
             source: ToolSource::Program,
             is_streaming: false,
+            scrape: None,
         });
         reg.register(ToolEntry {
             name: "FhirMcp".to_string(),
@@ -770,6 +884,7 @@ mod tests {
             secret_partition: String::new(),
             source: ToolSource::Program,
             is_streaming: false,
+            scrape: None,
         });
         reg.register(ToolEntry {
             name: "Pinned".to_string(),
@@ -785,6 +900,7 @@ mod tests {
             secret_partition: String::new(),
             source: ToolSource::Program,
             is_streaming: false,
+            scrape: None,
         });
 
         reg.resolve_relative_endpoints("https://tenant-acme.tools.internal");
@@ -823,6 +939,7 @@ mod tests {
             secret_partition: String::new(),
             source: ToolSource::Program,
             is_streaming: false,
+            scrape: None,
         });
         reg.resolve_relative_endpoints("   ");
         assert_eq!(reg.get("T").unwrap().runtime, "/x");
@@ -845,6 +962,7 @@ mod tests {
             secret_partition: String::new(),
             source: ToolSource::Program,
             is_streaming: false,
+            scrape: None,
         });
         reg.register(ToolEntry {
             name: "AlphaTool".to_string(),
@@ -860,6 +978,7 @@ mod tests {
             secret_partition: String::new(),
             source: ToolSource::Program,
             is_streaming: false,
+            scrape: None,
         });
 
         let names = reg.tool_names();

@@ -69,6 +69,9 @@ pub use generate::{
     derive_credential_attenuation_witness, generate_credential_attenuation_proofs,
     // §Fase 94.e — the rotation_without_revelation static obligation.
     derive_secret_custody_witness, generate_secret_custody_proofs,
+    // §Fase 98.d — the web-acquisition provenance obligation (born-Untrusted
+    // + the content-injection barrier).
+    derive_scrape_provenance_soundness_witness, generate_scrape_provenance_soundness_proofs,
 };
 pub use proof_term::{
     CallSoundnessCertificate, CapabilityContainmentWitness, CapabilityGrantabilityWitness,
@@ -80,6 +83,7 @@ pub use proof_term::{
     EffectRowSoundnessWitness, InterruptibleSessionSoundnessWitness, ParkedResidualSoundnessWitness,
     ProofBundle, ProofTerm,
     PropertyClass, ResourceBoundsWitness,
+    ScrapeProvenanceSoundnessWitness,
     SecretCustodySoundnessWitness,
     ShieldHaltGuaranteeWitness, TemporalContextSoundnessWitness, ToolCallSoundnessWitness,
     UpstreamProjectionSoundnessWitness,
@@ -450,6 +454,7 @@ mod tests {
             risk: None,
             argv: Vec::new(),
             cache: String::new(),
+            scrape: None,
         }
     }
 
@@ -3104,6 +3109,77 @@ mod tests {
         match check_proof(&proofs[0], &ir) {
             CheckOutcome::Refuted { reason } => assert!(reason.contains("T864"), "{reason}"),
             other => panic!("expected Refuted (unresolved ref), got {other:?}"),
+        }
+    }
+
+    // ── §Fase 98.d — ScrapeProvenanceSoundness ───────────────────────────
+
+    const SCRAPE_PROGRAM: &str = concat!(
+        "type RawPage { status: Int, body: String }\n",
+        "type Summary { text: String }\n",
+        "persona Analyst { domain: [\"news\"] }\n",
+        "shield NewsShield { scan: [prompt_injection] on_breach: quarantine severity: high }\n",
+        "tool FetchNews { provider: scrape_http parameters: { url: String } ",
+        "output_type: RawPage effects: <network, web> scrape: { engine: impersonate } }\n",
+        "flow Digest() -> Summary {\n",
+        "  use FetchNews(url = \"https://ex.com/news\")\n",
+        "  shield NewsShield on page -> RawPage\n",
+        "  step Summarize { given: Digest ask: \"Summarize\" output: Summary }\n",
+        "}\n",
+    );
+
+    #[test]
+    fn scrape_provenance_round_trips_and_verifies() {
+        let ir = ir_from_source(SCRAPE_PROGRAM);
+        let proofs = super::generate::generate_scrape_provenance_soundness_proofs(&ir, "test");
+        assert_eq!(proofs.len(), 1, "one whole-program scrape proof");
+        assert_eq!(proofs[0].property, PropertyClass::ScrapeProvenanceSoundness);
+        if let Witness::ScrapeProvenanceSoundness(ref w) = proofs[0].witness {
+            assert_eq!(w.scrape_tools.len(), 1);
+            assert!(w.tools_missing_web.is_empty());
+            assert!(w.dom_tools_with_network.is_empty());
+            assert!(w.unshielded_flows.is_empty(), "shielded flow → no barrier violation");
+        } else {
+            panic!("expected a ScrapeProvenanceSoundness witness");
+        }
+        assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
+    }
+
+    #[test]
+    fn scrape_less_program_carries_no_proof() {
+        let ir = ir_from_source("flow Chat() -> Unit { step S { ask: \"hi\" } }\n");
+        assert!(
+            super::generate::generate_scrape_provenance_soundness_proofs(&ir, "test").is_empty(),
+            "no scrape tool → no proof"
+        );
+    }
+
+    #[test]
+    fn scrape_provenance_refutes_missing_web() {
+        // Tamper the stored IR: strip `web` from the scrape tool's effect row.
+        let mut ir = ir_from_source(SCRAPE_PROGRAM);
+        if let Some(t) = ir.tools.iter_mut().find(|t| t.name == "FetchNews") {
+            t.effect_row.retain(|e| e != "web");
+        }
+        let proofs = super::generate::generate_scrape_provenance_soundness_proofs(&ir, "test");
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => assert!(reason.contains("T904"), "{reason}"),
+            other => panic!("expected Refuted (missing web), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn scrape_provenance_refutes_unshielded_flow() {
+        // Tamper: drop the shield step, leaving web content → belief unscanned.
+        let mut ir = ir_from_source(SCRAPE_PROGRAM);
+        for flow in ir.flows.iter_mut() {
+            flow.steps
+                .retain(|s| !matches!(s, crate::ir_nodes::IRFlowNode::ShieldApply(_)));
+        }
+        let proofs = super::generate::generate_scrape_provenance_soundness_proofs(&ir, "test");
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => assert!(reason.contains("T908"), "{reason}"),
+            other => panic!("expected Refuted (content-injection barrier), got {other:?}"),
         }
     }
 

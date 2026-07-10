@@ -785,6 +785,50 @@ pub struct IRToolSpec {
     /// empty (IR-SHA stable for cache-less programs).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub cache: String,
+    /// §Fase 98.b — the closed-catalog web-acquisition config. `None` for
+    /// every non-scrape tool, and `skip_serializing_if` so the entire
+    /// pre-§98 corpus serialises byte-identically (the §76.d IR-SHA /
+    /// additive-only gate). Present ⇒ this tool acquires open-web content
+    /// (born Untrusted, D98.1) and its `effect_row` carries `web`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scrape: Option<IRScrapeSpec>,
+}
+
+/// §Fase 98.b — the IR mirror of `ast::ScrapeSpec`. Every field is
+/// `skip_serializing_if` on its empty/none form so a minimal `scrape: {}`
+/// and each partially-populated block serialise deterministically with no
+/// null noise, keeping the IR-SHA additive.
+#[derive(Debug, Serialize)]
+pub struct IRScrapeSpec {
+    pub node_type: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub engine: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub impersonate: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub render_wait: Option<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub proxy: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub respect_robots: Option<bool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extract: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub adaptive: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub similarity_floor: Option<f64>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub follow: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_depth: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_pages: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub concurrency: Option<i64>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub politeness: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub checkpoint: String,
 }
 
 // ── Memory ───────────────────────────────────────────────────────────────────

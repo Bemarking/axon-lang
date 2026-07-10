@@ -62,6 +62,7 @@ fn stub_entry(name: &str, parameters: Vec<(String, String)>) -> ToolEntry {
         secret_partition: String::new(),
         source: ToolSource::Program,
         is_streaming: false,
+        scrape: None,
     }
 }
 
@@ -80,6 +81,7 @@ fn http_entry(name: &str, url: &str, parameters: Vec<(String, String)>) -> ToolE
         secret_partition: String::new(),
         source: ToolSource::Program,
         is_streaming: false,
+        scrape: None,
     }
 }
 
@@ -303,6 +305,7 @@ async fn llm_routed_provider_falls_back_to_placeholder() {
         secret_partition: String::new(),
         source: ToolSource::Program,
         is_streaming: false,
+        scrape: None,
     });
     let (mut ctx, _rx) = ctx_with(Some(reg));
     let node = use_node("WebSearch", "cats", Vec::new());

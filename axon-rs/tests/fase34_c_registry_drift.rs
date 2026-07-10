@@ -63,6 +63,7 @@ fn spec(name: &str, effect_row: &[&str]) -> IRToolSpec {
         risk: None,
         argv: Vec::new(),
         cache: String::new(),
+        scrape: None,
     }
 }
 
@@ -333,6 +334,7 @@ fn s6_register_direct_path_respects_caller_set_is_streaming() {
         // streaming tools without source-level effect declarations
         // can do so.
         is_streaming: true,
+        scrape: None,
     });
     let entry = reg.get("ProgrammaticStreamer").unwrap();
     assert!(

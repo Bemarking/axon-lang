@@ -54,6 +54,7 @@ fn partitioned_tool(url: &str) -> IRToolSpec {
         risk: None,
         argv: Vec::new(),
         cache: String::new(),
+        scrape: None,
     }
 }
 

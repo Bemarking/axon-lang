@@ -140,6 +140,7 @@ fn stream_tool_entry(
         source: ToolSource::Program,
         is_streaming,
     }
+    scrape: None,
 }
 
 fn perform_yield(arg: &str) -> Instruction {
@@ -787,6 +788,7 @@ async fn s6_disjunct_b_without_stream_policy_takes_direct_drain_path_counters_ze
         secret_partition: String::new(),
         source: ToolSource::Program,
         is_streaming: true, // programmatically flagged
+        scrape: None,
     };
     reg.register(entry);
     let (mut ctx, _rx) =

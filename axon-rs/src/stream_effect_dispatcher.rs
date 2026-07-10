@@ -392,6 +392,7 @@ mod tests {
             risk: None,
             argv: Vec::new(),
             cache: String::new(),
+            scrape: None,
             loc: loc(),
             leading_trivia: Vec::new(),
             trailing_trivia: Vec::new(),

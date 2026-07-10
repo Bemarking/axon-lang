@@ -2424,6 +2424,7 @@ impl Parser {
             risk: None,
             argv: Vec::new(),
             cache: String::new(),
+            scrape: None,
             loc,
             leading_trivia: Vec::new(),
             trailing_trivia: Vec::new(),
@@ -2483,6 +2484,9 @@ impl Parser {
                 // §Fase 85.b — the tool's result-memoization policy reference
                 // (a declared `cache` name, or the `none` opt-out sentinel).
                 "cache" => node.cache = self.consume_any_ident_or_kw()?.value,
+                // §Fase 98.b — the closed-catalog web-acquisition config
+                // block. `scrape: { engine: …, extract: […], … }`.
+                "scrape" => node.scrape = Some(self.parse_scrape_spec()?),
                 _ => {
                     unknown_fields.push((field_name, field_tok.line, field_tok.column));
                     self.skip_value();
@@ -2495,14 +2499,28 @@ impl Parser {
         // checking. An unknown field on it is a parse error, mirroring the §83
         // `cors`/`voice` closed-catalog discipline — but scoped to the
         // technician surface so ordinary tools are untouched.
-        if node.target.is_some() {
+        // §Fase 98.b (D98.2) — a `scrape:`-bearing web-acquisition tool opts
+        // into the same strictness: a typo'd safety field (e.g. a mis-spelled
+        // `respect_robots`) must never quietly disable a guard.
+        if node.target.is_some() || node.scrape.is_some() {
             if let Some((field_name, line, column)) = unknown_fields.into_iter().next() {
+                let (surface, valid) = if node.target.is_some() {
+                    (
+                        "technician tool (§Fase 84 D84.13)",
+                        "provider, parameters, output_type, timeout, effects, target, risk, argv",
+                    )
+                } else {
+                    (
+                        "web-acquisition tool (§Fase 98 D98.2)",
+                        "provider, parameters, output_type, timeout, effects, secret, \
+                         secret_partition, cache, scrape",
+                    )
+                };
                 return Err(ParseError {
                     message: format!(
-                        "unknown field `{}` in technician tool `{}` — a `target:`-bound tool \
-                         uses strict field checking (§Fase 84 D84.13); valid fields: provider, \
-                         parameters, output_type, timeout, effects, target, risk, argv",
-                        field_name, node.name
+                        "unknown field `{field_name}` in {surface} `{}` — this tool uses \
+                         strict field checking; valid fields: {valid}",
+                        node.name
                     ),
                     line,
                     column,
@@ -2511,6 +2529,61 @@ impl Parser {
             }
         }
         Ok(node)
+    }
+
+    /// §Fase 98.b — parse the closed-catalog `scrape: { … }` web-acquisition
+    /// config sub-block. Every field is optional; an unknown field is a hard
+    /// parse error (the §83 `cors` closed-catalog discipline). Mirrors the
+    /// field grammar of `parse_tool` for the scrape-specific keys.
+    fn parse_scrape_spec(&mut self) -> Result<crate::ast::ScrapeSpec, ParseError> {
+        let open = self.consume(TokenType::LBrace)?;
+        let loc = self.loc_of(&open);
+        let mut spec = crate::ast::ScrapeSpec {
+            loc,
+            ..Default::default()
+        };
+        while !self.check(TokenType::RBrace) {
+            let field_tok = self.current().clone();
+            let field_name = field_tok.value.clone();
+            self.advance();
+            self.consume(TokenType::Colon)?;
+            match field_name.as_str() {
+                "engine" => spec.engine = Some(self.consume_any_ident_or_kw()?.value),
+                "impersonate" => spec.impersonate = Some(self.consume_any_ident_or_kw()?.value),
+                "render_wait" => spec.render_wait = Some(self.consume(TokenType::Duration)?.value),
+                "proxy" => spec.proxy = self.parse_dotted_identifier()?,
+                "respect_robots" => spec.respect_robots = Some(self.parse_bool()?),
+                "extract" => spec.extract = self.parse_bracketed_strings()?,
+                "adaptive" => spec.adaptive = Some(self.parse_bool()?),
+                "similarity_floor" => spec.similarity_floor = self.parse_optional_float(),
+                "follow" => spec.follow = self.consume(TokenType::StringLit)?.value,
+                "max_depth" => {
+                    spec.max_depth =
+                        Some(self.consume(TokenType::Integer)?.value.parse::<i64>().unwrap_or(0))
+                }
+                "max_pages" => {
+                    spec.max_pages =
+                        Some(self.consume(TokenType::Integer)?.value.parse::<i64>().unwrap_or(0))
+                }
+                "concurrency" => {
+                    spec.concurrency =
+                        Some(self.consume(TokenType::Integer)?.value.parse::<i64>().unwrap_or(0))
+                }
+                "politeness" => spec.politeness = self.consume_any_ident_or_kw()?.value,
+                "checkpoint" => spec.checkpoint = self.consume_any_ident_or_kw()?.value,
+                other => {
+                    return Err(self.error(&format!(
+                        "unknown scrape field `{other}` — the `scrape: {{ … }}` block is a \
+                         closed catalog (§Fase 98 D98.2); valid fields: engine, impersonate, \
+                         render_wait, proxy, respect_robots, extract, adaptive, \
+                         similarity_floor, follow, max_depth, max_pages, concurrency, \
+                         politeness, checkpoint"
+                    )));
+                }
+            }
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(spec)
     }
 
     /// §Fase 58.a — parse a tool's INPUT SCHEMA: a brace-delimited list of
