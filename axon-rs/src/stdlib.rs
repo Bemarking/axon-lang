@@ -361,7 +361,7 @@ pub const FLOWS: &[StdlibFlow] = &[
     },
 ];
 
-// ── Tools (11) ───────────────────────────────────────────────────────────────
+// ── Tools (12) ───────────────────────────────────────────────────────────────
 
 pub const TOOLS: &[StdlibTool] = &[
     StdlibTool {
@@ -391,19 +391,36 @@ pub const TOOLS: &[StdlibTool] = &[
         sandbox: false,
         version: "0.1.0",
     },
+    // §Fase 101.b — Inferred Ingestion: extract a PDF's text via the registered
+    // extraction engine (born `Inferred`, measured confidence). Native dispatch
+    // arm — with no engine, a TYPED refusal, never model-invented text (D101.7).
     StdlibTool {
         name: "PDFExtractor",
-        description: "Extract text and structure from PDF.",
-        provider: "",
+        description: "Extract text from a PDF as born-Inferred spans with measured confidence (native).",
+        provider: "native",
         timeout: 15,
         requires_api_key: false,
         sandbox: false,
         version: "0.1.0",
     },
+    // §Fase 101.b — OCR: read an image's text (`ots:transform:image:text`) via
+    // the deterministic IDP-E / registered engine. Distinct from vision (D101.3).
+    StdlibTool {
+        name: "ImageTextExtractor",
+        description: "OCR an image into born-Inferred text spans with measured confidence (native).",
+        provider: "native",
+        timeout: 20,
+        requires_api_key: false,
+        sandbox: false,
+        version: "0.1.0",
+    },
+    // §Fase 101.b — vision captioning (`ots:transform:image:description`). A
+    // model's interpretation of a scene — born `Inferred`, same ceiling as OCR
+    // but a distinct capability, cost, and RBAC posture (D101.3). Provider-backed.
     StdlibTool {
         name: "ImageAnalyzer",
-        description: "Analyze images using vision capabilities.",
-        provider: "",
+        description: "Describe an image via a vision model as born-Inferred spans (native, provider-backed).",
+        provider: "native",
         timeout: 20,
         requires_api_key: true,
         sandbox: false,

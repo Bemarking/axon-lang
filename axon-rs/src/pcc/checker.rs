@@ -162,6 +162,9 @@ pub fn check_proof(proof: &ProofTerm, ir: &IRProgram) -> CheckOutcome {
         (PropertyClass::DocumentIngestionSoundness, Witness::DocumentIngestionSoundness(w)) => {
             check_document_ingestion_soundness(w, ir)
         }
+        (PropertyClass::InferredCeilingSoundness, Witness::InferredCeilingSoundness(w)) => {
+            check_inferred_ceiling_soundness(w, ir)
+        }
         _ => CheckOutcome::UnknownProperty,
     }
 }
@@ -1791,6 +1794,53 @@ fn check_document_ingestion_soundness(
             reason: format!(
                 "axon-T908 ingestion barrier: flow(s) feed ingested content to an agent's beliefs \
                  with no shield: {:?}",
+                actual.unshielded_flows
+            ),
+        };
+    }
+    CheckOutcome::Verified
+}
+
+/// §101.b — verify an [`InferredCeilingSoundnessWitness`]. The checker
+/// independently RE-DERIVES the inferred-producer set from `ir.tools` + `ir.flows`
+/// and rejects on ANY of: a forged/stale witness, an absent producer set (the
+/// §100 vacuum still holds — no proof was owed), a producer declaring
+/// `epistemic:know` (T1001, the ceiling), or a flow feeding an inferred read to
+/// an agent's beliefs unshielded (T908).
+fn check_inferred_ceiling_soundness(
+    claimed: &super::proof_term::InferredCeilingSoundnessWitness,
+    ir: &IRProgram,
+) -> CheckOutcome {
+    let actual = match super::generate::derive_inferred_ceiling_soundness_witness(ir) {
+        Some(w) => w,
+        None => {
+            return CheckOutcome::Refuted {
+                reason: "no `ingest:inferred` producer exists in this artifact — the §100 vacuum \
+                         holds; forged or stale proof"
+                    .to_string(),
+            }
+        }
+    };
+    if actual != *claimed {
+        return CheckOutcome::Refuted {
+            reason: "witness disagrees with artifact re-derivation (forged or stale proof)"
+                .to_string(),
+        };
+    }
+    if !actual.ceiling_violations.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axon-T1001 `ingest:inferred` producer(s) also declare `epistemic:know` (an \
+                 inferred read can never be `know`, D101.1): {:?}",
+                actual.ceiling_violations
+            ),
+        };
+    }
+    if !actual.unshielded_flows.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axon-T908 barrier: flow(s) feed an inferred read to an agent's beliefs with no \
+                 shield: {:?}",
                 actual.unshielded_flows
             ),
         };

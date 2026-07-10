@@ -32,6 +32,12 @@ const NATIVE_EXECUTOR_TOOLS: &[&str] = &[
     // §Fase 100 — Document Ingestion & Surgical Edit.
     "DocumentReader",
     "DocumentEditor",
+    // §Fase 101.b — Inferred Ingestion: the extraction tools become real dispatch
+    // arms. With no engine registered they typed-refuse (`no_engine_configured`),
+    // NEVER fall through to the model inventing the document's contents.
+    "PDFExtractor",
+    "ImageTextExtractor",
+    "ImageAnalyzer",
 ];
 
 /// Dispatch a tool call by name. Returns `None` if the tool is not a native
@@ -52,6 +58,14 @@ pub fn dispatch(tool_name: &str, argument: &str) -> Option<ToolResult> {
         // §Fase 100.e — surgical edit: touch only the targeted parts, emit the
         // per-part hash manifest, inherit taint.
         "DocumentEditor" => Some(document_edit_execute(argument)),
+        // §Fase 101.b — Inferred Ingestion. Each routes to the registered
+        // extraction engine (the sidecar client §101.c / the enterprise engine
+        // §101.f); with none registered, each returns a TYPED refusal, never a
+        // hallucinated read (D101.7/D101.8). OCR (`image:text`) and vision
+        // (`image:description`) are distinct transforms (D101.3).
+        "PDFExtractor" => Some(extraction_execute("pdf:text", argument)),
+        "ImageTextExtractor" => Some(extraction_execute("image:text", argument)),
+        "ImageAnalyzer" => Some(extraction_execute("image:description", argument)),
         _ => None, // Not a native tool — fall through to LLM
     }
 }
@@ -131,6 +145,74 @@ fn document_render_execute(argument: &str) -> ToolResult {
             }
         }
         Err(e) => err(name, e.to_string()),
+    }
+}
+
+/// §Fase 101.b — the shared extraction dispatch arm. `transform` is the OTS
+/// transform the calling tool asked for (`pdf:text` / `image:text` /
+/// `image:description`). The argument is JSON: `{ "bytes_base64": "…",
+/// "format"?: "pdf", "target_field"?: "due_date", "language"?: "en" }`.
+///
+/// It routes to the registered engine (`extraction::run_active`) and formats the
+/// born-`Inferred` result as JSON — spans + measured confidence + provenance
+/// (`inferred`) + taint (`untrusted`) + ceiling (`believe`) + the audit fields.
+/// **On any failure it returns a typed refusal** (`success: false`, the error
+/// slug), never an empty or invented string (D101.7/D101.8).
+fn extraction_execute(transform: &str, argument: &str) -> ToolResult {
+    use base64::Engine;
+    let name = match transform {
+        "pdf:text" => "PDFExtractor",
+        "image:text" => "ImageTextExtractor",
+        _ => "ImageAnalyzer",
+    };
+    let parsed: serde_json::Value = match serde_json::from_str(argument) {
+        Ok(v) => v,
+        Err(e) => return err(name, format!("invalid extraction request JSON: {e}")),
+    };
+    let bytes = match parsed.get("bytes_base64").and_then(|v| v.as_str()) {
+        Some(b64) => match base64::engine::general_purpose::STANDARD.decode(b64) {
+            Ok(b) => b,
+            Err(e) => return err(name, format!("bytes_base64 is not valid base64: {e}")),
+        },
+        None => return err(name, "extraction request missing `bytes_base64`".into()),
+    };
+    let str_field = |k: &str| parsed.get(k).and_then(|v| v.as_str()).map(|s| s.to_string());
+    let hint = crate::extraction::ExtractionHint {
+        format: str_field("format"),
+        transform: Some(transform.to_string()),
+        target_field: str_field("target_field"),
+        language: str_field("language"),
+    };
+    match crate::extraction::run_active(&bytes, &hint, &crate::extraction::ExtractionBounds::default())
+    {
+        Ok(result) => {
+            let spans: Vec<serde_json::Value> = result
+                .spans
+                .iter()
+                .map(|s| {
+                    serde_json::json!({
+                        "text": s.text,
+                        "confidence": s.confidence,
+                        "page": s.page,
+                        "bbox": { "x": s.bbox.x, "y": s.bbox.y, "w": s.bbox.w, "h": s.bbox.h },
+                    })
+                })
+                .collect();
+            let out = serde_json::json!({
+                "engine": result.engine,
+                "engine_version": result.engine_version,
+                "transform": transform,
+                "provenance": "inferred",          // D101.1 — never `parsed`
+                "taint": "untrusted",              // D101.2
+                "epistemic_ceiling": "believe",    // D101.1 — never `know`
+                "mean_confidence": result.mean_confidence(),
+                "page_count": result.page_count(),
+                "spans": spans,
+            });
+            ToolResult { success: true, output: out.to_string(), tool_name: name.to_string() }
+        }
+        // Typed refusal — the whole point of §100.a + D101.7: never fiction.
+        Err(e) => err(name, format!("{}: {}", e.slug(), e)),
     }
 }
 

@@ -202,6 +202,10 @@ pub mod fs_sandbox;
 pub mod ooxml_read;
 /// §Fase 100.e — the surgical edit engine + per-part hash manifest.
 pub mod ooxml_edit;
+/// §Fase 101.a — the `Inferred`-extraction contract: the `ExtractionEngine`
+/// trait, the born-`Inferred` span with measured confidence, and the
+/// confidence-floor quarantine gate. The producers §100 left the class without.
+pub mod extraction;
 pub mod inspect;
 /// §Fase 98.e — Native Web Acquisition runtime (`scrape_http` / `scrape_dom` /
 /// `scrape_crawl`); born-Untrusted content, pluggable stealth fetcher.

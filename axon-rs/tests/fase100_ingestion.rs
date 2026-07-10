@@ -88,13 +88,14 @@ fn document_editor_surgical_edit_with_manifest() {
 
 #[test]
 fn declared_but_unimplemented_tool_typed_refuses_not_hallucinate() {
-    // §100.a / D100.12 — PDFExtractor is declared in stdlib::TOOLS but has no
-    // native executor and no provider. It MUST refuse, not fall through to the
-    // model (which would fabricate the PDF's contents).
-    let result = dispatch_or_reject("PDFExtractor", "some.pdf");
+    // §100.a / D100.12 — `FileReader` is declared in stdlib::TOOLS but has no
+    // native executor and no provider (the generic local reader is still
+    // unimplemented). It MUST refuse, not fall through to the model.
+    // (`PDFExtractor` moved to a REAL §101.b dispatch arm — see fase101_extraction.)
+    let result = dispatch_or_reject("FileReader", "some.txt");
     match result {
-        Err(msg) => assert!(msg.contains("PDFExtractor") && msg.contains("fabricate")),
-        Ok(other) => panic!("PDFExtractor must typed-refuse, got {other:?}"),
+        Err(msg) => assert!(msg.contains("FileReader") && msg.contains("fabricate")),
+        Ok(other) => panic!("FileReader must typed-refuse, got {other:?}"),
     }
     // The real native tools are NOT refused.
     assert!(dispatch_or_reject("DocumentRenderer", "{}").is_ok());

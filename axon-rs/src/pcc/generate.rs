@@ -24,6 +24,7 @@ use super::proof_term::{
     ParkedResidualSoundnessWitness, ProofTerm, PropertyClass,
     CacheSoundnessWitness, ForgeSoundnessWitness, ResourceBoundsWitness, SavantSoundnessWitness,
     DocumentIngestionSoundnessWitness, DocumentProvenanceSoundnessWitness,
+    InferredCeilingSoundnessWitness,
     ScrapeProvenanceSoundnessWitness, WardenSoundnessWitness,
     ShieldHaltGuaranteeWitness, TechnicianCommandSafetyWitness, ToolCallSoundnessWitness,
     UpstreamProjectionSoundnessWitness, Witness,
@@ -2848,6 +2849,84 @@ pub fn generate_document_ingestion_soundness_proofs(
     }
 }
 
+// ── §Fase 101.b — InferredCeilingSoundness ───────────────────────────────────
+
+/// §101.b — re-derive the Inferred-ceiling witness over exactly the
+/// `ingest:inferred` PRODUCERS. "No inferred producer → no proof" (the dual of
+/// §100's vacuum): the class is inhabited only from §101, so this proof appears
+/// only once a producer exists, and then asserts the vacuum's invariants still
+/// hold — every producer capped at `believe`, none unshielded into beliefs.
+pub fn derive_inferred_ceiling_soundness_witness(
+    ir: &IRProgram,
+) -> Option<InferredCeilingSoundnessWitness> {
+    let is_inferred = |t: &crate::ir_nodes::IRToolSpec| {
+        t.effect_row.iter().any(|e| e == "ingest:inferred")
+    };
+    let inferred_producers: Vec<String> =
+        ir.tools.iter().filter(|t| is_inferred(t)).map(|t| t.name.clone()).collect();
+    if inferred_producers.is_empty() {
+        return None; // the §100 vacuum still holds — nothing to prove
+    }
+
+    // (T1001) the ceiling: an inferred producer may not declare `epistemic:know`.
+    let ceiling_violations: Vec<String> = ir
+        .tools
+        .iter()
+        .filter(|t| is_inferred(t) && t.effect_row.iter().any(|e| e == "epistemic:know"))
+        .map(|t| t.name.clone())
+        .collect();
+
+    // (T908) the barrier: an inferred producer's output reaching an agent's
+    // beliefs unshielded. Reuse the shared injection walk over exactly the
+    // inferred producers.
+    let inferred_names: std::collections::HashSet<String> =
+        inferred_producers.iter().cloned().collect();
+    let is_inferred_tool = |name: &str| inferred_names.contains(name);
+    let shielded_agents: std::collections::HashSet<String> = ir
+        .agents
+        .iter()
+        .filter(|a| !a.shield_ref.is_empty())
+        .map(|a| a.name.clone())
+        .collect();
+    let mut unshielded_flows = Vec::new();
+    for flow in &ir.flows {
+        let (mut producer, mut unshielded_belief, mut shield_present) = (false, false, false);
+        walk_ir_for_injection(
+            &flow.steps,
+            &is_inferred_tool,
+            &shielded_agents,
+            &mut producer,
+            &mut unshielded_belief,
+            &mut shield_present,
+        );
+        if producer && unshielded_belief && !shield_present {
+            unshielded_flows.push(flow.name.clone());
+        }
+    }
+
+    Some(InferredCeilingSoundnessWitness {
+        inferred_producers,
+        ceiling_violations,
+        unshielded_flows,
+    })
+}
+
+/// §101.b — generate the (at most one) InferredCeilingSoundness proof for `ir`.
+pub fn generate_inferred_ceiling_soundness_proofs(
+    ir: &IRProgram,
+    axon_version: &str,
+) -> Vec<ProofTerm> {
+    match derive_inferred_ceiling_soundness_witness(ir) {
+        Some(witness) => vec![ProofTerm {
+            property: PropertyClass::InferredCeilingSoundness,
+            artifact_digest: artifact_digest(ir),
+            witness: Witness::InferredCeilingSoundness(witness),
+            axon_version: axon_version.to_string(),
+        }],
+        None => Vec::new(),
+    }
+}
+
 // ── §Fase 86.c — ForgeSoundness ──────────────────────────────────────────────
 
 const FORGE_MODES: &[&str] = &["combinatorial", "exploratory", "transformational"];
@@ -3136,6 +3215,7 @@ pub fn generate_all_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm>
     proofs.extend(generate_scrape_provenance_soundness_proofs(ir, axon_version));
     proofs.extend(generate_document_provenance_soundness_proofs(ir, axon_version));
     proofs.extend(generate_document_ingestion_soundness_proofs(ir, axon_version));
+    proofs.extend(generate_inferred_ceiling_soundness_proofs(ir, axon_version));
     proofs.extend(generate_forge_soundness_proofs(ir, axon_version));
     proofs.extend(generate_savant_soundness_proofs(ir, axon_version));
     proofs.extend(generate_warden_soundness_proofs(ir, axon_version));

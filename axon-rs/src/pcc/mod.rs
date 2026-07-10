@@ -74,6 +74,7 @@ pub use generate::{
     derive_scrape_provenance_soundness_witness, generate_scrape_provenance_soundness_proofs,
     derive_document_provenance_soundness_witness, generate_document_provenance_soundness_proofs,
     derive_document_ingestion_soundness_witness, generate_document_ingestion_soundness_proofs,
+    derive_inferred_ceiling_soundness_witness, generate_inferred_ceiling_soundness_proofs,
 };
 pub use proof_term::{
     CallSoundnessCertificate, CapabilityContainmentWitness, CapabilityGrantabilityWitness,
@@ -88,6 +89,7 @@ pub use proof_term::{
     ScrapeProvenanceSoundnessWitness,
     DocumentProvenanceSoundnessWitness,
     DocumentIngestionSoundnessWitness,
+    InferredCeilingSoundnessWitness,
     SecretCustodySoundnessWitness,
     ShieldHaltGuaranteeWitness, TemporalContextSoundnessWitness, ToolCallSoundnessWitness,
     UpstreamProjectionSoundnessWitness,
@@ -3314,6 +3316,85 @@ mod tests {
         match check_proof(&proofs[0], &ir) {
             CheckOutcome::Refuted { reason } => assert!(reason.contains("T908"), "{reason}"),
             other => panic!("expected Refuted (ingestion barrier), got {other:?}"),
+        }
+    }
+
+    // ── §Fase 101.b — InferredCeilingSoundness ───────────────────────────
+
+    // An `ingest:inferred` PRODUCER (an OCR reader) — the state §100 forbade
+    // (D100.14) and §101 creates. It declares NO `epistemic:know` (ceiling holds)
+    // and its output is shielded before reasoning.
+    const INFER_PROGRAM: &str = concat!(
+        "type Doc { text: String }\n",
+        "type Summary { text: String }\n",
+        "tool OcrReader { provider: native parameters: { img: String } output_type: Doc ",
+        "effects: <io, ingest:inferred> }\n",
+        "persona Analyst { domain: [\"docs\"] }\n",
+        "shield DocShield { scan: [prompt_injection] on_breach: quarantine severity: high }\n",
+        "flow Read() -> Summary {\n",
+        "  use OcrReader(img = \"scan.png\")\n",
+        "  shield DocShield on doc -> Doc\n",
+        "  step Summarize { given: Read ask: \"Summarize\" output: Summary }\n",
+        "}\n",
+    );
+
+    #[test]
+    fn inferred_ceiling_round_trips_and_verifies() {
+        let ir = ir_from_source(INFER_PROGRAM);
+        let proofs = super::generate::generate_inferred_ceiling_soundness_proofs(&ir, "test");
+        assert_eq!(proofs.len(), 1, "one whole-program inferred-ceiling proof");
+        assert_eq!(proofs[0].property, PropertyClass::InferredCeilingSoundness);
+        if let Witness::InferredCeilingSoundness(ref w) = proofs[0].witness {
+            assert_eq!(w.inferred_producers, vec!["OcrReader".to_string()]);
+            assert!(w.ceiling_violations.is_empty(), "no epistemic:know → ceiling holds");
+            assert!(w.unshielded_flows.is_empty(), "shielded flow → no barrier violation");
+        } else {
+            panic!("expected an InferredCeilingSoundness witness");
+        }
+        assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
+    }
+
+    #[test]
+    fn parsed_only_program_carries_no_inferred_ceiling_proof() {
+        // The §100 vacuum: a program with only `ingest:parsed` tools owes NO
+        // inferred-ceiling proof (no producer exists).
+        let ir = ir_from_source(INGEST_PROGRAM);
+        assert!(
+            super::generate::generate_inferred_ceiling_soundness_proofs(&ir, "test").is_empty(),
+            "no `ingest:inferred` producer → no proof (the §100 vacuum holds)"
+        );
+    }
+
+    #[test]
+    fn inferred_ceiling_refutes_epistemic_know() {
+        // Tamper: inject `epistemic:know` into the inferred producer's effect row.
+        // A re-derivation catches T1001 — an inferred read can never be `know`.
+        let mut ir = ir_from_source(INFER_PROGRAM);
+        for t in ir.tools.iter_mut() {
+            if t.name == "OcrReader" {
+                t.effect_row.push("epistemic:know".to_string());
+            }
+        }
+        let proofs = super::generate::generate_inferred_ceiling_soundness_proofs(&ir, "test");
+        assert_eq!(proofs.len(), 1);
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => assert!(reason.contains("T1001"), "{reason}"),
+            other => panic!("expected Refuted (ceiling), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn inferred_ceiling_refutes_unshielded_flow() {
+        // Tamper: drop the shield — an inferred read reaches belief unscanned.
+        let mut ir = ir_from_source(INFER_PROGRAM);
+        for flow in ir.flows.iter_mut() {
+            flow.steps
+                .retain(|s| !matches!(s, crate::ir_nodes::IRFlowNode::ShieldApply(_)));
+        }
+        let proofs = super::generate::generate_inferred_ceiling_soundness_proofs(&ir, "test");
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => assert!(reason.contains("T908"), "{reason}"),
+            other => panic!("expected Refuted (barrier), got {other:?}"),
         }
     }
 

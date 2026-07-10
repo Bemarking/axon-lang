@@ -365,6 +365,14 @@ pub enum PropertyClass {
     /// agent's beliefs unshielded (T908, the ingestion barrier reused from §98).
     /// Program-wide, 0-or-1 proof; no ingesting tool → no proof.
     DocumentIngestionSoundness,
+    /// §101.b — the Inferred-ceiling property. §100 shipped the `ingest:inferred`
+    /// class with NO producer (D100.14, the vacuum); §101 introduces the first
+    /// producers. This class re-derives, over exactly those producers, that the
+    /// vacuum is now *inhabited but still safe*: every `ingest:inferred` tool is
+    /// capped at `believe` (no `epistemic:know`, T1001, D101.1) and none feeds an
+    /// agent's beliefs unshielded (T908). Program-wide, 0-or-1 proof; **no
+    /// inferred producer → no proof** (the dual of §100's vacuum test).
+    InferredCeilingSoundness,
 }
 
 /// §72.f — the closed period catalog for `budget` quotas. The checker's own
@@ -423,6 +431,7 @@ impl PropertyClass {
             PropertyClass::ScrapeProvenanceSoundness => "scrape_provenance_soundness",
             PropertyClass::DocumentProvenanceSoundness => "document_provenance_soundness",
             PropertyClass::DocumentIngestionSoundness => "document_ingestion_soundness",
+            PropertyClass::InferredCeilingSoundness => "inferred_ceiling_soundness",
         }
     }
 }
@@ -1235,6 +1244,27 @@ pub struct DocumentIngestionSoundnessWitness {
     pub unshielded_flows: Vec<String>,
 }
 
+/// §101.b — witness for [`PropertyClass::InferredCeilingSoundness`], one per
+/// program. The checker RE-DERIVES every field from `ir.tools` + `ir.flows`; a
+/// verifying proof has both violation lists empty. Distinct from
+/// [`DocumentIngestionSoundnessWitness`]: that fires for ANY ingesting tool and
+/// is (in §100) vacuous on the inferred axis; THIS fires only when an
+/// `ingest:inferred` producer exists — the state §100 forbade and §101 creates.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InferredCeilingSoundnessWitness {
+    /// The tools that produce `ingest:inferred` content (§101's producers), in
+    /// source order. Non-empty — else there is no proof (the §100 vacuum holds).
+    pub inferred_producers: Vec<String>,
+    /// Producers that ALSO declare `epistemic:know` (`axon-T1001`, the ceiling,
+    /// re-derived). Empty for a verifying proof — an inferred read can never be
+    /// `know` (D101.1).
+    pub ceiling_violations: Vec<String>,
+    /// Flow names feeding an inferred producer's (born-Untrusted) output to an
+    /// agent's beliefs with no shield (`axon-T908`, re-derived). Empty for a
+    /// verifying proof.
+    pub unshielded_flows: Vec<String>,
+}
+
 /// The property-specific witness. Tagged so the JSON is self-describing
 /// + a future class adds a variant without ambiguity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1269,6 +1299,7 @@ pub enum Witness {
     ScrapeProvenanceSoundness(ScrapeProvenanceSoundnessWitness),
     DocumentProvenanceSoundness(DocumentProvenanceSoundnessWitness),
     DocumentIngestionSoundness(DocumentIngestionSoundnessWitness),
+    InferredCeilingSoundness(InferredCeilingSoundnessWitness),
 }
 
 impl Witness {
@@ -1318,6 +1349,8 @@ impl Witness {
             Witness::ScrapeProvenanceSoundness(_) => "<program>",
             Witness::DocumentProvenanceSoundness(_) => "<program>",
             Witness::DocumentIngestionSoundness(_) => "<program>",
+            // §101.b — program-wide property, no single named subject.
+            Witness::InferredCeilingSoundness(_) => "<program>",
         }
     }
 }
