@@ -206,6 +206,11 @@ pub mod ooxml_edit;
 /// trait, the born-`Inferred` span with measured confidence, and the
 /// confidence-floor quarantine gate. The producers §100 left the class without.
 pub mod extraction;
+/// §Fase 101.c — the IDP-E recognizer kernel: the deterministic geometry+topology
+/// engine (Otsu → cubical β₀/β₁ → geometric discrimination → reading order →
+/// pix-navigable canonical tree). Reads a bounded PGM/PBM raster; real image
+/// decode is the sidecar (§101.e). Scoped to clean machine-print (D101.17).
+pub mod idpe;
 pub mod inspect;
 /// §Fase 98.e — Native Web Acquisition runtime (`scrape_http` / `scrape_dom` /
 /// `scrape_crawl`); born-Untrusted content, pluggable stealth fetcher.
