@@ -3,11 +3,11 @@
 //! This module provides a static registry of all stdlib components,
 //! mirroring the Python `axon.stdlib` module with hardcoded definitions.
 //!
-//! 4 namespaces × 37 total entries:
+//! 4 namespaces × 39 total entries:
 //!   - 8 personas (Analyst, LegalExpert, Coder, Researcher, Writer, Summarizer, Critic, Translator)
 //!   - 12 anchors (8 core + 4 logic/epistemic)
 //!   - 8 flows (Summarize, ExtractEntities, CompareDocuments, etc.)
-//!   - 9 tools (WebSearch, CodeExecutor, DocumentRenderer, etc.)
+//!   - 11 tools (WebSearch, CodeExecutor, DocumentRenderer/Reader/Editor, etc.)
 
 // ── Entry types ─────────────────────────────────────────────────────────────
 
@@ -361,7 +361,7 @@ pub const FLOWS: &[StdlibFlow] = &[
     },
 ];
 
-// ── Tools (9) ───────────────────────────────────────────────────────────────
+// ── Tools (11) ───────────────────────────────────────────────────────────────
 
 pub const TOOLS: &[StdlibTool] = &[
     StdlibTool {
@@ -443,6 +443,27 @@ pub const TOOLS: &[StdlibTool] = &[
     StdlibTool {
         name: "DocumentRenderer",
         description: "Render a declared `document` into deterministic DOCX/PPTX/XLSX bytes (native).",
+        provider: "native",
+        timeout: 30,
+        requires_api_key: false,
+        sandbox: false,
+        version: "0.1.0",
+    },
+    // §Fase 100.c/d — read an ingested DOCX/PPTX/XLSX into a bounded, born-
+    // Untrusted, Parsed text tree. A REAL native executor, never a fall-through.
+    StdlibTool {
+        name: "DocumentReader",
+        description: "Read an ingested DOCX/PPTX/XLSX into a bounded, born-Untrusted Parsed text tree (native).",
+        provider: "native",
+        timeout: 30,
+        requires_api_key: false,
+        sandbox: true,
+        version: "0.1.0",
+    },
+    // §Fase 100.e — surgical edit with a per-part hash manifest (native).
+    StdlibTool {
+        name: "DocumentEditor",
+        description: "Surgically edit an OOXML document; touch only targeted parts + emit a hash manifest (native).",
         provider: "native",
         timeout: 30,
         requires_api_key: false,

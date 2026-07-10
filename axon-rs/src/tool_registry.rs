@@ -430,8 +430,18 @@ impl ToolRegistry {
             }
 
             // Known providers that currently fall through to LLM
-            // Future: "grpc" adapters
-            _ => None,
+            // Future: "grpc" adapters. §Fase 100.a — but a name DECLARED in
+            // `stdlib::TOOLS` with no native executor and no provider must NOT
+            // silently reach the LLM (which would fabricate its output, D100.12);
+            // `dispatch_or_reject` turns that into a typed refusal.
+            _ => match tool_executor::dispatch_or_reject(tool_name, argument) {
+                Ok(r) => r,
+                Err(msg) => Some(ToolResult {
+                    success: false,
+                    output: msg,
+                    tool_name: tool_name.to_string(),
+                }),
+            },
         }
     }
 

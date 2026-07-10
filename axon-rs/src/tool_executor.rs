@@ -25,7 +25,14 @@ pub struct ToolResult {
 /// the pre-existing defect (§99 §8): it silently degrades into the model
 /// *hallucinating* the tool's output. `DocumentRenderer` (whose whole premise
 /// is attestable, non-invented artifacts) MUST NOT ship into that behaviour.
-const NATIVE_EXECUTOR_TOOLS: &[&str] = &["Calculator", "DateTimeTool", "DocumentRenderer"];
+const NATIVE_EXECUTOR_TOOLS: &[&str] = &[
+    "Calculator",
+    "DateTimeTool",
+    "DocumentRenderer",
+    // §Fase 100 — Document Ingestion & Surgical Edit.
+    "DocumentReader",
+    "DocumentEditor",
+];
 
 /// Dispatch a tool call by name. Returns `None` if the tool is not a native
 /// executor AND is not a declared-but-unimplemented stdlib tool (those legacy
@@ -39,6 +46,12 @@ pub fn dispatch(tool_name: &str, argument: &str) -> Option<ToolResult> {
         // values into deterministic OOXML bytes (D99.14: returns the artifact
         // value, never a filesystem write).
         "DocumentRenderer" => Some(document_render_execute(argument)),
+        // §Fase 100.c/d — read an ingested OOXML document into a bounded, born-
+        // Untrusted, Parsed text tree.
+        "DocumentReader" => Some(document_read_execute(argument)),
+        // §Fase 100.e — surgical edit: touch only the targeted parts, emit the
+        // per-part hash manifest, inherit taint.
+        "DocumentEditor" => Some(document_edit_execute(argument)),
         _ => None, // Not a native tool — fall through to LLM
     }
 }
@@ -127,6 +140,135 @@ fn err(tool: &str, msg: String) -> ToolResult {
         output: format!("DocumentRenderer: {msg}"),
         tool_name: tool.to_string(),
     }
+}
+
+/// §Fase 100.c/d — read an ingested OOXML document. The argument is JSON:
+/// `{ "bytes_base64": "…" }` (the host has already read + sandboxed the file),
+/// OR `{ "path": "…", "roots": ["…"] }` (read through the §100.b path sandbox).
+/// Returns the born-Untrusted, Parsed text tree + per-part hashes.
+fn document_read_execute(argument: &str) -> ToolResult {
+    use base64::Engine;
+    let name = "DocumentReader";
+    let parsed: serde_json::Value = match serde_json::from_str(argument) {
+        Ok(v) => v,
+        Err(e) => return err_named(name, format!("invalid request JSON: {e}")),
+    };
+    // Resolve the bytes — either supplied directly, or read via the sandbox.
+    let bytes: Vec<u8> = if let Some(b64) = parsed.get("bytes_base64").and_then(|v| v.as_str()) {
+        match base64::engine::general_purpose::STANDARD.decode(b64) {
+            Ok(b) => b,
+            Err(e) => return err_named(name, format!("invalid base64: {e}")),
+        }
+    } else if let Some(path) = parsed.get("path").and_then(|v| v.as_str()) {
+        let roots: Vec<std::path::PathBuf> = parsed
+            .get("roots")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_str().map(std::path::PathBuf::from)).collect())
+            .unwrap_or_default();
+        let sandbox = crate::fs_sandbox::PathSandbox::new(roots);
+        match sandbox.resolve(path) {
+            Ok(resolved) => match std::fs::read(&resolved) {
+                Ok(b) => b,
+                Err(e) => return err_named(name, format!("read failed: {e}")),
+            },
+            Err(e) => return err_named(name, e.to_string()),
+        }
+    } else {
+        return err_named(name, "request needs `bytes_base64` or `path`".into());
+    };
+
+    match crate::ooxml_read::read_ooxml(&bytes, &crate::ooxml_read::IngestBounds::default()) {
+        Ok(doc) => {
+            let text: Vec<serde_json::Value> = doc
+                .text
+                .iter()
+                .map(|r| serde_json::json!({ "part": r.part, "text": r.text }))
+                .collect();
+            let out = serde_json::json!({
+                "format": doc.format,
+                // Born Untrusted, Parsed — the type system carries this (D100.1/2).
+                "taint": doc.taint.as_str(),
+                "provenance": doc.provenance.as_str(),
+                "epistemic_ceiling": doc.provenance.epistemic_ceiling(),
+                "text": text,
+                "full_text": doc.full_text(),
+                "part_hashes": doc.part_hashes,
+            });
+            ToolResult { success: true, output: out.to_string(), tool_name: name.to_string() }
+        }
+        Err(e) => err_named(name, e.to_string()),
+    }
+}
+
+/// §Fase 100.e — surgical edit. Argument JSON:
+/// `{ "bytes_base64": "…", "edits": [{ "kind": "replace_text", "part": "…",
+/// "find": "…", "replace": "…" }] }`. Returns the new bytes + the per-part hash
+/// manifest (the proven blast radius) + the inherited taint.
+fn document_edit_execute(argument: &str) -> ToolResult {
+    use base64::Engine;
+    let name = "DocumentEditor";
+    let parsed: serde_json::Value = match serde_json::from_str(argument) {
+        Ok(v) => v,
+        Err(e) => return err_named(name, format!("invalid request JSON: {e}")),
+    };
+    let b64 = match parsed.get("bytes_base64").and_then(|v| v.as_str()) {
+        Some(b) => b,
+        None => return err_named(name, "request needs `bytes_base64`".into()),
+    };
+    let bytes = match base64::engine::general_purpose::STANDARD.decode(b64) {
+        Ok(b) => b,
+        Err(e) => return err_named(name, format!("invalid base64: {e}")),
+    };
+    let doc = match crate::ooxml_read::read_ooxml(&bytes, &crate::ooxml_read::IngestBounds::default()) {
+        Ok(d) => d,
+        Err(e) => return err_named(name, format!("read failed: {e}")),
+    };
+    // Parse the edits.
+    let mut edits = Vec::new();
+    for e in parsed.get("edits").and_then(|v| v.as_array()).cloned().unwrap_or_default() {
+        let part = e.get("part").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        match e.get("kind").and_then(|v| v.as_str()) {
+            Some("replace_text") => edits.push(crate::ooxml_edit::PartEdit::ReplaceText {
+                part,
+                find: e.get("find").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                replace: e.get("replace").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            }),
+            Some("replace") => {
+                let nb = e
+                    .get("new_bytes_base64")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| base64::engine::general_purpose::STANDARD.decode(s).ok())
+                    .unwrap_or_default();
+                edits.push(crate::ooxml_edit::PartEdit::Replace { part, new_bytes: nb });
+            }
+            other => return err_named(name, format!("unknown edit kind '{}'", other.unwrap_or("<none>"))),
+        }
+    }
+    match crate::ooxml_edit::edit_document(&doc, &edits) {
+        Ok(out) => {
+            let manifest: Vec<serde_json::Value> = out
+                .manifest
+                .iter()
+                .map(|m| serde_json::json!({
+                    "part": m.part, "before": m.before_sha256, "after": m.after_sha256, "touched": m.touched,
+                }))
+                .collect();
+            let result = serde_json::json!({
+                "sha256": out.sha256_hex,
+                // The edit inherits the input's taint — no laundering (D100.8).
+                "taint": out.taint.as_str(),
+                "touched_parts": out.touched_parts(),
+                "manifest": manifest,
+                "bytes_base64": base64::engine::general_purpose::STANDARD.encode(&out.bytes),
+            });
+            ToolResult { success: true, output: result.to_string(), tool_name: name.to_string() }
+        }
+        Err(e) => err_named(name, e.to_string()),
+    }
+}
+
+fn err_named(tool: &str, msg: String) -> ToolResult {
+    ToolResult { success: false, output: format!("{tool}: {msg}"), tool_name: tool.to_string() }
 }
 
 // ── Calculator ──────────────────────────────────────────────────────────────

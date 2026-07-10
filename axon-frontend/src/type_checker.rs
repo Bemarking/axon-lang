@@ -154,6 +154,13 @@ const VALID_EPISTEMIC_LEVELS: &[&str] = &["believe", "doubt", "know", "speculate
 
 // ── §Fase 99 — Native Document Synthesis catalogs ─────────────────────────────
 
+/// §Fase 100.d — the closed `ingest:<class>` provenance catalog (D100.1). NOT
+/// an effect base (D100.3) — a provenance MEMBER, like `epistemic:<level>`:
+/// `parsed` (a fact about the file, elevatable by a shield) | `inferred` (a
+/// model's belief about pixels, ceiling of `believe`, never `know`). §100 ships
+/// a producer for `parsed` only; `inferred` has no producer until §101.
+const VALID_INGEST_CLASSES: &[&str] = &["parsed", "inferred"];
+
 /// §Fase 99.c — the closed `document.target:` catalog. Each selects a serializer,
 /// not a capability (D99.6 — identical effect rows).
 const VALID_DOC_TARGETS: &[&str] = &["docx", "pptx", "xlsx"];
@@ -2749,6 +2756,25 @@ impl<'a> TypeChecker<'a> {
                     Some((b, q)) => (b, Some(q)),
                     None => (e.as_str(), None),
                 };
+                // §Fase 100.d — `ingest:<class>` is the parse/infer provenance
+                // annotation (D100.1), NOT an effect base (D100.3) — accepted
+                // verbatim like `epistemic:`, only the class is catalog-checked.
+                if base == "ingest" {
+                    match qualifier {
+                        Some(class) if is_valid(class, VALID_INGEST_CLASSES) => {}
+                        other => self.emit(
+                            format!(
+                                "axon-T1000 tool '{}' declares `ingest:{}` — the ingest \
+                                 provenance class must be one of: {}.",
+                                node.name,
+                                other.unwrap_or("<none>"),
+                                valid_list(VALID_INGEST_CLASSES)
+                            ),
+                            &node.loc,
+                        ),
+                    }
+                    continue;
+                }
                 if !is_valid(base, VALID_EFFECTS) {
                     self.emit(
                         format!(
@@ -2945,6 +2971,26 @@ impl<'a> TypeChecker<'a> {
                         eff.epistemic_level,
                         node.name,
                         valid_list(VALID_EPISTEMIC_LEVELS)
+                    ),
+                    &node.loc,
+                );
+            }
+            // §Fase 100.d (axon-T1001) — the Inferred ceiling (D100.1): a tool
+            // producing `ingest:inferred` content (OCR/vision — a model's belief
+            // about pixels) may NEVER declare `epistemic:know`. `know` asserts
+            // the value is re-derivable; an inferred read is not — a different
+            // engine/version/rotation answers differently. Its hard ceiling is
+            // `believe`. (No producer ships in §100 — this rule stands ready for
+            // §101, D100.14.)
+            if eff.effects.iter().any(|e| e == "ingest:inferred")
+                && eff.epistemic_level == "know"
+            {
+                self.emit(
+                    format!(
+                        "axon-T1001 tool '{}' declares `ingest:inferred` AND `epistemic:know` — \
+                         an inferred (OCR/vision) read is a belief about pixels, not a fact about \
+                         a file; it can never be `know` (D100.1). Its ceiling is `believe`.",
+                        node.name
                     ),
                     &node.loc,
                 );
@@ -3444,12 +3490,19 @@ impl<'a> TypeChecker<'a> {
         let mut tool_effects: std::collections::HashMap<String, Vec<String>> =
             std::collections::HashMap::new();
         self.collect_tool_effects(&self.program.declarations, &mut tool_effects);
+        // §Fase 100.d (D100.2) — an ingress producer is a tool that acquires
+        // ADVERSARIAL content the runtime did not author: `web` (scraping, §98)
+        // OR `ingest:*` (an ingested document, §100). Both are born Untrusted
+        // and cannot reach an agent's beliefs without a shield — the SAME
+        // barrier (§98.f reused verbatim).
         let is_web_tool = |name: &str| -> bool {
             tool_effects
                 .get(name)
                 .map(|effs| {
-                    effs.iter()
-                        .any(|e| e.split(':').next().unwrap_or(e) == "web")
+                    effs.iter().any(|e| {
+                        let base = e.split(':').next().unwrap_or(e);
+                        base == "web" || base == "ingest"
+                    })
                 })
                 .unwrap_or(false)
         };
@@ -3474,11 +3527,12 @@ impl<'a> TypeChecker<'a> {
         if web_producer && unshielded_belief && !shield_step_present {
             self.emit(
                 format!(
-                    "axon-T908 flow '{}' acquires web content (a tool carrying the `web` \
-                     effect, born Untrusted — D98.1) and feeds a cognitive step whose agent \
-                     declares no shield, with no `shield` applied in the flow. Scraped content \
-                     is adversarial: scan it before it reaches an agent's beliefs. Add a \
-                     `shield <S> on <page>` step (scanning e.g. `prompt_injection`) before the \
+                    "axon-T908 flow '{}' acquires adversarial ingress content (a tool carrying \
+                     the `web` effect (§98 scraping) or an `ingest:*` annotation (§100 document \
+                     ingestion), born Untrusted) and feeds a cognitive step whose agent declares \
+                     no shield, with no `shield` applied in the flow. Scraped/ingested content is \
+                     adversarial: scan it before it reaches an agent's beliefs. Add a `shield <S> \
+                     on <value>` step (scanning e.g. `prompt_injection`/`pii_leak`) before the \
                      reasoning step, or give the agent a `shield:` gate.",
                     flow.name
                 ),

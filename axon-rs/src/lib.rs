@@ -196,6 +196,12 @@ pub mod http_tool;
 /// §Fase 99.e/f — the deterministic OOXML writer (DOCX/PPTX/XLSX) behind the
 /// `DocumentRenderer` native tool. Byte-deterministic + provenance-embedding.
 pub mod ooxml;
+/// §Fase 100.b — the read-only filesystem capability + path sandbox.
+pub mod fs_sandbox;
+/// §Fase 100.c/d — the OOXML reader: bounded, born-Untrusted, Parsed text tree.
+pub mod ooxml_read;
+/// §Fase 100.e — the surgical edit engine + per-part hash manifest.
+pub mod ooxml_edit;
 pub mod inspect;
 /// §Fase 98.e — Native Web Acquisition runtime (`scrape_http` / `scrape_dom` /
 /// `scrape_crawl`); born-Untrusted content, pluggable stealth fetcher.

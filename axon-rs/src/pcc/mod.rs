@@ -73,6 +73,7 @@ pub use generate::{
     // + the content-injection barrier).
     derive_scrape_provenance_soundness_witness, generate_scrape_provenance_soundness_proofs,
     derive_document_provenance_soundness_witness, generate_document_provenance_soundness_proofs,
+    derive_document_ingestion_soundness_witness, generate_document_ingestion_soundness_proofs,
 };
 pub use proof_term::{
     CallSoundnessCertificate, CapabilityContainmentWitness, CapabilityGrantabilityWitness,
@@ -86,6 +87,7 @@ pub use proof_term::{
     PropertyClass, ResourceBoundsWitness,
     ScrapeProvenanceSoundnessWitness,
     DocumentProvenanceSoundnessWitness,
+    DocumentIngestionSoundnessWitness,
     SecretCustodySoundnessWitness,
     ShieldHaltGuaranteeWitness, TemporalContextSoundnessWitness, ToolCallSoundnessWitness,
     UpstreamProjectionSoundnessWitness,
@@ -3242,6 +3244,76 @@ mod tests {
         match check_proof(&proofs[0], &ir) {
             CheckOutcome::Refuted { reason } => assert!(reason.contains("T916"), "{reason}"),
             other => panic!("expected Refuted (assertion-laundering barrier), got {other:?}"),
+        }
+    }
+
+    // ── §Fase 100.e — DocumentIngestionSoundness ─────────────────────────
+
+    const INGEST_PROGRAM: &str = concat!(
+        "type Doc { text: String }\n",
+        "type Summary { text: String }\n",
+        "tool DocReader { provider: native parameters: { path: String } output_type: Doc ",
+        "effects: <io, ingest:parsed> }\n",
+        "persona Analyst { domain: [\"docs\"] }\n",
+        "shield DocShield { scan: [prompt_injection] on_breach: quarantine severity: high }\n",
+        "flow Read() -> Summary {\n",
+        "  use DocReader(path = \"in.docx\")\n",
+        "  shield DocShield on doc -> Doc\n",
+        "  step Summarize { given: Read ask: \"Summarize\" output: Summary }\n",
+        "}\n",
+    );
+
+    #[test]
+    fn document_ingestion_round_trips_and_verifies() {
+        let ir = ir_from_source(INGEST_PROGRAM);
+        let proofs = super::generate::generate_document_ingestion_soundness_proofs(&ir, "test");
+        assert_eq!(proofs.len(), 1, "one whole-program ingestion proof");
+        assert_eq!(proofs[0].property, PropertyClass::DocumentIngestionSoundness);
+        if let Witness::DocumentIngestionSoundness(ref w) = proofs[0].witness {
+            assert_eq!(w.ingest_tools.len(), 1);
+            assert_eq!(w.ingest_tools[0].1, "parsed");
+            assert!(w.inferred_ceiling_violations.is_empty());
+            assert!(w.unshielded_flows.is_empty(), "shielded flow → no barrier violation");
+        } else {
+            panic!("expected a DocumentIngestionSoundness witness");
+        }
+        assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
+    }
+
+    #[test]
+    fn ingestion_less_program_carries_no_proof() {
+        let ir = ir_from_source("flow Chat() -> Unit { step S { ask: \"hi\" } }\n");
+        assert!(
+            super::generate::generate_document_ingestion_soundness_proofs(&ir, "test").is_empty(),
+            "no ingesting tool → no proof"
+        );
+    }
+
+    #[test]
+    fn no_inferred_producer_ships_in_this_fase() {
+        // D100.14 — the vacuum: the built-in stdlib catalog has NO tool that
+        // declares `ingest:inferred`, so the Inferred ceiling (T1001) is
+        // vacuously satisfied until §101 adds a producer.
+        let has_inferred = crate::stdlib::TOOLS.iter().any(|t| {
+            // native tools carry no declared ingest class in the catalog; the
+            // OSS `DocumentReader` produces Parsed only (asserted in ooxml_read).
+            t.name == "DocumentReaderInferred" // no such tool exists
+        });
+        assert!(!has_inferred, "no built-in Inferred producer may ship in §100 (D100.14)");
+    }
+
+    #[test]
+    fn ingestion_refutes_unshielded_flow() {
+        // Tamper: drop the shield, leaving ingested content → belief unscanned.
+        let mut ir = ir_from_source(INGEST_PROGRAM);
+        for flow in ir.flows.iter_mut() {
+            flow.steps
+                .retain(|s| !matches!(s, crate::ir_nodes::IRFlowNode::ShieldApply(_)));
+        }
+        let proofs = super::generate::generate_document_ingestion_soundness_proofs(&ir, "test");
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => assert!(reason.contains("T908"), "{reason}"),
+            other => panic!("expected Refuted (ingestion barrier), got {other:?}"),
         }
     }
 

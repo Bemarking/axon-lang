@@ -23,7 +23,8 @@ use super::proof_term::{
     EffectRowSoundnessWitness, InterruptibleSessionSoundnessWitness, JsonShapeSoundnessWitness,
     ParkedResidualSoundnessWitness, ProofTerm, PropertyClass,
     CacheSoundnessWitness, ForgeSoundnessWitness, ResourceBoundsWitness, SavantSoundnessWitness,
-    DocumentProvenanceSoundnessWitness, ScrapeProvenanceSoundnessWitness, WardenSoundnessWitness,
+    DocumentIngestionSoundnessWitness, DocumentProvenanceSoundnessWitness,
+    ScrapeProvenanceSoundnessWitness, WardenSoundnessWitness,
     ShieldHaltGuaranteeWitness, TechnicianCommandSafetyWitness, ToolCallSoundnessWitness,
     UpstreamProjectionSoundnessWitness, Witness,
     CALL_INTERRUPT_CAUSES, MAX_RETRIES, VALID_BREACH_POLICIES, VALID_BUDGET_PERIODS,
@@ -2761,6 +2762,92 @@ pub fn generate_document_provenance_soundness_proofs(
     }
 }
 
+// ── §Fase 100.e — DocumentIngestionSoundness ─────────────────────────────────
+
+/// §100.e — re-derive the whole-program document-ingestion witness from
+/// `ir.tools` + `ir.flows`. "No contract → no proof": no ingesting tool → None.
+pub fn derive_document_ingestion_soundness_witness(
+    ir: &IRProgram,
+) -> Option<DocumentIngestionSoundnessWitness> {
+    // An ingesting tool declares an `ingest:<class>` provenance member.
+    let ingest_class = |t: &crate::ir_nodes::IRToolSpec| -> Option<String> {
+        t.effect_row.iter().find_map(|e| e.strip_prefix("ingest:").map(|c| c.to_string()))
+    };
+    let ingest_tools: Vec<(String, String)> = ir
+        .tools
+        .iter()
+        .filter_map(|t| ingest_class(t).map(|c| (t.name.clone(), c)))
+        .collect();
+    if ingest_tools.is_empty() {
+        return None;
+    }
+
+    // (T1001) the Inferred ceiling: no tool with `ingest:inferred` +
+    // `epistemic:know`.
+    let mut inferred_ceiling_violations = Vec::new();
+    for t in &ir.tools {
+        let has_inferred = t.effect_row.iter().any(|e| e == "ingest:inferred");
+        let has_know = t.effect_row.iter().any(|e| e == "epistemic:know");
+        if has_inferred && has_know {
+            inferred_ceiling_violations.push(t.name.clone());
+        }
+    }
+
+    // (T908) the ingestion barrier: an ingesting tool's output reaching an
+    // agent's beliefs unshielded. Reuse the same flow walk (`ingest:*` tools are
+    // ingress producers, exactly like `web` tools).
+    let ingest_tool_names: std::collections::HashSet<String> = ir
+        .tools
+        .iter()
+        .filter(|t| ingest_class(t).is_some())
+        .map(|t| t.name.clone())
+        .collect();
+    let is_ingest_tool = |name: &str| ingest_tool_names.contains(name);
+    let shielded_agents: std::collections::HashSet<String> = ir
+        .agents
+        .iter()
+        .filter(|a| !a.shield_ref.is_empty())
+        .map(|a| a.name.clone())
+        .collect();
+    let mut unshielded_flows = Vec::new();
+    for flow in &ir.flows {
+        let (mut producer, mut unshielded_belief, mut shield_present) = (false, false, false);
+        walk_ir_for_injection(
+            &flow.steps,
+            &is_ingest_tool,
+            &shielded_agents,
+            &mut producer,
+            &mut unshielded_belief,
+            &mut shield_present,
+        );
+        if producer && unshielded_belief && !shield_present {
+            unshielded_flows.push(flow.name.clone());
+        }
+    }
+
+    Some(DocumentIngestionSoundnessWitness {
+        ingest_tools,
+        inferred_ceiling_violations,
+        unshielded_flows,
+    })
+}
+
+/// §100.e — generate the (at most one) DocumentIngestionSoundness proof for `ir`.
+pub fn generate_document_ingestion_soundness_proofs(
+    ir: &IRProgram,
+    axon_version: &str,
+) -> Vec<ProofTerm> {
+    match derive_document_ingestion_soundness_witness(ir) {
+        Some(witness) => vec![ProofTerm {
+            property: PropertyClass::DocumentIngestionSoundness,
+            artifact_digest: artifact_digest(ir),
+            witness: Witness::DocumentIngestionSoundness(witness),
+            axon_version: axon_version.to_string(),
+        }],
+        None => Vec::new(),
+    }
+}
+
 // ── §Fase 86.c — ForgeSoundness ──────────────────────────────────────────────
 
 const FORGE_MODES: &[&str] = &["combinatorial", "exploratory", "transformational"];
@@ -3048,6 +3135,7 @@ pub fn generate_all_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm>
     proofs.extend(generate_cache_soundness_proofs(ir, axon_version));
     proofs.extend(generate_scrape_provenance_soundness_proofs(ir, axon_version));
     proofs.extend(generate_document_provenance_soundness_proofs(ir, axon_version));
+    proofs.extend(generate_document_ingestion_soundness_proofs(ir, axon_version));
     proofs.extend(generate_forge_soundness_proofs(ir, axon_version));
     proofs.extend(generate_savant_soundness_proofs(ir, axon_version));
     proofs.extend(generate_warden_soundness_proofs(ir, axon_version));

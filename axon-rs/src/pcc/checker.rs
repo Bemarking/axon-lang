@@ -159,6 +159,9 @@ pub fn check_proof(proof: &ProofTerm, ir: &IRProgram) -> CheckOutcome {
         (PropertyClass::DocumentProvenanceSoundness, Witness::DocumentProvenanceSoundness(w)) => {
             check_document_provenance_soundness(w, ir)
         }
+        (PropertyClass::DocumentIngestionSoundness, Witness::DocumentIngestionSoundness(w)) => {
+            check_document_ingestion_soundness(w, ir)
+        }
         _ => CheckOutcome::UnknownProperty,
     }
 }
@@ -1743,6 +1746,52 @@ fn check_document_provenance_soundness(
                 "axon-T916 assertion-laundering barrier: unattributed flow value(s) in assertive \
                  slots: {:?}",
                 actual.unattributed_slots
+            ),
+        };
+    }
+    CheckOutcome::Verified
+}
+
+/// §100.e — verify a [`DocumentIngestionSoundnessWitness`]. The checker
+/// independently RE-DERIVES the whole-program ingestion provenance from
+/// `ir.tools` + `ir.flows` and rejects on ANY of: a forged/stale witness, a tool
+/// declaring `ingest:inferred` + `epistemic:know` (T1001, the Inferred ceiling),
+/// or a flow feeding ingested content to an agent's beliefs unshielded (T908).
+fn check_document_ingestion_soundness(
+    claimed: &super::proof_term::DocumentIngestionSoundnessWitness,
+    ir: &IRProgram,
+) -> CheckOutcome {
+    let actual = match super::generate::derive_document_ingestion_soundness_witness(ir) {
+        Some(w) => w,
+        None => {
+            return CheckOutcome::Refuted {
+                reason: "no ingestion contract exists in this artifact (no `ingest:*` tool) — \
+                         forged or stale proof"
+                    .to_string(),
+            }
+        }
+    };
+    if actual != *claimed {
+        return CheckOutcome::Refuted {
+            reason: "witness disagrees with artifact re-derivation (forged or stale proof)"
+                .to_string(),
+        };
+    }
+    if !actual.inferred_ceiling_violations.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axon-T1001 tool(s) declare `ingest:inferred` + `epistemic:know` (an inferred \
+                 read can never be `know`): {:?}",
+                actual.inferred_ceiling_violations
+            ),
+        };
+    }
+    if !actual.unshielded_flows.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axon-T908 ingestion barrier: flow(s) feed ingested content to an agent's beliefs \
+                 with no shield: {:?}",
+                actual.unshielded_flows
             ),
         };
     }

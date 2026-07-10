@@ -358,6 +358,13 @@ pub enum PropertyClass {
     /// an unattributed assertion into a signed-looking document is refuted
     /// BEFORE deploy. Program-wide, 0-or-1 proof; no `document` → no proof.
     DocumentProvenanceSoundness,
+    /// §100.e — for a program declaring any ingesting tool (`ingest:*`), re-
+    /// derives the §100.d ingestion invariants: no tool producing
+    /// `ingest:inferred` also declares `epistemic:know` (T1001, the Inferred
+    /// ceiling); and no flow feeds ingested (born-Untrusted) content to an
+    /// agent's beliefs unshielded (T908, the ingestion barrier reused from §98).
+    /// Program-wide, 0-or-1 proof; no ingesting tool → no proof.
+    DocumentIngestionSoundness,
 }
 
 /// §72.f — the closed period catalog for `budget` quotas. The checker's own
@@ -415,6 +422,7 @@ impl PropertyClass {
             PropertyClass::SecretCustodySoundness => "secret_custody_soundness",
             PropertyClass::ScrapeProvenanceSoundness => "scrape_provenance_soundness",
             PropertyClass::DocumentProvenanceSoundness => "document_provenance_soundness",
+            PropertyClass::DocumentIngestionSoundness => "document_ingestion_soundness",
         }
     }
 }
@@ -1210,6 +1218,23 @@ pub struct DocumentProvenanceSoundnessWitness {
     pub unattributed_slots: Vec<String>,
 }
 
+/// §100.e — witness for [`PropertyClass::DocumentIngestionSoundness`], one per
+/// program. The checker RE-DERIVES every field from `ir.tools` + `ir.flows` and
+/// rejects on disagreement. A verifying proof has every violation list empty.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DocumentIngestionSoundnessWitness {
+    /// `(tool_name, ingest_class)` for every ingesting tool, source order.
+    pub ingest_tools: Vec<(String, String)>,
+    /// Tools declaring BOTH `ingest:inferred` and `epistemic:know` (`axon-T1001`,
+    /// the Inferred ceiling, re-derived). Empty for a verifying proof — and in
+    /// §100, always empty (no `inferred` producer exists, D100.14).
+    pub inferred_ceiling_violations: Vec<String>,
+    /// Flow names that feed ingested (born-Untrusted) content to an agent's
+    /// beliefs with no shield (`axon-T908`, re-derived). Empty for a verifying
+    /// proof.
+    pub unshielded_flows: Vec<String>,
+}
+
 /// The property-specific witness. Tagged so the JSON is self-describing
 /// + a future class adds a variant without ambiguity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1243,6 +1268,7 @@ pub enum Witness {
     SecretCustodySoundness(SecretCustodySoundnessWitness),
     ScrapeProvenanceSoundness(ScrapeProvenanceSoundnessWitness),
     DocumentProvenanceSoundness(DocumentProvenanceSoundnessWitness),
+    DocumentIngestionSoundness(DocumentIngestionSoundnessWitness),
 }
 
 impl Witness {
@@ -1291,6 +1317,7 @@ impl Witness {
             Witness::SecretCustodySoundness(_) => "<program>",
             Witness::ScrapeProvenanceSoundness(_) => "<program>",
             Witness::DocumentProvenanceSoundness(_) => "<program>",
+            Witness::DocumentIngestionSoundness(_) => "<program>",
         }
     }
 }

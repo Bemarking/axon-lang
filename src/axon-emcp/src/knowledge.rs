@@ -1247,7 +1247,10 @@ Body prose.
         // §Fase 88: 60 → 62 with `warden` + `scope`.
         // §Fase 92: 62 → 64 with `credential` + `mint`.
         // §Fase 94: 64 → 65 with `rotate` (mediated secret renewal).
-        assert_eq!(s.total, 65);
+        // §Fase 99: 65 → 66 with `document` (native OOXML synthesis). §100 adds
+        // NO primitive — read/edit are tool providers (D100.10), so the count
+        // holds at 66; this reconciles the gate to the registry.
+        assert_eq!(s.total, 66);
     }
 
     /// §Phase 5 — every MCP prompt shipped under
