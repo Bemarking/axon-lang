@@ -761,11 +761,16 @@ fn domain_metadata(d: Domain) -> &'static DomainMetadata {
             ],
             compliance_applied: &["SOC2"],
             next_steps: &[
-                "Wire an OCR tool if the documents arrive as images / PDFs.",
+                // §Fase 101.g (D101.10) — the scaffold no longer advises wiring an
+                // OCR tool that would hallucinate; §101 ships real Inferred
+                // producers. For scans/PDFs, call PDFExtractor / ImageTextExtractor
+                // (born Inferred, believe-ceiling, engine-measured confidence);
+                // for parsed DOCX/PPTX/XLSX, DocumentReader (born Parsed, §100).
+                "For scans/images/PDFs, use ImageTextExtractor / PDFExtractor (born Inferred, ceiling `believe`, engine-measured confidence); for DOCX/PPTX/XLSX use DocumentReader (born Parsed).",
+                "The anchor's confidence_floor now gates a MEASURED confidence, not a model self-grade — tighten it for regulated extractions.",
                 "Add per-document-class extraction sub-flows (apply: pattern).",
-                "Tighten anchor's confidence_floor for regulated extractions.",
-                "Layer HIPAA / GDPR if the documents contain PHI / PII.",
-                "Add a quarantine sink for low-confidence extractions.",
+                "Layer HIPAA / GDPR if the documents contain PHI / PII (OCR of PHI via a sidecar is already refused).",
+                "Sub-floor Inferred spans route to the quarantine sink, never to the agent.",
             ],
         },
         Domain::TicketTriage => &DomainMetadata {
