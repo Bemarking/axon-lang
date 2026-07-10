@@ -215,6 +215,12 @@ pub mod idpe;
 /// the highest-information-scent regions until the answer resolves or the budget
 /// (§72) is exhausted; every foveation is a replayable `ledger` trail entry.
 pub mod foveation;
+/// §Fase 101.e — the IDP-E image front-end: deterministic Perona-Malik anisotropic
+/// diffusion (Catté-regularised) + Gabor phase-tensor orientation energy that
+/// clean and analyse a raster before recognition. The CVE-prone image DECODE is
+/// isolated in the sidecar binary (`src/bin/idpe_sidecar.rs`), which feeds this
+/// front-end already-decoded grayscale — hostile bytes never reach the runtime.
+pub mod idpe_frontend;
 pub mod inspect;
 /// §Fase 98.e — Native Web Acquisition runtime (`scrape_http` / `scrape_dom` /
 /// `scrape_crawl`); born-Untrusted content, pluggable stealth fetcher.

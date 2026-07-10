@@ -105,6 +105,22 @@ futures = "0.3"
 # stable across reqwest minor bumps.
 bytes = "1"
 axon-csys = { path = "../axon-csys", version = "=0.2.0" }
+# §Fase 101.e — the IDP-E sidecar's hostile image DECODE (PNG/JPEG/BMP/TIFF).
+# OPTIONAL + behind the `idpe-sidecar` feature so the main runtime NEVER links a
+# CVE-prone image parser: decode runs ONLY in the isolated `idpe-sidecar` binary
+# (its own crash domain, D101.5). The deterministic front-end math (Perona-Malik,
+# Gabor) has no such dep and always ships in the core.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "tiff"], optional = true }
+
+[features]
+# Enables the isolated image-decode sidecar binary. Off by default: adopters who
+# only ingest OOXML (§100) or feed pre-decoded rasters never pull `image`.
+idpe-sidecar = ["dep:image"]
+
+[[bin]]
+name = "idpe-sidecar"
+path = "src/bin/idpe_sidecar.rs"
+required-features = ["idpe-sidecar"]
 
 [dev-dependencies]
 # (§Fase 41.d's dev-only `tokio-tungstenite` moved to [dependencies] in
