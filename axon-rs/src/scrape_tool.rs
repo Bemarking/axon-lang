@@ -703,23 +703,97 @@ fn extract_fields(
     serde_json::Value::Object(obj)
 }
 
-/// Adaptive relocation HEURISTIC (D98.4 — a heuristic, NOT a proof): when the
-/// exact selector misses, retry with the tag alone (dropping `#id`/`.class`),
-/// accepting the first same-tag element only if the confidence — here a simple
-/// structural score: 1.0 when the tag matches, else 0.0 — meets the floor.
-/// Deliberately conservative: OSS has no per-tenant selector memory (that is
-/// the enterprise `<storage>` store, §98.h), so relocation is tag-level only.
+/// §Fase 102.c — adaptive relocation, scored for real (D102.4). When the exact
+/// selector misses (the target drifted its `id`/`class`), score every candidate
+/// element by **structural + textual similarity** to the selector's signature —
+/// tag match + class-token Jaccard + id-token overlap — and relocate to the
+/// best-scoring element, but ONLY if its similarity clears `similarity_floor`.
+/// Below the floor it returns `None` (a typed empty), NEVER a wrong field: the
+/// pre-§102 stub returned a hardcoded `1.0` for any tag-level fallback, silently
+/// producing a wrong value. Honesty over a fabricated cell (§101 D101.14 applied
+/// to selectors). Deterministic: ties resolve to document order. This is still a
+/// HEURISTIC (D98.4), not a proof; the enterprise tier's durable per-tenant
+/// selector memory (§102.d) is what turns a good relocation into learned drift.
 fn relocate(elements: &[Element], sel: &Selector, similarity_floor: f64) -> Option<String> {
-    let tag = sel.tag.as_ref()?;
-    // Structural confidence of a tag-only relocation.
-    let confidence = 1.0_f64;
-    if confidence < similarity_floor {
+    // A selector with no distinguishing components cannot be relocated.
+    if sel.tag.is_none() && sel.id.is_none() && sel.class.is_none() {
         return None;
     }
-    elements
-        .iter()
-        .find(|el| &el.tag == tag)
-        .map(|el| el.text.clone())
+    let floor = if similarity_floor.is_nan() {
+        1.0
+    } else {
+        similarity_floor.clamp(0.0, 1.0)
+    };
+    let mut best: Option<(f64, &Element)> = None;
+    for el in elements {
+        let score = selector_similarity(sel, el);
+        if score + f64::EPSILON < floor {
+            continue;
+        }
+        match best {
+            Some((b, _)) if b >= score => {}
+            _ => best = Some((score, el)),
+        }
+    }
+    best.map(|(_, el)| el.text.clone())
+}
+
+/// Similarity of a candidate element to a drifted selector's signature, in
+/// `[0,1]`. Each component the selector SPECIFIES contributes its weight; a
+/// component it omits is neutral (never penalises). Tag is the strongest signal;
+/// class/id similarity is token-level so `price` still partially matches a
+/// renamed `product-price` (Jaccard over `-`/`_`-split tokens). Normalised by the
+/// specified weight so a class-only selector scores on class alone.
+fn selector_similarity(sel: &Selector, el: &Element) -> f64 {
+    const W_TAG: f64 = 0.5;
+    const W_CLASS: f64 = 0.35;
+    const W_ID: f64 = 0.35;
+    let (mut score, mut weight) = (0.0, 0.0);
+    if let Some(t) = &sel.tag {
+        weight += W_TAG;
+        if &el.tag == t {
+            score += W_TAG;
+        }
+    }
+    if let Some(c) = &sel.class {
+        weight += W_CLASS;
+        let a = tokenize(c);
+        let mut b = std::collections::HashSet::new();
+        for cls in &el.classes {
+            b.extend(tokenize(cls));
+        }
+        score += W_CLASS * jaccard(&a, &b);
+    }
+    if let Some(id) = &sel.id {
+        weight += W_ID;
+        score += W_ID * jaccard(&tokenize(id), &tokenize(&el.id));
+    }
+    if weight == 0.0 {
+        0.0
+    } else {
+        (score / weight).clamp(0.0, 1.0)
+    }
+}
+
+/// Split an identifier into lowercase alphanumeric tokens (`product-price` →
+/// `{product, price}`), so a partial rename still shares tokens.
+fn tokenize(s: &str) -> std::collections::HashSet<String> {
+    s.split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .map(|t| t.to_ascii_lowercase())
+        .collect()
+}
+
+/// Jaccard similarity of two token sets — `|A∩B| / |A∪B|`, `0` when both empty.
+fn jaccard(
+    a: &std::collections::HashSet<String>,
+    b: &std::collections::HashSet<String>,
+) -> f64 {
+    let union = a.union(b).count();
+    if union == 0 {
+        return 0.0;
+    }
+    a.intersection(b).count() as f64 / union as f64
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -1058,10 +1132,41 @@ mod tests {
 
     #[test]
     fn dom_adaptive_respects_floor() {
-        // With no tag in the selector, relocation cannot apply → null.
+        // The class shares no token with the element → similarity 0 < floor → null.
         let html = "<h1>X</h1>";
         let out = extract_fields(html, &["t=.only-class".to_string()], true, 0.5);
         assert_eq!(out["t"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn dom_adaptive_relocates_across_class_drift() {
+        // §102.c — the target renamed `.price` to `.product-price`; token
+        // similarity (price ∈ {product, price}) relocates instead of empty.
+        let html = r#"<span class="product-price">$42</span>"#;
+        let out = extract_fields(html, &["p=span.price".to_string()], true, 0.6);
+        assert_eq!(out["p"], "$42");
+    }
+
+    #[test]
+    fn dom_adaptive_below_floor_is_null_not_a_wrong_field() {
+        // §102.c / D102.4 — an unrelated same-tag element must NOT be returned.
+        // The pre-§102 stub returned the FIRST same-tag element at confidence 1.0
+        // — a silent wrong field. Real scoring falls below the floor → null.
+        let html = r#"<span class="footer-legal">unrelated</span>"#;
+        let out = extract_fields(html, &["p=span.price".to_string()], true, 0.75);
+        assert_eq!(
+            out["p"],
+            serde_json::Value::Null,
+            "a low-similarity element must not be fabricated as the field"
+        );
+    }
+
+    #[test]
+    fn dom_adaptive_picks_best_scoring_candidate() {
+        // The span sharing the `price` token wins over an unrelated same-tag span.
+        let html = r#"<span class="nav">Home</span><span class="unit-price">$9</span>"#;
+        let out = extract_fields(html, &["p=span.price".to_string()], true, 0.6);
+        assert_eq!(out["p"], "$9");
     }
 
     #[test]
