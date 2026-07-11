@@ -270,6 +270,10 @@ fn attach_trivia_to_decl(decl: &mut Declaration, leading: Vec<Trivia>, trailing:
             n.leading_trivia = leading;
             n.trailing_trivia = trailing;
         }
+        Declaration::Deliver(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
         Declaration::Generic(n) => {
             n.leading_trivia = leading;
             n.trailing_trivia = trailing;
@@ -2095,6 +2099,9 @@ impl Parser {
             // ── §Fase 85.a — the named result-memoization policy ─
             TokenType::Cache => self.parse_cache().map(Declaration::Cache),
             TokenType::Document => self.parse_document().map(Declaration::Document),
+
+            // ── §Fase 105 — Governed CRM Delivery ─
+            TokenType::Deliver => self.parse_deliver().map(Declaration::Deliver),
 
             // ── §Fase 87.a — the long-horizon autonomous research primitive ─
             TokenType::Savant => self.parse_savant().map(Declaration::Savant),
@@ -7438,6 +7445,98 @@ impl Parser {
                 Ok(crate::ast::DocScalar::Ref(name))
             }
         }
+    }
+
+    // ── §Fase 105 — Governed CRM Delivery ──────────────────────────────────
+
+    /// §Fase 105 — parse `deliver <Name> { target:, provenance:?, secret:,
+    /// effects:?, <operation blocks> }`. Delivery-level scalars are handled here;
+    /// anything of the form `ident { … }` is an operation block
+    /// ([`parse_deliver_op`]). Unknown scalar fields are a hard error (the §99
+    /// closed-catalog discipline); the operation vocabulary is the checker's job.
+    fn parse_deliver(&mut self) -> Result<crate::ast::DeliverDefinition, ParseError> {
+        let tok = self.consume(TokenType::Deliver)?;
+        let name = self.consume(TokenType::Identifier)?.value;
+        let mut node = crate::ast::DeliverDefinition {
+            name,
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+            ..Default::default()
+        };
+        self.consume(TokenType::LBrace)?;
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            let field = self.current().clone();
+            let field_name = field.value.clone();
+            self.advance();
+            if self.check(TokenType::Colon) {
+                self.advance();
+                match field_name.as_str() {
+                    "target" => node.target = self.consume_any_ident_or_kw()?.value,
+                    "provenance" => node.provenance = self.consume_any_ident_or_kw()?.value,
+                    "secret" => node.secret = self.consume_any_ident_or_kw()?.value,
+                    "effects" => node.effects = Some(self.parse_effect_row()?),
+                    other => {
+                        return Err(self.error(&format!(
+                            "unknown deliver field `{other}` in deliver `{}` — expected \
+                             `target:` / `provenance:` / `secret:` / `effects:`, or an operation \
+                             block (`upsert_contact {{ … }}` / `create_deal {{ … }}` / \
+                             `add_note {{ … }}`)",
+                            node.name
+                        )))
+                    }
+                }
+            } else if self.check(TokenType::LBrace) {
+                node.ops
+                    .push(self.parse_deliver_op(field_name, field.line, field.column)?);
+            } else {
+                return Err(self.error(&format!(
+                    "unexpected `{field_name}` in deliver `{}` body — expected a `field:` or an \
+                     operation block `{field_name} {{ … }}`",
+                    node.name
+                )));
+            }
+            if self.check(TokenType::Comma) {
+                self.advance();
+            }
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(node)
+    }
+
+    /// §Fase 105 — parse a delivery operation block whose `kind` was already
+    /// consumed: `{ (field: value)* }`. Flat (unlike a document block, an
+    /// operation has no nested children) — each member must be a `field: value`.
+    fn parse_deliver_op(
+        &mut self,
+        kind: String,
+        line: u32,
+        column: u32,
+    ) -> Result<crate::ast::DeliverOp, ParseError> {
+        let mut op = crate::ast::DeliverOp {
+            kind,
+            loc: Loc { line, column },
+            ..Default::default()
+        };
+        self.consume(TokenType::LBrace)?;
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            let name = self.consume_any_ident_or_kw()?.value;
+            self.consume(TokenType::Colon).map_err(|_| {
+                self.error(&format!(
+                    "in deliver operation `{}`: `{name}` must be a `field: value` pair — an \
+                     operation binds scalar fields, it takes no nested blocks",
+                    op.kind
+                ))
+            })?;
+            let value = self.parse_doc_scalar()?;
+            op.fields.push((name, value));
+            if self.check(TokenType::Comma) {
+                self.advance();
+            }
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(op)
     }
 
     /// §Fase 87.a — parse `savant <Name> { domain:, cognition{…}, memory{…},

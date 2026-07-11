@@ -358,6 +358,15 @@ pub enum PropertyClass {
     /// an unattributed assertion into a signed-looking document is refuted
     /// BEFORE deploy. Program-wide, 0-or-1 proof; no `document` → no proof.
     DocumentProvenanceSoundness,
+    /// §105 — for a program declaring any `deliver`, re-derives the §105 egress
+    /// invariants the type-checker proved: every delivery's `target` is in the
+    /// catalog (T921); a delivery binding `sensitive:*` carries a `legal:*` basis
+    /// (T924); and a `provenance: cleared` delivery that binds a flow value sits
+    /// inside `epistemic { believe|know }` (T920, the provenance-stripping
+    /// barrier — the egress-dual of T916). A stored/hand-edited IR that would
+    /// launder a vendor guess into the CRM as a bare fact is refuted BEFORE
+    /// deploy. Program-wide, 0-or-1 proof; no `deliver` → no proof.
+    DeliveryProvenanceSoundness,
     /// §100.e — for a program declaring any ingesting tool (`ingest:*`), re-
     /// derives the §100.d ingestion invariants: no tool producing
     /// `ingest:inferred` also declares `epistemic:know` (T1001, the Inferred
@@ -430,6 +439,7 @@ impl PropertyClass {
             PropertyClass::SecretCustodySoundness => "secret_custody_soundness",
             PropertyClass::ScrapeProvenanceSoundness => "scrape_provenance_soundness",
             PropertyClass::DocumentProvenanceSoundness => "document_provenance_soundness",
+            PropertyClass::DeliveryProvenanceSoundness => "delivery_provenance_soundness",
             PropertyClass::DocumentIngestionSoundness => "document_ingestion_soundness",
             PropertyClass::InferredCeilingSoundness => "inferred_ceiling_soundness",
         }
@@ -1227,6 +1237,28 @@ pub struct DocumentProvenanceSoundnessWitness {
     pub unattributed_slots: Vec<String>,
 }
 
+/// §105 — witness for [`PropertyClass::DeliveryProvenanceSoundness`], one per
+/// program (the egress laws are whole-module). The checker RE-DERIVES every
+/// field from `ir.deliveries` and rejects on disagreement. A verifying proof has
+/// every violation list empty.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeliveryProvenanceSoundnessWitness {
+    /// `(name, target)` for every delivery, source order.
+    pub deliveries: Vec<(String, String)>,
+    /// Deliveries whose `target` is outside the catalog (`axon-T921`, re-derived).
+    /// Empty for a verifying proof.
+    pub bad_targets: Vec<String>,
+    /// Deliveries binding `sensitive:*` data with no `legal:*` basis
+    /// (`axon-T924`, re-derived). Empty for a verifying proof.
+    pub sensitive_without_legal: Vec<String>,
+    /// Delivery names that are `provenance: cleared`, bind a flow value, and sit
+    /// outside an `epistemic { believe|know }` vouch (`axon-T920`, the
+    /// provenance-stripping barrier, re-derived). A hand-edited IR that smuggles
+    /// a bare vendor guess into a CRM is REFUTED before it deploys. Empty for a
+    /// verifying proof.
+    pub laundered_deliveries: Vec<String>,
+}
+
 /// §100.e — witness for [`PropertyClass::DocumentIngestionSoundness`], one per
 /// program. The checker RE-DERIVES every field from `ir.tools` + `ir.flows` and
 /// rejects on disagreement. A verifying proof has every violation list empty.
@@ -1298,6 +1330,7 @@ pub enum Witness {
     SecretCustodySoundness(SecretCustodySoundnessWitness),
     ScrapeProvenanceSoundness(ScrapeProvenanceSoundnessWitness),
     DocumentProvenanceSoundness(DocumentProvenanceSoundnessWitness),
+    DeliveryProvenanceSoundness(DeliveryProvenanceSoundnessWitness),
     DocumentIngestionSoundness(DocumentIngestionSoundnessWitness),
     InferredCeilingSoundness(InferredCeilingSoundnessWitness),
 }
@@ -1348,6 +1381,7 @@ impl Witness {
             Witness::SecretCustodySoundness(_) => "<program>",
             Witness::ScrapeProvenanceSoundness(_) => "<program>",
             Witness::DocumentProvenanceSoundness(_) => "<program>",
+            Witness::DeliveryProvenanceSoundness(_) => "<program>",
             Witness::DocumentIngestionSoundness(_) => "<program>",
             // §101.b — program-wide property, no single named subject.
             Witness::InferredCeilingSoundness(_) => "<program>",

@@ -159,6 +159,9 @@ pub fn check_proof(proof: &ProofTerm, ir: &IRProgram) -> CheckOutcome {
         (PropertyClass::DocumentProvenanceSoundness, Witness::DocumentProvenanceSoundness(w)) => {
             check_document_provenance_soundness(w, ir)
         }
+        (PropertyClass::DeliveryProvenanceSoundness, Witness::DeliveryProvenanceSoundness(w)) => {
+            check_delivery_provenance_soundness(w, ir)
+        }
         (PropertyClass::DocumentIngestionSoundness, Witness::DocumentIngestionSoundness(w)) => {
             check_document_ingestion_soundness(w, ir)
         }
@@ -1749,6 +1752,57 @@ fn check_document_provenance_soundness(
                 "axon-T916 assertion-laundering barrier: unattributed flow value(s) in assertive \
                  slots: {:?}",
                 actual.unattributed_slots
+            ),
+        };
+    }
+    CheckOutcome::Verified
+}
+
+/// §105 — verify a [`DeliveryProvenanceSoundnessWitness`]. The checker
+/// independently RE-DERIVES the whole-program egress provenance from
+/// `ir.deliveries` and rejects on ANY of: a forged/stale witness, a bad `target`
+/// (T921), a `sensitive:*` delivery with no `legal:*` basis (T924), or a
+/// `provenance: cleared` delivery binding a flow value outside an epistemic vouch
+/// (T920, the provenance-stripping barrier).
+fn check_delivery_provenance_soundness(
+    claimed: &super::proof_term::DeliveryProvenanceSoundnessWitness,
+    ir: &IRProgram,
+) -> CheckOutcome {
+    let actual = match super::generate::derive_delivery_provenance_soundness_witness(ir) {
+        Some(w) => w,
+        None => {
+            return CheckOutcome::Refuted {
+                reason: "no delivery contract exists in this artifact (no `deliver`) — forged or \
+                         stale proof"
+                    .to_string(),
+            }
+        }
+    };
+    if actual != *claimed {
+        return CheckOutcome::Refuted {
+            reason: "witness disagrees with artifact re-derivation (forged or stale proof)"
+                .to_string(),
+        };
+    }
+    if !actual.bad_targets.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!("axon-T921 delivery(ies) with an invalid target: {:?}", actual.bad_targets),
+        };
+    }
+    if !actual.sensitive_without_legal.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axon-T924 delivery(ies) bind sensitive data with no legal basis: {:?}",
+                actual.sensitive_without_legal
+            ),
+        };
+    }
+    if !actual.laundered_deliveries.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axon-T920 provenance-stripping barrier: `provenance: cleared` delivery(ies) \
+                 laundering an unshielded flow value into a CRM: {:?}",
+                actual.laundered_deliveries
             ),
         };
     }

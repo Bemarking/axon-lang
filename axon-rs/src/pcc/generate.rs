@@ -24,6 +24,7 @@ use super::proof_term::{
     ParkedResidualSoundnessWitness, ProofTerm, PropertyClass,
     CacheSoundnessWitness, ForgeSoundnessWitness, ResourceBoundsWitness, SavantSoundnessWitness,
     DocumentIngestionSoundnessWitness, DocumentProvenanceSoundnessWitness,
+    DeliveryProvenanceSoundnessWitness,
     InferredCeilingSoundnessWitness,
     ScrapeProvenanceSoundnessWitness, WardenSoundnessWitness,
     ShieldHaltGuaranteeWitness, TechnicianCommandSafetyWitness, ToolCallSoundnessWitness,
@@ -2763,6 +2764,73 @@ pub fn generate_document_provenance_soundness_proofs(
     }
 }
 
+// ── §Fase 105 — DeliveryProvenanceSoundness ──────────────────────────────────
+
+const DELIVER_TARGETS: &[&str] = &["crm"];
+
+/// §105 — re-derive the whole-program delivery-provenance witness from
+/// `ir.deliveries`. "No contract → no proof": a delivery-less program → `None`.
+/// Mirrors the frontend `check_deliver` laws (T921 target, T924 sensitive⇒legal,
+/// T920 the provenance-stripping barrier) — MUST stay in lockstep.
+pub fn derive_delivery_provenance_soundness_witness(
+    ir: &IRProgram,
+) -> Option<DeliveryProvenanceSoundnessWitness> {
+    if ir.deliveries.is_empty() {
+        return None;
+    }
+    let deliveries: Vec<(String, String)> = ir
+        .deliveries
+        .iter()
+        .map(|d| (d.name.clone(), d.target.clone()))
+        .collect();
+    let mut bad_targets = Vec::new();
+    let mut sensitive_without_legal = Vec::new();
+    let mut laundered_deliveries = Vec::new();
+    for d in &ir.deliveries {
+        if !DELIVER_TARGETS.contains(&d.target.as_str()) {
+            bad_targets.push(d.name.clone());
+        }
+        let has_sensitive = d.effect_row.iter().any(|e| effect_base_doc(e) == "sensitive");
+        let has_legal = d.effect_row.iter().any(|e| effect_base_doc(e) == "legal");
+        if has_sensitive && !has_legal {
+            sensitive_without_legal.push(d.name.clone());
+        }
+        // T920 — the provenance-stripping barrier, re-derived: a `cleared`
+        // delivery that binds any flow `ref` field, outside an epistemic vouch.
+        let epistemic_ok = matches!(d.epistemic_mode.as_str(), "believe" | "know");
+        let cleared = d.provenance == "cleared";
+        let binds_flow_value = d
+            .ops
+            .iter()
+            .any(|op| op.fields.iter().any(|f| f.kind == "ref"));
+        if cleared && binds_flow_value && !epistemic_ok {
+            laundered_deliveries.push(d.name.clone());
+        }
+    }
+    Some(DeliveryProvenanceSoundnessWitness {
+        deliveries,
+        bad_targets,
+        sensitive_without_legal,
+        laundered_deliveries,
+    })
+}
+
+/// §105 — generate the (at most one) DeliveryProvenanceSoundness proof for `ir`.
+pub fn generate_delivery_provenance_soundness_proofs(
+    ir: &IRProgram,
+    axon_version: &str,
+) -> Vec<ProofTerm> {
+    match derive_delivery_provenance_soundness_witness(ir) {
+        Some(witness) => vec![ProofTerm {
+            property: PropertyClass::DeliveryProvenanceSoundness,
+            artifact_digest: artifact_digest(ir),
+            witness: Witness::DeliveryProvenanceSoundness(witness),
+            axon_version: axon_version.to_string(),
+        }],
+        None => Vec::new(),
+    }
+}
+
 // ── §Fase 100.e — DocumentIngestionSoundness ─────────────────────────────────
 
 /// §100.e — re-derive the whole-program document-ingestion witness from
@@ -3214,6 +3282,7 @@ pub fn generate_all_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm>
     proofs.extend(generate_cache_soundness_proofs(ir, axon_version));
     proofs.extend(generate_scrape_provenance_soundness_proofs(ir, axon_version));
     proofs.extend(generate_document_provenance_soundness_proofs(ir, axon_version));
+    proofs.extend(generate_delivery_provenance_soundness_proofs(ir, axon_version));
     proofs.extend(generate_document_ingestion_soundness_proofs(ir, axon_version));
     proofs.extend(generate_inferred_ceiling_soundness_proofs(ir, axon_version));
     proofs.extend(generate_forge_soundness_proofs(ir, axon_version));

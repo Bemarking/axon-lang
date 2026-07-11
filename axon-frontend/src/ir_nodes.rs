@@ -143,6 +143,12 @@ pub struct IRProgram {
     /// `DocumentRenderer` tool + the `DocumentProvenanceSoundness` PCC class.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub documents: Vec<IRDocument>,
+    /// §Fase 105 — compiled CRM delivery declarations. Same
+    /// `skip_serializing_if = empty` IR-SHA discipline (a delivery-less program's
+    /// IR JSON stays byte-identical). Consumed by the runtime delivery dispatch
+    /// (`axon::delivery`) + the `DeliveryProvenanceSoundness` PCC class (T920).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deliveries: Vec<IRDeliver>,
     /// §Fase 87.d — dynamic tool-synthesis policies (compiled). Same
     /// `skip_serializing_if = empty` IR-SHA discipline as `savants`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -225,6 +231,7 @@ impl IRProgram {
             credentials: Vec::new(),
             savants: Vec::new(),
             documents: Vec::new(),
+            deliveries: Vec::new(),
             synths: Vec::new(),
             scopes: Vec::new(),
             effects: Vec::new(),
@@ -2064,6 +2071,52 @@ pub struct IRDocField {
     pub value: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub items: Vec<String>,
+}
+
+// ── §Fase 105 — Governed CRM Delivery IR ─────────────────────────────────────
+
+/// §Fase 105 — a compiled delivery declaration. The runtime delivery dispatch
+/// (`axon::delivery`) transduces this to the configured CRM engine; the
+/// `DeliveryProvenanceSoundness` PCC class (T920) re-derives the barrier from it.
+/// `ops` is the closed-catalog operation list.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRDeliver {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub name: String,
+    /// `crm`.
+    pub target: String,
+    /// `attached | cleared` (empty ⇒ `attached`). How field provenance crosses
+    /// the boundary (D105.2) — the T920 barrier's subject.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub provenance: String,
+    /// The per-tenant credential key (§94 custody — resolved at dispatch, never
+    /// in cognition).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub secret: String,
+    /// The propagated effect row (`web`, `sensitive:*`, `legal:*`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effect_row: Vec<String>,
+    /// The enclosing `epistemic { mode: … }` at compile time (`believe`/`know`
+    /// vouch the delivered values are ≥ believe, satisfying the T920 barrier for
+    /// a `provenance: cleared` delivery). Empty at top level. Recorded so the
+    /// `DeliveryProvenanceSoundness` PCC class re-derives the barrier identically.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub epistemic_mode: String,
+    pub ops: Vec<IRDeliverOp>,
+}
+
+/// §Fase 105 — one compiled delivery operation. `fields` preserves declaration
+/// order (a `Vec` of `(name, value)`) so the transduced request is deterministic.
+/// Reuses [`IRDocField`] — the same `(name, kind, value)` shape a document block
+/// field carries, so the barrier + transducer discriminate a literal from a
+/// flow-value `ref` without re-parsing.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRDeliverOp {
+    /// `upsert_contact | create_deal | add_note`.
+    pub kind: String,
+    pub fields: Vec<IRDocField>,
 }
 
 /// §Fase 87.d — a compiled `synth` dynamic tool-synthesis policy. The IR carries

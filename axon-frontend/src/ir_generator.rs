@@ -305,6 +305,8 @@ impl IRGenerator {
             Declaration::Savant(n) => ir.savants.push(self.visit_savant(n)),
             // §Fase 99.b — lower the `document` declaration into the IR.
             Declaration::Document(n) => ir.documents.push(self.visit_document(n)),
+            // §Fase 105 — lower the `deliver` declaration into the IR.
+            Declaration::Deliver(n) => ir.deliveries.push(self.visit_deliver(n)),
             // §Fase 87.d — lower the `synth` tool-synthesis policy into the IR.
             Declaration::Synth(n) => ir.synths.push(self.visit_synth(n)),
             // §Fase 88.a — lower the `scope` authorization policy into the IR.
@@ -340,6 +342,13 @@ impl IRGenerator {
                         let mut ird = self.visit_document(d);
                         ird.epistemic_mode = eb.mode.clone();
                         ir.documents.push(ird);
+                    } else if let Declaration::Deliver(dl) = child {
+                        // §Fase 105 — record the enclosing epistemic mode on a
+                        // delivery so the T920 barrier re-derives identically at
+                        // deploy (the §99.d document discipline, egress-dual).
+                        let mut ird = self.visit_deliver(dl);
+                        ird.epistemic_mode = eb.mode.clone();
+                        ir.deliveries.push(ird);
                     } else {
                         self.visit_declaration(child, ir);
                     }
@@ -1534,6 +1543,36 @@ impl IRGenerator {
             kind,
             value: value_str,
             items,
+        }
+    }
+
+    /// §Fase 105 — lower a `deliver` declaration into the IR. Operation order
+    /// is preserved for determinism; field values reuse the document field
+    /// lowering (`text`/`ref`/`list`/`int`/`bool`).
+    fn visit_deliver(&self, n: &crate::ast::DeliverDefinition) -> crate::ir_nodes::IRDeliver {
+        let effect_row = n
+            .effects
+            .as_ref()
+            .map(|e| e.effects.clone())
+            .unwrap_or_default();
+        crate::ir_nodes::IRDeliver {
+            node_type: "deliver",
+            source_line: n.loc.line,
+            source_column: n.loc.column,
+            name: n.name.clone(),
+            target: n.target.clone(),
+            provenance: n.provenance.clone(),
+            secret: n.secret.clone(),
+            effect_row,
+            epistemic_mode: String::new(),
+            ops: n.ops.iter().map(|o| self.visit_deliver_op(o)).collect(),
+        }
+    }
+
+    fn visit_deliver_op(&self, o: &crate::ast::DeliverOp) -> crate::ir_nodes::IRDeliverOp {
+        crate::ir_nodes::IRDeliverOp {
+            kind: o.kind.clone(),
+            fields: o.fields.iter().map(|(k, v)| self.visit_doc_field(k, v)).collect(),
         }
     }
 

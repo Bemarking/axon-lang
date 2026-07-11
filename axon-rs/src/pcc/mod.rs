@@ -73,6 +73,8 @@ pub use generate::{
     // + the content-injection barrier).
     derive_scrape_provenance_soundness_witness, generate_scrape_provenance_soundness_proofs,
     derive_document_provenance_soundness_witness, generate_document_provenance_soundness_proofs,
+    // §Fase 105 — the CRM-delivery provenance obligation (T920 egress barrier).
+    derive_delivery_provenance_soundness_witness, generate_delivery_provenance_soundness_proofs,
     derive_document_ingestion_soundness_witness, generate_document_ingestion_soundness_proofs,
     derive_inferred_ceiling_soundness_witness, generate_inferred_ceiling_soundness_proofs,
 };
@@ -88,6 +90,7 @@ pub use proof_term::{
     PropertyClass, ResourceBoundsWitness,
     ScrapeProvenanceSoundnessWitness,
     DocumentProvenanceSoundnessWitness,
+    DeliveryProvenanceSoundnessWitness,
     DocumentIngestionSoundnessWitness,
     InferredCeilingSoundnessWitness,
     SecretCustodySoundnessWitness,
@@ -3246,6 +3249,59 @@ mod tests {
         match check_proof(&proofs[0], &ir) {
             CheckOutcome::Refuted { reason } => assert!(reason.contains("T916"), "{reason}"),
             other => panic!("expected Refuted (assertion-laundering barrier), got {other:?}"),
+        }
+    }
+
+    // ── §Fase 105 — DeliveryProvenanceSoundness ──────────────────────────
+
+    const DELIVER_PROGRAM: &str = concat!(
+        "deliver push_lead {\n",
+        "  target: crm\n",
+        "  provenance: attached\n",
+        "  secret: crm_api_key\n",
+        "  effects: <web>\n",
+        "  upsert_contact { key: resolved_email  email: resolved_email }\n",
+        "}\n",
+    );
+
+    #[test]
+    fn delivery_provenance_round_trips_and_verifies() {
+        let ir = ir_from_source(DELIVER_PROGRAM);
+        let proofs = super::generate::generate_delivery_provenance_soundness_proofs(&ir, "test");
+        assert_eq!(proofs.len(), 1, "one whole-program delivery proof");
+        assert_eq!(proofs[0].property, PropertyClass::DeliveryProvenanceSoundness);
+        if let Witness::DeliveryProvenanceSoundness(ref w) = proofs[0].witness {
+            assert_eq!(w.deliveries.len(), 1);
+            assert!(w.bad_targets.is_empty());
+            assert!(w.sensitive_without_legal.is_empty());
+            assert!(w.laundered_deliveries.is_empty(), "attached ⇒ no barrier violation");
+        } else {
+            panic!("expected a DeliveryProvenanceSoundness witness");
+        }
+        assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
+    }
+
+    #[test]
+    fn delivery_less_program_carries_no_proof() {
+        let ir = ir_from_source("flow Chat() -> Unit { step S { ask: \"hi\" } }\n");
+        assert!(
+            super::generate::generate_delivery_provenance_soundness_proofs(&ir, "test").is_empty(),
+            "no deliver → no proof"
+        );
+    }
+
+    #[test]
+    fn delivery_provenance_refutes_laundered_cleared_delivery() {
+        // Tamper the stored IR: flip provenance to `cleared`, laundering a flow
+        // value into the CRM as a bare fact with no epistemic vouch.
+        let mut ir = ir_from_source(DELIVER_PROGRAM);
+        for d in ir.deliveries.iter_mut() {
+            d.provenance = "cleared".to_string();
+        }
+        let proofs = super::generate::generate_delivery_provenance_soundness_proofs(&ir, "test");
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => assert!(reason.contains("T920"), "{reason}"),
+            other => panic!("expected Refuted (provenance-stripping barrier), got {other:?}"),
         }
     }
 

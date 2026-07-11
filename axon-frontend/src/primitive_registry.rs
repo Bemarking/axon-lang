@@ -554,6 +554,14 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         doc_status: DocStatus::Documented,
     },
     PrimitiveInfo {
+        name: "deliver",
+        category: "operators",
+        top_level: true,
+        since: "Fase 105 (v2.60.0)",
+        summary: "Governed CRM Delivery — the egress-dual of acquisition. A declarative, compile-time-validated write of assertions into a system of record (a CRM): idempotent operations (`upsert_contact`/`create_deal`/`add_note`), per-tenant credentials via §94 custody, `web` effect. The provenance-stripping barrier (T920) refuses a `provenance: cleared` delivery of an unshielded flow value — a vendor guess must arrive in the CRM labeled as a guess, not laundered into a fact.",
+        doc_status: DocStatus::Documented,
+    },
+    PrimitiveInfo {
         name: "mandate",
         category: "operators",
         top_level: true,
@@ -788,9 +796,10 @@ mod tests {
         // `mint` (the minting flow verb) → 62→64.
         // §Fase 94 added `rotate` (the mediated secret-renewal verb) → 64→65.
         // §Fase 99 added `document` (Native Document Synthesis) → 65→66.
+        // §Fase 105 added `deliver` (Governed CRM Delivery, egress-dual) → 66→67.
         assert_eq!(
             PRIMITIVE_REGISTRY.len(),
-            66,
+            67,
             "PRIMITIVE_REGISTRY count drift — add/remove the primitive intentionally + update this assertion"
         );
     }
@@ -891,6 +900,8 @@ mod tests {
             "cache",
             // §Fase 99 — Native Document Synthesis (DOCX/PPTX/XLSX egress).
             "document",
+            // §Fase 105 — Governed CRM Delivery (the egress-dual of acquisition).
+            "deliver",
             // §Fase 87 — the long-horizon autonomous research primitive + its
             // dynamic tool-synthesis policy.
             "savant", "synth",
@@ -926,13 +937,15 @@ mod tests {
         // §Fase 88: 60 → 62 with `warden` + `scope`.
         // §Fase 92: 62 → 64 with `credential` + `mint`.
         // §Fase 94: 64 → 65 with `rotate` (the mediated secret-renewal verb).
-        assert_eq!(s.total, 66);
+        // §Fase 99: 65 → 66 with `document` (Native Document Synthesis).
+        // §Fase 105: 66 → 67 with `deliver` (Governed CRM Delivery).
+        assert_eq!(s.total, 67);
         assert_eq!(s.documented + s.pending, s.total);
         // §Fase 6.d achieves **100% coverage** — every entry in the
         // registry has a `.md` and a passing drift-gated canonical
         // program. Pending count is 0; any future drop is a
         // regression the gate catches.
-        assert_eq!(s.documented, 66);
+        assert_eq!(s.documented, 67);
         assert_eq!(s.pending, 0);
     }
 

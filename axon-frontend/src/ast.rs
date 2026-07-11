@@ -196,6 +196,14 @@ pub enum Declaration {
     /// an assertive slot without an `attribute:` or a shield
     /// (docs/fase/fase_99_native_document_synthesis.md).
     Document(DocumentDefinition),
+    /// §Fase 105 — Governed CRM Delivery: a declarative, compile-time-validated
+    /// egress of assertions into a system of record (a CRM). The dual of
+    /// acquisition (`scrape`, §98): where `document` leaves the lattice into a
+    /// human artifact, `deliver` leaves it into a machine system others treat as
+    /// fact. The provenance-stripping barrier (D105.2, axon-T920) refuses a
+    /// `provenance: cleared` delivery of an unshielded flow value — a guess must
+    /// arrive labeled as a guess (docs/fase/fase_105_governed_crm_delivery.md).
+    Deliver(DeliverDefinition),
     /// Tier 3+ declarations parsed structurally (balanced braces, no detailed AST).
     Generic(GenericDeclaration),
 }
@@ -290,6 +298,72 @@ impl DocScalar {
             DocScalar::Text(s) => Some(s.as_str()),
             _ => None,
         }
+    }
+}
+
+// ── §Fase 105 — Governed CRM Delivery ────────────────────────────────────────
+
+/// §Fase 105 — a declarative CRM delivery. `target:` picks the destination class
+/// (`crm`, closed catalog — axon-T921); `provenance:` picks how the epistemic
+/// origin of each delivered field is treated at the boundary (`attached` default
+/// | `cleared` — axon-T922); `secret:` names the per-tenant credential key
+/// (§94 custody, required — axon-T923); `effects:` carries the propagated row
+/// (must include `web` — axon-T924). `ops` is the body — a non-empty list of
+/// [`DeliverOp`]s whose `kind` the checker validates against a closed operation
+/// catalog (axon-T925). Field values reuse [`DocScalar`]: a `Ref` is a binding to
+/// a flow value (what the T920 barrier inspects), the rest are literals.
+#[derive(Debug, Default)]
+pub struct DeliverDefinition {
+    pub name: String,
+    /// `crm` — closed catalog (axon-T921).
+    pub target: String,
+    /// `attached | cleared` — how field provenance crosses the boundary
+    /// (D105.2). Empty ⇒ `attached` (the safe default: provenance travels).
+    /// Closed catalog (axon-T922).
+    pub provenance: String,
+    /// The per-tenant credential key resolved via §94 custody at dispatch — the
+    /// value never enters cognition. Required (axon-T923).
+    pub secret: String,
+    /// The propagated effect row — must include `web` (a CRM write crosses the
+    /// trust boundary over the network, axon-T924).
+    pub effects: Option<EffectRow>,
+    /// The delivery body — the closed-catalog operation list.
+    pub ops: Vec<DeliverOp>,
+    pub loc: Loc,
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
+}
+
+/// §Fase 105 — one CRM operation in a delivery body. `kind ∈ {upsert_contact,
+/// create_deal, add_note}` (validated per-target, axon-T925). Each operation
+/// binds a set of `(field, value)` pairs; a `Ref` field carries a flow value
+/// into the CRM and is the T920 barrier's subject. Every operation requires a
+/// `key:` field — the idempotency key (D105.5, axon-T926) so an at-least-once
+/// retry never double-creates a record.
+#[derive(Debug, Default)]
+pub struct DeliverOp {
+    /// `upsert_contact | create_deal | add_note` — validated at check time.
+    pub kind: String,
+    /// Scalar/ref fields (`key:`, `email:`, `firstname:`, `amount:`, …).
+    pub fields: Vec<(String, DocScalar)>,
+    pub loc: Loc,
+}
+
+impl DeliverOp {
+    /// Look up a scalar field by name.
+    pub fn field(&self, name: &str) -> Option<&DocScalar> {
+        self.fields.iter().find(|(k, _)| k == name).map(|(_, v)| v)
+    }
+    /// Whether a field is present.
+    pub fn has_field(&self, name: &str) -> bool {
+        self.fields.iter().any(|(k, _)| k == name)
+    }
+    /// The flow-value references this operation binds (the barrier's subjects).
+    pub fn ref_fields(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.fields.iter().filter_map(|(k, v)| match v {
+            DocScalar::Ref(name) => Some((k.as_str(), name.as_str())),
+            _ => None,
+        })
     }
 }
 

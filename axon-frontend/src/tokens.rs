@@ -207,6 +207,12 @@ pub enum TokenType {
     // the epistemic lattice here into a human artifact — the assertion-
     // laundering barrier guards the boundary (D99.1).
     Document,
+    // §Fase 105 — `deliver`: the top-level Governed CRM Delivery declaration
+    // (the dual of acquisition, §98/§102). A value LEAVES the epistemic lattice
+    // here into a system of record — the assertion-laundering barrier in egress
+    // form (axon-T920) refuses provenance-stripping delivery of an unshielded
+    // flow value (D105.2). The `document`/`cache`/`savant` top-level shape.
+    Deliver,
     // `quant` as a cognitive primitive (§Fase 51.a) — a flow-body block that
     // projects an MEK semantic tensor into a complex Hilbert space, evolves it
     // under a variational / kernel-feature map, and collapses back to classical
@@ -561,6 +567,8 @@ pub fn keyword_type(word: &str) -> TokenType {
         // `cache` (§Fase 85.a) — the named result-memoization policy.
         "cache" => TokenType::Cache,
         "document" => TokenType::Document,
+        // `deliver` (§Fase 105) — the Governed CRM Delivery declaration.
+        "deliver" => TokenType::Deliver,
         // `savant` (§Fase 87.a) — long-horizon autonomous research primitive.
         "savant" => TokenType::Savant,
         // `synth` (§Fase 87.d) — dynamic tool-synthesis policy.
@@ -676,6 +684,8 @@ pub fn is_declaration_keyword(tt: &TokenType) -> bool {
             // §Fase 85.a — the named result-memoization policy declaration
             | TokenType::Cache
             | TokenType::Document
+            // §Fase 105 — the Governed CRM Delivery declaration
+            | TokenType::Deliver
             // §Fase 87.a — the long-horizon autonomous research primitive
             | TokenType::Savant
             // §Fase 87.d — dynamic tool-synthesis policy

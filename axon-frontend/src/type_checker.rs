@@ -174,6 +174,23 @@ const VALID_DOC_PROVENANCE: &[&str] = &["none", "embedded", "signed"];
 /// sparklines, 3-D are deferred and named as such.
 const VALID_CHART_KINDS: &[&str] = &["bar", "line", "pie", "scatter"];
 
+/// §Fase 105 — the closed `deliver.target:` catalog (D105.1). `crm` selects the
+/// system-of-record class; the concrete vendor is the enterprise transducer's
+/// per-tenant config, so the language binds no vendor. Additive: future targets
+/// (`marketing`, `helpdesk`) land here.
+const VALID_DELIVER_TARGETS: &[&str] = &["crm"];
+
+/// §Fase 105 — the closed `deliver.provenance:` catalog (D105.2). `attached`
+/// (or empty) = each delivered field lands with its epistemic origin (level +
+/// confidence + source); `cleared` = bare values, legal ONLY under an
+/// `epistemic { believe|know }` vouch (the T920 barrier).
+const VALID_DELIVER_PROVENANCE: &[&str] = &["attached", "cleared"];
+
+/// §Fase 105 — the closed delivery-operation catalog (D105.1). `upsert_contact`
+/// (idempotent by natural key), `create_deal`, `add_note`. Additive as the
+/// enterprise transducer grows; the language keeps them vendor-agnostic.
+const VALID_DELIVER_OPS: &[&str] = &["upsert_contact", "create_deal", "add_note"];
+
 /// §Fase 99.c — the top-level body block kinds for a `target`.
 fn doc_top_level_kinds(target: &str) -> Vec<&'static str> {
     match target {
@@ -1664,6 +1681,16 @@ impl<'a> TypeChecker<'a> {
                         n.loc.clone(),
                     ));
                 }
+                // §Fase 105 — register the delivery so it is a referenceable
+                // name (and duplicate-name detection works).
+                Declaration::Deliver(n) => {
+                    registrations.push((
+                        n.name.clone(),
+                        "deliver".into(),
+                        n.loc.line,
+                        n.loc.clone(),
+                    ));
+                }
                 // §Fase 87.d — register the synth policy so a savant can
                 // reference it (and duplicate-name detection works).
                 Declaration::Synth(n) => {
@@ -1897,6 +1924,9 @@ impl<'a> TypeChecker<'a> {
                 // §Fase 99.c/d — structure validity + the assertion-laundering
                 // barrier.
                 Declaration::Document(n) => self.check_document(n),
+                // §Fase 105 — CRM delivery structure + the T920 provenance
+                // barrier (egress-dual of the §99 assertion-laundering barrier).
+                Declaration::Deliver(n) => self.check_deliver(n),
                 // §Fase 87.d — dynamic tool-synthesis policy discipline.
                 Declaration::Synth(n) => self.check_synth(n),
                 // §Fase 88.b — the scope's own-field discipline (targets
@@ -4649,6 +4679,158 @@ impl<'a> TypeChecker<'a> {
         let epistemic_ok = matches!(self.current_epistemic_mode.as_str(), "believe" | "know");
         for block in &node.blocks {
             self.check_doc_block(node, block, &node.target, /*parent*/ "", epistemic_ok);
+        }
+    }
+
+    /// §Fase 105 — validate a `deliver` declaration: structure laws (T921–T926)
+    /// + the provenance-stripping barrier (T920), the egress-dual of the §99
+    /// assertion-laundering barrier. A CRM write publishes assertions into a
+    /// system of record downstream humans treat as fact; a `provenance: cleared`
+    /// delivery of a flow value is laundering unless the author vouches (an
+    /// enclosing `epistemic { believe|know }`) that the value cleared the lattice.
+    fn check_deliver(&mut self, node: &crate::ast::DeliverDefinition) {
+        // (T921) target catalog.
+        if !is_valid(&node.target, VALID_DELIVER_TARGETS) {
+            self.emit(
+                format!(
+                    "axon-T921 deliver '{}' has `target: {}` — a delivery targets one of: {}.",
+                    node.name,
+                    if node.target.is_empty() { "<unset>" } else { &node.target },
+                    valid_list(VALID_DELIVER_TARGETS)
+                ),
+                &node.loc,
+            );
+        }
+        // (T922) provenance catalog (empty ⇒ `attached`).
+        if !node.provenance.is_empty() && !is_valid(&node.provenance, VALID_DELIVER_PROVENANCE) {
+            self.emit(
+                format!(
+                    "axon-T922 deliver '{}' has `provenance: {}` — valid: {} (empty ⇒ `attached`).",
+                    node.name,
+                    node.provenance,
+                    valid_list(VALID_DELIVER_PROVENANCE)
+                ),
+                &node.loc,
+            );
+        }
+        // (T923) a delivery MUST name the per-tenant credential key — a CRM write
+        // authenticates, and the value rides §94 custody (never cognition).
+        if node.secret.trim().is_empty() {
+            self.emit(
+                format!(
+                    "axon-T923 deliver '{}' has no `secret:` — a CRM write must authenticate; \
+                     name the per-tenant credential key (resolved via §94 custody at dispatch, \
+                     never revealed to cognition).",
+                    node.name
+                ),
+                &node.loc,
+            );
+        }
+        // (T924) the effect row must include `web` — a CRM write crosses the
+        // trust boundary over the network (the §98 discipline, egress form).
+        let bases: std::collections::HashSet<String> = node
+            .effects
+            .as_ref()
+            .map(|e| {
+                e.effects
+                    .iter()
+                    .map(|s| s.split(':').next().unwrap_or(s).to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !bases.contains("web") {
+            self.emit(
+                format!(
+                    "axon-T924 deliver '{}' does not declare the `web` effect — a delivery writes \
+                     across the network trust boundary. Add `effects: <web>` (plus any \
+                     `sensitive:<cat>`/`legal:<basis>` the delivered data carries).",
+                    node.name
+                ),
+                &node.loc,
+            );
+        }
+        // (T913-analog) sensitive⇒legal propagation — a delivery is an egress
+        // boundary (D105.6): sensitive data leaving into a CRM needs a legal basis.
+        if bases.contains("sensitive") && !bases.contains("legal") {
+            self.emit(
+                format!(
+                    "axon-T924 deliver '{}' binds `sensitive:*` data but its `effects:` carries no \
+                     `legal:<basis>` — delivering PII into a system of record is further \
+                     processing (D105.6); declare the legal basis.",
+                    node.name
+                ),
+                &node.loc,
+            );
+        }
+        // (T925) a delivery with no operation delivers nothing — refuse.
+        if node.ops.is_empty() {
+            self.emit(
+                format!(
+                    "axon-T925 deliver '{}' has an empty body — declare at least one operation \
+                     ({}).",
+                    node.name,
+                    valid_list(VALID_DELIVER_OPS)
+                ),
+                &node.loc,
+            );
+        }
+
+        // (T920) the provenance-stripping barrier — the headline property. A
+        // `provenance: cleared` delivery that binds ANY flow value is laundering
+        // the epistemic origin out at the boundary, UNLESS the author vouches via
+        // an enclosing `epistemic { believe|know }`. `attached` (the default) is
+        // always legal: provenance travels into the CRM, a guess arrives labeled.
+        let epistemic_vouched =
+            matches!(self.current_epistemic_mode.as_str(), "believe" | "know");
+        let cleared = node.provenance == "cleared";
+        let binds_flow_value = node
+            .ops
+            .iter()
+            .any(|op| op.ref_fields().next().is_some());
+        if cleared && binds_flow_value && !epistemic_vouched {
+            self.emit(
+                format!(
+                    "axon-T920 deliver '{}' is `provenance: cleared` and binds a flow value into a \
+                     CRM with no provenance. A value leaving the epistemic lattice into a system of \
+                     record cannot be more confident than the reasoning that produced it (D105.2, \
+                     the provenance-stripping barrier — the egress-dual of the §99 assertion-\
+                     laundering barrier). Use `provenance: attached` (the default — each field \
+                     lands with its level/confidence/source, a guess labeled as a guess), or, if \
+                     you vouch the delivered values are verified facts, wrap the delivery in \
+                     `epistemic {{ mode: believe }}` (after a `shield` + `anchor` cleared them).",
+                    node.name
+                ),
+                &node.loc,
+            );
+        }
+
+        // Per-operation laws: vocabulary (T925) + the idempotency key (T926).
+        for op in &node.ops {
+            if !is_valid(&op.kind, VALID_DELIVER_OPS) {
+                self.emit(
+                    format!(
+                        "axon-T925 deliver '{}' — operation `{}` is not valid for `target: {}`. \
+                         Valid: {}.",
+                        node.name,
+                        op.kind,
+                        if node.target.is_empty() { "crm" } else { &node.target },
+                        valid_list(VALID_DELIVER_OPS)
+                    ),
+                    &op.loc,
+                );
+            }
+            if !op.has_field("key") {
+                self.emit(
+                    format!(
+                        "axon-T926 deliver '{}' — operation `{}` has no `key:` — every delivery \
+                         operation requires an idempotency key (a natural key like the contact \
+                         email, or an adopter `external_id`) so an at-least-once retry never \
+                         double-creates a record (D105.5).",
+                        node.name, op.kind
+                    ),
+                    &op.loc,
+                );
+            }
         }
     }
 

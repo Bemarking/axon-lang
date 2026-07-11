@@ -229,6 +229,11 @@ pub mod scrape_tool;
 /// contact lookup via a pluggable enterprise provider; results born Inferred
 /// (≤ believe-ceiling) + Untrusted. OSS default = typed refusal (no fabrication).
 pub mod enrichment;
+/// §Fase 105 — Governed CRM Delivery (`deliver`): the egress-dual of acquisition.
+/// Canonical, idempotent CRM operations delivered via a pluggable enterprise
+/// transducer; each field carries its epistemic provenance (D105.2) or the author
+/// vouched (T920). OSS default = typed refusal (no fabricated receipt).
+pub mod delivery;
 pub mod lambda_data;
 pub mod lambda_runtime;
 pub mod logging;
