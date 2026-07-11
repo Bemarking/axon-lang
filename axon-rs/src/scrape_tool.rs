@@ -203,6 +203,12 @@ pub struct FetchRequest {
     pub render_wait: String,
     pub timeout: Duration,
     pub body_limit: usize,
+    /// §Fase 103.e-1 — the acquiring tenant, carried from
+    /// [`ScrapeConfig::tenant`] (§102.b/d) so a fetch-grain audit row (a robots
+    /// denial / anti-bot block) can be attributed to the right tenant's
+    /// hash-chained log. Empty in OSS standalone use (no tenant) ⇒ no audit row
+    /// is emitted (an unattributable acquisition is never witnessed cross-tenant).
+    pub tenant: String,
 }
 
 /// The pluggable fetch engine. OSS registers nothing → the plain-`reqwest`
@@ -266,6 +272,70 @@ pub fn clear_selector_memory() {
     *selector_memory_reg().write().expect("selector memory poisoned") = None;
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+//  ScrapeAuditSink — the per-fetch audit seam (§Fase 103.e-1)
+// ════════════════════════════════════════════════════════════════════════════
+
+/// A witnessed fetch-grain outcome. The runtime emits these AS a fetch resolves
+/// (the executor pre-flight, §102.a, only sees the *declared* tier — not whether
+/// a live fetch was actually robots-denied or challenge-blocked). Host-only: an
+/// event NEVER carries the fetched body (born-Untrusted content stays out of the
+/// audit trail — the §84.f discipline); the enterprise sink extracts just the
+/// host from `url` for the row.
+#[derive(Debug, Clone)]
+pub enum ScrapeAuditEvent<'a> {
+    /// `robots.txt` disallowed the path and no (governed) aggressive override was
+    /// authorized — a first-class refusal, witnessed at the fetch grain.
+    RobotsDenied { url: &'a str },
+    /// An anti-bot challenge blocked the fetch (typed, never a silent empty). The
+    /// `engine` is the requested acquisition engine; `reason` is the typed cause.
+    Blocked {
+        url: &'a str,
+        engine: &'a str,
+        reason: &'a str,
+    },
+}
+
+/// §Fase 103.e-1 — the per-fetch audit seam. OSS ships none (`record` → noop);
+/// the enterprise host registers one that appends to the tenant's hash-chained
+/// audit log (the `scrape:robots_denied` / `scrape:blocked` catalog rows, §98.h).
+/// Exactly the [`register_scrape_fetcher`] / [`register_selector_memory`]
+/// injection shape. The tenant is supplied per-call (it rides
+/// [`FetchRequest::tenant`], D103.8).
+pub trait ScrapeAuditSink: Send + Sync {
+    /// Witness a fetch-grain outcome for `tenant`. Best-effort: the AUTHORIZATION
+    /// controls are enforced elsewhere; this is the observability row.
+    fn record(&self, tenant: &str, event: ScrapeAuditEvent<'_>);
+}
+
+fn scrape_audit_reg() -> &'static std::sync::RwLock<Option<Arc<dyn ScrapeAuditSink>>> {
+    static REG: OnceLock<std::sync::RwLock<Option<Arc<dyn ScrapeAuditSink>>>> = OnceLock::new();
+    REG.get_or_init(|| std::sync::RwLock::new(None))
+}
+
+/// §Fase 103.e-1 — register the enterprise fetch-grain audit sink (the host calls
+/// this once at boot). Replaces any prior registration.
+pub fn register_scrape_audit_sink(sink: Arc<dyn ScrapeAuditSink>) {
+    *scrape_audit_reg().write().expect("scrape audit sink poisoned") = Some(sink);
+}
+
+/// Clear the registered sink (back to the OSS no-audit default).
+pub fn clear_scrape_audit_sink() {
+    *scrape_audit_reg().write().expect("scrape audit sink poisoned") = None;
+}
+
+/// Witness a fetch-grain outcome — noop without a registered sink or an
+/// unstamped tenant (an unattributable acquisition is never witnessed across
+/// tenants — the same guard `recall_selector` uses).
+fn audit_scrape(tenant: &str, event: ScrapeAuditEvent<'_>) {
+    if tenant.is_empty() {
+        return;
+    }
+    if let Some(s) = scrape_audit_reg().read().expect("scrape audit sink poisoned").as_ref() {
+        s.record(tenant, event);
+    }
+}
+
 /// Recall a learned selector — `None` if no memory is registered or the tenant
 /// is unstamped (an unscoped read must never cross tenants).
 fn recall_selector(tenant: &str, tool: &str, field: &str, domain: &str) -> Option<String> {
@@ -290,12 +360,32 @@ fn learn_selector(tenant: &str, tool: &str, field: &str, domain: &str, selector:
 }
 
 /// Resolve the active fetcher: the registered enterprise engine, or the OSS
-/// plain-`reqwest` fallback.
+/// plain-`reqwest` fallback. §Fase 103.e-1 — witnesses a fetch-grain robots
+/// denial / anti-bot block on the tenant's audit log as the fetch resolves (the
+/// executor pre-flight only sees the declared tier). Host-only; noop in OSS.
 fn fetch_page(req: &FetchRequest) -> Result<RawPage, ScrapeError> {
-    if let Some(f) = SCRAPE_FETCHER.get() {
-        return f.fetch(req);
+    let result = if let Some(f) = SCRAPE_FETCHER.get() {
+        f.fetch(req)
+    } else {
+        default_fetch(req)
+    };
+    match &result {
+        Err(ScrapeError::RobotsDenied(url)) => {
+            audit_scrape(&req.tenant, ScrapeAuditEvent::RobotsDenied { url });
+        }
+        Err(ScrapeError::Blocked(reason)) => {
+            audit_scrape(
+                &req.tenant,
+                ScrapeAuditEvent::Blocked {
+                    url: &req.url,
+                    engine: &req.engine,
+                    reason,
+                },
+            );
+        }
+        _ => {}
     }
-    default_fetch(req)
+    result
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -532,6 +622,9 @@ fn run_scrape_http(
         render_wait: cfg.render_wait.clone(),
         timeout: crate::http_tool::parse_timeout_pub(timeout).unwrap_or(DEFAULT_TIMEOUT),
         body_limit: DEFAULT_BODY_LIMIT,
+        // §Fase 103.e-1 — the tenant rides the request so a fetch-grain audit row
+        // attributes to the right hash-chained log (§102.b/d stamps it on cfg).
+        tenant: cfg.tenant.clone(),
     };
     match fetch_page(&req) {
         Ok(page) => match serde_json::to_string(&page) {
@@ -1114,6 +1207,8 @@ impl Tool for ScrapeStreamingTool {
                     render_wait: cfg.render_wait.clone(),
                     timeout,
                     body_limit: DEFAULT_BODY_LIMIT,
+                    // §Fase 103.e-1 — carry the tenant into each crawl fetch.
+                    tenant: cfg.tenant.clone(),
                 };
                 // Blocking fetch on the blocking pool.
                 let fetch = tokio::task::spawn_blocking(move || fetch_page(&req)).await;
@@ -1347,6 +1442,50 @@ mod tests {
         clear_selector_memory();
     }
 
+    /// §Fase 103.e-1 — the fetch-grain audit seam records for a stamped tenant
+    /// and is a NOOP for an unstamped one (an unattributable acquisition is never
+    /// witnessed cross-tenant). Serialised — the sink registry is process-global.
+    #[test]
+    fn scrape_audit_sink_records_only_for_a_stamped_tenant() {
+        use std::sync::Mutex;
+        static LOCK: Mutex<()> = Mutex::new(());
+        let _g = LOCK.lock().unwrap();
+
+        #[derive(Default)]
+        struct Sink {
+            rows: Mutex<Vec<String>>,
+        }
+        impl ScrapeAuditSink for Sink {
+            fn record(&self, tenant: &str, event: ScrapeAuditEvent<'_>) {
+                let row = match event {
+                    ScrapeAuditEvent::RobotsDenied { url } => format!("{tenant}|robots|{url}"),
+                    ScrapeAuditEvent::Blocked { url, engine, reason } => {
+                        format!("{tenant}|blocked|{url}|{engine}|{reason}")
+                    }
+                };
+                self.rows.lock().unwrap().push(row);
+            }
+        }
+        let sink = Arc::new(Sink::default());
+        register_scrape_audit_sink(sink.clone());
+
+        // A stamped tenant is witnessed.
+        audit_scrape("kivi", ScrapeAuditEvent::RobotsDenied { url: "https://x.com/p" });
+        audit_scrape(
+            "kivi",
+            ScrapeAuditEvent::Blocked { url: "https://x.com/q", engine: "browser", reason: "turnstile" },
+        );
+        // An UNSTAMPED tenant is a noop (never a cross-tenant row).
+        audit_scrape("", ScrapeAuditEvent::RobotsDenied { url: "https://x.com/z" });
+
+        let rows = sink.rows.lock().unwrap().clone();
+        assert_eq!(rows, vec![
+            "kivi|robots|https://x.com/p".to_string(),
+            "kivi|blocked|https://x.com/q|browser|turnstile".to_string(),
+        ]);
+        clear_scrape_audit_sink();
+    }
+
     #[test]
     fn body_cap_truncates_on_char_boundary() {
         let page = RawPage {
@@ -1399,6 +1538,7 @@ mod tests {
             render_wait: String::new(),
             timeout: Duration::from_secs(2),
             body_limit: DEFAULT_BODY_LIMIT,
+            tenant: String::new(),
         };
         // No enterprise fetcher registered in the unit test → OSS default.
         assert!(matches!(default_fetch(&req), Err(ScrapeError::NoBrowserSidecar)));
@@ -1415,6 +1555,7 @@ mod tests {
             render_wait: String::new(),
             timeout: Duration::from_secs(2),
             body_limit: DEFAULT_BODY_LIMIT,
+            tenant: String::new(),
         };
         assert!(matches!(default_fetch(&req), Err(ScrapeError::InvalidUrl(_))));
     }
