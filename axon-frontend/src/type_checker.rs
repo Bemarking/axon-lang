@@ -138,7 +138,7 @@ const VALID_FORGE_MODES: &[&str] = &["combinatorial", "exploratory", "transforma
 /// §Fase 98.d — the closed catalog of web-acquisition providers. A tool whose
 /// `provider:` is one of these acquires content from the open, adversarial web
 /// (born Untrusted, D98.1) and is governed by the §98 scrape laws.
-const VALID_SCRAPE_PROVIDERS: &[&str] = &["scrape_http", "scrape_dom", "scrape_crawl"];
+const VALID_SCRAPE_PROVIDERS: &[&str] = &["scrape_http", "scrape_dom", "scrape_crawl", "scrape_enrich"];
 
 /// §Fase 98.d — the closed `scrape.engine:` catalog. `impersonate` (HTTP-
 /// fingerprint stealth, the GA tier — OSS fallback is plain reqwest) |
@@ -2554,7 +2554,9 @@ impl<'a> TypeChecker<'a> {
         );
 
         match node.provider.as_str() {
-            "scrape_http" | "scrape_crawl" => {
+            // §Fase 104 — `scrape_enrich` performs live vendor I/O too (it POSTs a
+            // contact query to an enrichment endpoint), so `network` is mandatory.
+            "scrape_http" | "scrape_crawl" | "scrape_enrich" => {
                 require(self, "network", "it performs live network I/O");
             }
             "scrape_dom" => {

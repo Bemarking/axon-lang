@@ -2503,7 +2503,7 @@ pub fn generate_cache_soundness_proofs(ir: &IRProgram, axon_version: &str) -> Ve
 /// §98.d — the closed web-acquisition provider set (mirror of
 /// `type_checker::VALID_SCRAPE_PROVIDERS`). The checker's own statement of
 /// "what a scrape tool is" (D51.2).
-const SCRAPE_PROVIDERS: &[&str] = &["scrape_http", "scrape_dom", "scrape_crawl"];
+const SCRAPE_PROVIDERS: &[&str] = &["scrape_http", "scrape_dom", "scrape_crawl", "scrape_enrich"];
 
 fn effect_base(e: &str) -> &str {
     e.split_once(':').map(|(b, _)| b).unwrap_or(e)

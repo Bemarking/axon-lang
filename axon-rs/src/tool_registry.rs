@@ -483,6 +483,13 @@ impl ToolRegistry {
                 Some(crate::scrape_tool::dispatch_scrape(entry, argument))
             }
 
+            // §Fase 104.a — Governed Contact Enrichment. `scrape_enrich` resolves
+            // a partial contact's missing email/phone/linkedin via the registered
+            // enterprise provider; output is born Inferred (≤ believe) + Untrusted.
+            // No provider registered ⇒ a TYPED refusal, never a fabricated contact
+            // (D104.6 — the same honesty as the §101 extraction seam).
+            "scrape_enrich" => Some(crate::enrichment::dispatch_enrich(entry, argument)),
+
             // Known providers that currently fall through to LLM
             // Future: "grpc" adapters. §Fase 100.a — but a name DECLARED in
             // `stdlib::TOOLS` with no native executor and no provider must NOT
