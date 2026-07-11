@@ -70,3 +70,12 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 # Smoke tests drive the server via a deterministic line-by-line JSON-RPC
 # exchange; no external mock needed.
 serde_json = "1"
+
+# ─── target/ bloat control (disk hygiene, same as axon-rs) ───────────
+# debug=1 (line-tables) for our code; strip debug info from third-party deps.
+# Profiles apply only to the build ROOT → ignored by downstream consumers.
+[profile.dev]
+debug = 1
+
+[profile.dev.package."*"]
+debug = 0

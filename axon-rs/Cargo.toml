@@ -126,3 +126,22 @@ required-features = ["idpe-sidecar"]
 # (§Fase 41.d's dev-only `tokio-tungstenite` moved to [dependencies] in
 # §Fase 80.d — the `upstream` runtime needs the RFC 6455 CLIENT half in
 # production; tests keep using the same dep.)
+
+# ─── target/ bloat control (disk hygiene) ────────────────────────────
+# axon-rs/target grew 5.76 → 176 → 382 GB in 3 cycles: the 174 files under
+# tests/*.rs each link as a SEPARATE test binary, and each embeds the FULL
+# dependency tree's debug info (tokio/axum/sqlx/aws-sdk/reqwest/image/…) at the
+# Rust default (debug = 2). The weight is that debug info, replicated ×174.
+#   - `debug = 1` (line-tables-only) keeps panic backtraces WITH line numbers for
+#     OUR code — enough for rust-analyzer / VSCode day-to-day.
+#   - `package."*" debug = 0` strips debug info from third-party deps (where the
+#     bulk lives) — shrinking each of the 174 test binaries ~70-80%.
+# Profiles apply only to the build ROOT, so this is IGNORED by every downstream
+# consumer of the published `axon-lang` crate (the enterprise, crates.io users).
+# Also sidesteps the Windows LNK1318 section-limit (previously worked around with
+# the CARGO_PROFILE_DEV_DEBUG=0 env var — now a persistent, checked-in default).
+[profile.dev]
+debug = 1
+
+[profile.dev.package."*"]
+debug = 0

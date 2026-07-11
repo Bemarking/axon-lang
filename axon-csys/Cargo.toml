@@ -83,3 +83,12 @@ harness = false
 [[bench]]
 name = "effects"
 harness = false
+
+# ─── target/ bloat control (disk hygiene, same as axon-rs) ───────────
+# debug=1 (line-tables) for our code; strip debug info from third-party deps.
+# Profiles apply only to the build ROOT → ignored by downstream consumers.
+[profile.dev]
+debug = 1
+
+[profile.dev.package."*"]
+debug = 0
