@@ -2330,6 +2330,21 @@ fn server_execute(
 }
 
 /// POST /v1/execute — execute a deployed flow and auto-record a trace.
+/// §Brief #63 — the hard wall-clock ceiling for a single server-side flow
+/// execution. A flow that exceeds it is aborted (its blocking thread is orphaned
+/// but freed shortly by the tool's own reqwest timeout), so the request degrades
+/// to a witnessed error rather than hanging the HTTP runtime forever. Configurable
+/// via `AXON_FLOW_HARD_TIMEOUT_SECS` (default 180s); a zero/garbage value falls
+/// back to the default so the ceiling can never be silently disabled.
+fn flow_hard_deadline() -> std::time::Duration {
+    let secs = std::env::var("AXON_FLOW_HARD_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .filter(|&s| s > 0)
+        .unwrap_or(180);
+    std::time::Duration::from_secs(secs)
+}
+
 async fn execute_handler(
     State(state): State<SharedState>,
     headers: HeaderMap,
@@ -2377,13 +2392,47 @@ async fn execute_handler(
     // carry the URL captures + query string parsed by the dynamic-route
     // dispatcher. Both default to empty (D5 backwards-compat) for the
     // legacy `/v1/execute` RPC path.
-    let (result, actual_backend) = execute_with_fallback(
-        &state, &source, &source_file, &payload.flow,
-        &effective_backend, resolved_key.as_deref(),
-        payload.request_body.as_ref(),
-        &payload.request_path,
-        &payload.request_query,
-    );
+    // §Brief #63 — `execute_with_fallback` calls the SYNCHRONOUS
+    // `execute_server_flow`, which drives its own `block_on_store` runtime and
+    // performs blocking `reqwest::blocking` scrape/http fetches. Running it INLINE
+    // on this axum async worker means one hung fetch parks the worker and, with
+    // enough concurrent hung flows, starves the async `/health*` handlers served
+    // by the SAME runtime (the kivi Brief #63 signature: CPU 0%, healthz down, no
+    // trace). Offload to the blocking pool so a blocking flow can NEVER starve the
+    // HTTP runtime, and cap it with a hard deadline so a fetch that hangs past its
+    // own timeout degrades to a witnessed error instead of an infinite hang.
+    let deadline = flow_hard_deadline();
+    let state_for_exec = state.clone();
+    let source_owned = source.clone();
+    let source_file_owned = source_file.clone();
+    let flow_owned = payload.flow.clone();
+    let backend_owned = effective_backend.clone();
+    let key_owned = resolved_key.clone();
+    let body_owned = payload.request_body.clone();
+    let path_owned = payload.request_path.clone();
+    let query_owned = payload.request_query.clone();
+    let exec_join = tokio::task::spawn_blocking(move || {
+        execute_with_fallback(
+            &state_for_exec, &source_owned, &source_file_owned, &flow_owned,
+            &backend_owned, key_owned.as_deref(),
+            body_owned.as_ref(), &path_owned, &query_owned,
+        )
+    });
+    let (result, actual_backend) = match tokio::time::timeout(deadline, exec_join).await {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(join_err)) => (
+            Err(format!("flow '{}' execution task join failed: {join_err}", payload.flow)),
+            effective_backend.clone(),
+        ),
+        Err(_elapsed) => (
+            Err(format!(
+                "flow '{}' exceeded the {}s hard execution deadline and was aborted — a \
+                 blocking tool fetch that would otherwise hang the server (Brief #63)",
+                payload.flow, deadline.as_secs()
+            )),
+            effective_backend.clone(),
+        ),
+    };
 
     match result {
         Ok(mut exec_result) => {
@@ -28615,6 +28664,63 @@ mod tests {
     use axum::http::Request;
     use http_body_util::BodyExt;
     use tower::ServiceExt;
+
+    // ── §Brief #63 — deadlock/hard-deadline regression ─────────────────────
+    //
+    // The adopter's server hung (CPU 0%, /healthz down, no trace) because a
+    // blocking `scrape_http` fetch ran INLINE on the axum async worker and could
+    // exceed every configured timeout. The fix offloads flow execution to the
+    // blocking pool under a hard `flow_hard_deadline()` ceiling. These tests pin
+    // the two invariants of that fix WITHOUT any network dependency.
+
+    #[test]
+    fn brief63_flow_hard_deadline_defaults_and_cannot_be_disabled() {
+        // Single test owns the env var end-to-end (no cross-test race).
+        std::env::remove_var("AXON_FLOW_HARD_TIMEOUT_SECS");
+        assert_eq!(flow_hard_deadline().as_secs(), 180, "unset ⇒ 180s default");
+
+        std::env::set_var("AXON_FLOW_HARD_TIMEOUT_SECS", "5");
+        assert_eq!(flow_hard_deadline().as_secs(), 5, "explicit override honored");
+
+        // A zero or garbage value must NOT silently disable the ceiling.
+        std::env::set_var("AXON_FLOW_HARD_TIMEOUT_SECS", "0");
+        assert_eq!(flow_hard_deadline().as_secs(), 180, "0 ⇒ fall back to default");
+        std::env::set_var("AXON_FLOW_HARD_TIMEOUT_SECS", "not-a-number");
+        assert_eq!(flow_hard_deadline().as_secs(), 180, "garbage ⇒ fall back to default");
+
+        std::env::remove_var("AXON_FLOW_HARD_TIMEOUT_SECS");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn brief63_a_hung_flow_is_aborted_at_the_deadline_and_healthz_stays_alive() {
+        // Mirror the handler's isolation: a blocking task that would otherwise
+        // hang the worker forever, offloaded under a hard deadline.
+        let deadline = std::time::Duration::from_millis(200);
+        let hung_flow = tokio::task::spawn_blocking(|| {
+            // Stands in for a `reqwest::blocking` fetch stuck on a black-hole host.
+            // 2s ≫ the 200ms deadline (proves the abort) yet keeps the binary's
+            // exit-time wait for this orphaned thread short.
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            "should never be observed"
+        });
+
+        // A concurrent `/healthz`-style async task on the SAME runtime: before the
+        // fix (inline blocking) this would starve; after it, it returns promptly.
+        let healthz = tokio::spawn(async {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            "ok"
+        });
+
+        let outcome = tokio::time::timeout(deadline, hung_flow).await;
+        assert!(outcome.is_err(), "the hung flow must hit the hard deadline, not run to completion");
+
+        // healthz answered while the flow was still blocked on the blocking pool.
+        assert_eq!(
+            healthz.await.expect("healthz task panicked"),
+            "ok",
+            "the async runtime stayed responsive while a blocking flow was in flight",
+        );
+    }
 
     fn test_config() -> ServerConfig {
         ServerConfig {

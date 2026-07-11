@@ -415,6 +415,11 @@ fn default_fetch(req: &FetchRequest) -> Result<RawPage, ScrapeError> {
 
     let client = reqwest::blocking::Client::builder()
         .timeout(req.timeout)
+        // §Brief #63 — bound the CONNECT phase (DNS + TCP + TLS) explicitly. The
+        // total-request `.timeout()` can be escaped by a DNS stall on some platforms
+        // (the "timeout not honored" the adopter reported); `.connect_timeout` caps
+        // the phase so a hung name-resolution degrades to a typed error, not a hang.
+        .connect_timeout(clamp_connect_timeout(req.timeout))
         .user_agent(DEFAULT_USER_AGENT)
         .build()
         .map_err(|e| ScrapeError::FetchFailed(format!("client build: {e}")))?;
@@ -464,6 +469,16 @@ fn default_fetch(req: &FetchRequest) -> Result<RawPage, ScrapeError> {
 /// posture — an unreachable robots.txt does not block). The enterprise layer
 /// (§98.h) adds the RBAC-gated override + the audit row; this is the sound
 /// default so an OSS deployment is polite out of the box.
+/// §Brief #63 — the connect-phase budget derived from a request's total timeout.
+/// Connecting (DNS + TCP + TLS) should be fast; cap it at 15s so a stalled
+/// name-resolution fails quickly, but never above the caller's own total timeout
+/// and never below 1s (so a tiny total timeout still permits a real connection).
+fn clamp_connect_timeout(total: Duration) -> Duration {
+    total
+        .min(Duration::from_secs(15))
+        .max(Duration::from_secs(1))
+}
+
 fn robots_allows(url: &str, timeout: Duration) -> bool {
     let (scheme, host, path) = match split_url(url) {
         Some(t) => t,
@@ -472,6 +487,9 @@ fn robots_allows(url: &str, timeout: Duration) -> bool {
     let robots_url = format!("{scheme}://{host}/robots.txt");
     let client = match reqwest::blocking::Client::builder()
         .timeout(timeout.min(Duration::from_secs(10)))
+        // §Brief #63 — bound the connect phase of the robots.txt pre-fetch; it runs
+        // BEFORE the page fetch and a DNS stall here would hang the whole scrape.
+        .connect_timeout(clamp_connect_timeout(timeout))
         .user_agent(DEFAULT_USER_AGENT)
         .build()
     {
