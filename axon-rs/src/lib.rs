@@ -225,6 +225,10 @@ pub mod inspect;
 /// §Fase 98.e — Native Web Acquisition runtime (`scrape_http` / `scrape_dom` /
 /// `scrape_crawl`); born-Untrusted content, pluggable stealth fetcher.
 pub mod scrape_tool;
+/// §Fase 104.a — Governed Contact Enrichment (`scrape_enrich`): structured
+/// contact lookup via a pluggable enterprise provider; results born Inferred
+/// (≤ believe-ceiling) + Untrusted. OSS default = typed refusal (no fabrication).
+pub mod enrichment;
 pub mod lambda_data;
 pub mod lambda_runtime;
 pub mod logging;
