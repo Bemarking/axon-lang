@@ -765,14 +765,16 @@ fn execute_stub(
             //   * expression — bind the joined string; runtime
             //     evaluation via NativeComputeDispatcher is a future
             //     sub-phase
-            if step.step_type == "let_binding" {
+            // §Fase 105.h — the runtime step_type is `"let"` (extract_step_info),
+            // NOT `"let_binding"` — the pre-105.h check never matched, so even the
+            // stub silently dropped a flow-body `let` to the LLM fallthrough. Fixed
+            // here for parity with the deployed executor's materialisation.
+            if step.step_type == "let" {
                 if let Some(payload) = &step.let_payload {
                     let resolved = if payload.value_kind == "reference"
                         && !payload.value.is_empty()
                     {
-                        stub_ctx
-                            .get(&payload.value)
-                            .map(str::to_string)
+                        crate::exec_context::resolve_dotted_var(stub_ctx.vars(), &payload.value)
                             .unwrap_or_else(|| payload.value.clone())
                     } else {
                         payload.value.clone()
@@ -1738,6 +1740,32 @@ async fn execute_real_async(
                         },
                     };
 
+                    // §Fase 105.h — a pure `let` co-scheduled in a parallel wave:
+                    // resolve READ-ONLY from the snapshot (the closure never mutates
+                    // shared state); the merge below binds its target into `ctx`.
+                    if step.step_type == "let" {
+                        let resolved = step
+                            .let_payload
+                            .as_ref()
+                            .map(|p| {
+                                if p.value_kind == "reference" && !p.value.is_empty() {
+                                    crate::exec_context::resolve_dotted_var(
+                                        ctx_snapshot.vars(),
+                                        &p.value,
+                                    )
+                                    .unwrap_or_else(|| p.value.clone())
+                                } else {
+                                    ctx_snapshot.interpolate(&p.value)
+                                }
+                            })
+                            .unwrap_or_default();
+                        return parallel::WaveStepResult {
+                            step_name: step_name.to_string(),
+                            output: resolved,
+                            success: true,
+                        };
+                    }
+
                     // Native tool steps
                     if step.step_type == "use_tool" {
                         // §Fase 58.e — `use Tool(k = v, …)` assembles a typed
@@ -1824,6 +1852,16 @@ async fn execute_real_async(
 
                     ctx.set_step(&step.step_name, &step.step_type, j);
                     ctx.set_result(&step.step_name, &wr.output);
+                    // §Fase 105.h — a `let` resolved in the parallel closure was
+                    // read-only; bind its target into the shared ctx here so
+                    // downstream `${target}` + a `deliver` ref resolve it.
+                    if step.step_type == "let" {
+                        if let Some(p) = &step.let_payload {
+                            if !p.target.is_empty() {
+                                ctx.set(&p.target, &wr.output);
+                            }
+                        }
+                    }
                     hooks.on_step_start(&step.step_name, &step.step_type);
                     hooks.on_step_end(0, 0, 0, 0, false);
 
@@ -1891,6 +1929,52 @@ async fn execute_real_async(
                     c(&step.step_name, "\x1b[1m", use_color),
                     step.step_type,
                 );
+            }
+
+            // ── §Fase 105.h — pure `let` SSA binding (no LLM, no I/O). The
+            // DEPLOYED executor now materialises a flow-body `let` into the
+            // ExecContext so downstream `${x}` interpolation AND a top-level
+            // `deliver`'s ref resolve it. Before §105.h a `let_binding` step fell
+            // through every arm below to the LLM path (a `let` made a model call).
+            // Mirrors the stub executor's Fase 17.c resolution (reference → dotted
+            // lookup with literal fallback; else interpolate the value). Note the
+            // runtime step_type is `"let"` (extract_step_info); a `let`'s step_name
+            // IS its target, so `set_result` records it under the target name — a
+            // `deliver` ref then resolves it via the §105.g step-result resolver.
+            if step.step_type == "let" {
+                if let Some(p) = &step.let_payload {
+                    let resolved = if p.value_kind == "reference" && !p.value.is_empty() {
+                        crate::exec_context::resolve_dotted_var(ctx.vars(), &p.value)
+                            .unwrap_or_else(|| p.value.clone())
+                    } else {
+                        ctx.interpolate(&p.value)
+                    };
+                    if !p.target.is_empty() {
+                        ctx.set(&p.target, &resolved);
+                    }
+                    ctx.set_result(&step.step_name, &resolved);
+                    report.record_step(StepReport {
+                        name: step.step_name.clone(),
+                        step_type: step.step_type.clone(),
+                        result: resolved.clone(),
+                        duration_ms: 0,
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        anchor_breaches: 0,
+                        chain_activations: 0,
+                        was_retried: false,
+                    });
+                    if trace {
+                        events.push(TraceEvent {
+                            event: "let_binding".to_string(),
+                            unit: unit.flow_name.clone(),
+                            step: step.step_name.clone(),
+                            detail: format!("{} = {} (kind={})", p.target, resolved, p.value_kind),
+                        });
+                    }
+                }
+                hooks.on_step_end(0, 0, 0, 0, false);
+                continue;
             }
 
             // ── Native tool interception ────────────────────────
@@ -5019,6 +5103,56 @@ flow Recall(q: Text) -> Text {
         assert_ne!(ret, "(stub)", "`return hits` resolves the binding, not the LLM");
         // `return hits` == the navigate step's output (hits propagated).
         assert_eq!(collected.step_results.first(), collected.step_results.last());
+    }
+
+    /// §Fase 105.h — a flow-body `let` is MATERIALISED (not dropped to the LLM):
+    /// its value binds under the target name so `${x}` interpolation AND a downstream
+    /// reference resolve it. Pre-105.h the step_type check was `"let_binding"` while
+    /// the runtime emits `"let"` (extract_step_info), so a `let` silently fell to the
+    /// model. A `let`'s step_name IS its target, so it lands in `step_results` under
+    /// the target name — exactly what the §105.g `deliver` resolver reads.
+    #[test]
+    fn execute_server_flow_materialises_a_let_binding() {
+        let source = r#"
+flow Lead() -> Text {
+    let email = "ada@acme.com"
+    return email
+}
+"#;
+        let (_p, ir) =
+            crate::flow_plan::compile_source_to_ir(source, "lead.axon").expect("compile");
+        let metrics = execute_server_flow(
+            &ir,
+            "Lead",
+            "stub",
+            "acme",
+            "lead.axon",
+            None,
+            None,
+            &std::collections::HashMap::new(),
+            &std::collections::HashMap::new(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("flow runs");
+        assert!(metrics.success, "the let flow runs");
+        // The behavioural proof: `return email` resolves the materialised `let` —
+        // NOT the LLM stub. (Pre-105.h the `let` fell through to the model because
+        // the step_type check was `"let_binding"` ≠ the runtime `"let"`, so `email`
+        // was unbound and the return could not resolve it.) The DEPLOYED executor's
+        // arm additionally `report.record_step`s the let under its target name, so a
+        // `deliver` ref reads it from `step_results` (§105.g resolver).
+        let ret = metrics.step_results.last().expect("return value");
+        assert_eq!(
+            ret, "ada@acme.com",
+            "return resolves the materialised let, not the stub (got {ret:?})"
+        );
     }
 
     /// §Fase 74.f.7 (Kivi brief #44) — DIRECT repro of the event-consumer binding:
