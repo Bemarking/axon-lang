@@ -258,6 +258,9 @@ async fn cognitive_framing_variants_unchanged_no_tool_call() {
             source_column: 0,
             source: "s".into(),
             target: "t".into(),
+            format: "json".into(),
+            max_bytes: None,
+            max_rows: None,
         }),
         IRFlowNode::Navigate(IRNavigateStep {
             node_type: "navigate",

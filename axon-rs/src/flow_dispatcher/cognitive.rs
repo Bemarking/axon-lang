@@ -577,18 +577,25 @@ pub async fn run_explore(
     })
 }
 
-/// §Fase 108.a — the honesty floor. `ingest` is a DATA-PLANE verb: it
-/// loads external bytes into a declared `dataspace` (§108.c). There is
-/// no LLM in that job description. The previous behaviour asked the
-/// model to "map the source's structure into the target; preserve
-/// fidelity" — i.e. to NARRATE a load that never happened; every
-/// downstream step then reasoned over hallucinated data. That is
-/// assertion-laundering, and the codebase already names the posture
-/// for it: "an LLM fallthrough would HALLUCINATE a bearer token"
-/// (`mint`/`rotate`, runner.rs). Same law here: no engine port ⇒ fail
-/// CLOSED, never narrate. The real handler (deterministic loaders,
-/// bounds-BEFORE-parse §100, born-Untrusted §98) replaces this
-/// refusal in §108.c.
+/// §Fase 108.c — governed ingest, REAL. Loads source bytes (resolved
+/// from the flow's in-scope bindings) into a DECLARED dataspace through
+/// the deterministic loaders:
+///
+/// 1. **Fail CLOSED without the engine port** (the §108.a honesty
+///    floor — never an LLM narration; pre-108.a this handler literally
+///    prompted the model to "map the source's structure… preserve
+///    fidelity").
+/// 2. **Bounds BEFORE parse** (§100): `limits { max_bytes, max_rows }`
+///    (or the conservative defaults) are enforced on the raw stream
+///    before a byte is interpreted.
+/// 3. **Type refusal, not coercion** (D108.7): a value that does not
+///    fit its declared column refuses the whole batch, naming
+///    row + column.
+/// 4. **Born-Untrusted provenance** (§98): the batch is stamped
+///    source + sha256 + ingested_at + `EpistemicTaint::Untrusted`
+///    at construction — no unstamped batch can exist.
+/// 5. **CPU work off the async runtime** (Brief #63): parse + typing
+///    run under `spawn_blocking`.
 pub async fn run_ingest(
     node: &IRIngestStep,
     ctx: &mut DispatchCtx,
@@ -599,13 +606,143 @@ pub async fn run_ingest(
     let step_index = ctx.step_counter;
     ctx.step_counter += 1;
     let name = if node.target.is_empty() {
-        "Ingest"
+        "Ingest".to_string()
     } else {
-        node.target.as_str()
+        node.target.clone()
     };
-    emit_step_start(ctx, name, step_index, "ingest")?;
-    Err(DispatchError::MissingDependency {
-        name: "dataspace_engine",
+    emit_step_start(ctx, &name, step_index, "ingest")?;
+
+    // (1) The engine port — absent means fail CLOSED, never narrate.
+    let engine = ctx
+        .dataspace_engine
+        .clone()
+        .ok_or(DispatchError::MissingDependency {
+            name: "dataspace_engine",
+        })?;
+
+    // A pre-108.c artifact carries no `format:` — the compile-time
+    // axon-T929 check did not run over this IR. Fail closed, loudly.
+    let format = crate::dataspace_engine::IngestFormat::from_declared(&node.format)
+        .ok_or_else(|| DispatchError::BackendError {
+            name: "dataspace_engine".to_string(),
+            message: format!(
+                "ingest into '{}' declares format '{}' — not the closed loader \
+                 catalog {{csv, json}}. The compile-time axon-T929 check did not \
+                 run over this IR (stale or hand-edited artifact).",
+                node.target,
+                if node.format.is_empty() { "<unset>" } else { &node.format }
+            ),
+        })?;
+
+    // Resolve the source bytes from the flow's bindings (a prior `let`,
+    // step result, or tool output binds them). Missing binding = fail
+    // closed: an ingest NEVER invents its input.
+    let raw: String = ctx
+        .let_bindings
+        .get(&node.source)
+        .cloned()
+        .ok_or_else(|| DispatchError::BackendError {
+            name: "dataspace_engine".to_string(),
+            message: format!(
+                "ingest source '{}' resolves to no in-scope binding — bind the raw \
+                 content first (a `let`, a step result, or a tool output).",
+                node.source
+            ),
+        })?;
+
+    // The declared schema (the store was instantiated at deploy).
+    let schema: Vec<(String, crate::dataspace_engine::ColumnType)> = {
+        let guard = engine.read().expect("dataspace engine lock poisoned");
+        let store = guard
+            .store(&node.target)
+            .ok_or_else(|| DispatchError::BackendError {
+                name: "dataspace_engine".to_string(),
+                message: format!(
+                    "ingest targets '{}', which is not an instantiated dataspace — \
+                     the compile-time axon-T929 check did not run over this IR \
+                     (stale or hand-edited artifact).",
+                    node.target
+                ),
+            })?;
+        store.schema().to_vec()
+    };
+
+    let limits = crate::dataspace_engine::IngestLimits {
+        max_bytes: node
+            .max_bytes
+            .unwrap_or(crate::dataspace_engine::IngestLimits::default().max_bytes),
+        max_rows: node
+            .max_rows
+            .unwrap_or(crate::dataspace_engine::IngestLimits::default().max_rows),
+    };
+
+    // (4) Provenance — stamped before the batch exists. `ingested_at`
+    // is wall-clock bookkeeping (the same audit surface as the wire
+    // events' now_ms), NOT a cognitive input (§91 stays intact).
+    let provenance = crate::dataspace_engine::BatchProvenance {
+        source: node.source.clone(),
+        source_sha256: {
+            use sha2::{Digest, Sha256};
+            let mut h = Sha256::new();
+            h.update(raw.as_bytes());
+            format!("{:x}", h.finalize())
+        },
+        ingested_at: chrono::Utc::now().to_rfc3339(),
+        taint: crate::emcp::EpistemicTaint::Untrusted,
+    };
+
+    // (2)+(3)+(5) — bounds, parse, type: CPU-bound, off the runtime.
+    let schema_for_parse = schema.clone();
+    let batch = tokio::task::spawn_blocking(move || {
+        crate::dataspace_engine::ingest_bytes(
+            &schema_for_parse,
+            format,
+            raw.as_bytes(),
+            &limits,
+            provenance,
+        )
+    })
+    .await
+    .map_err(|e| DispatchError::BackendError {
+        name: "dataspace_engine".to_string(),
+        message: format!("ingest worker task failed: {e}"),
+    })?
+    .map_err(|e| DispatchError::BackendError {
+        name: "dataspace_engine".to_string(),
+        message: format!("ingest into '{}' refused: {e}", node.target),
+    })?;
+
+    let rows = batch.len();
+    let sha = batch.provenance().source_sha256.clone();
+    {
+        let mut guard = engine.write().expect("dataspace engine lock poisoned");
+        let store = guard
+            .store_mut(&node.target)
+            .ok_or_else(|| DispatchError::BackendError {
+                name: "dataspace_engine".to_string(),
+                message: format!("dataspace '{}' vanished mid-ingest", node.target),
+            })?;
+        store.append(batch).map_err(|e| DispatchError::BackendError {
+            name: "dataspace_engine".to_string(),
+            message: format!("ingest into '{}' refused at append: {e}", node.target),
+        })?;
+    }
+
+    // Deterministic summary — bound under the step name so downstream
+    // steps can reference the load; NO row data leaks into cognition.
+    let output = serde_json::json!({
+        "dataspace": node.target,
+        "rows": rows,
+        "source_sha256": sha,
+        "taint": "untrusted",
+    })
+    .to_string();
+    ctx.let_bindings.insert(name.clone(), output.clone());
+    emit_step_complete(ctx, &name, step_index, &output, 0)?;
+    Ok(NodeOutcome::Completed {
+        output,
+        tokens_emitted: 0,
+        step_index,
     })
 }
 
@@ -1363,6 +1500,152 @@ mod tests {
         }
     }
 
+    // ── §108.c — governed ingest, REAL ─────────────────────────────
+
+    fn engine_with_leads() -> crate::dataspace_engine::SharedDataspaceEngine {
+        let spec = axon_frontend::ir_nodes::IRDataspace {
+            node_type: "dataspace",
+            source_line: 1,
+            source_column: 1,
+            name: "Leads".to_string(),
+            columns: vec![
+                axon_frontend::ir_nodes::IRDataspaceColumn {
+                    name: "email".into(),
+                    column_type: "Text".into(),
+                },
+                axon_frontend::ir_nodes::IRDataspaceColumn {
+                    name: "score".into(),
+                    column_type: "Float".into(),
+                },
+            ],
+        };
+        std::sync::Arc::new(std::sync::RwLock::new(
+            crate::dataspace_engine::DataspaceEngine::from_ir(&[spec]).unwrap(),
+        ))
+    }
+
+    fn ingest_node(source: &str, format: &str) -> IRIngestStep {
+        IRIngestStep {
+            node_type: "ingest",
+            source_line: 0,
+            source_column: 0,
+            source: source.into(),
+            target: "Leads".into(),
+            format: format.into(),
+            max_bytes: None,
+            max_rows: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn run_ingest_loads_real_rows_with_untrusted_provenance() {
+        let (mut ctx, _rx) = fresh_ctx();
+        let engine = engine_with_leads();
+        ctx = ctx.with_dataspace_engine(engine.clone());
+        ctx.let_bindings.insert(
+            "raw_leads".into(),
+            "email,score\na@x.com,0.9\nb@x.com,0.4\n".into(),
+        );
+        let outcome = run_ingest(&ingest_node("raw_leads", "csv"), &mut ctx)
+            .await
+            .unwrap();
+        match outcome {
+            NodeOutcome::Completed { output, tokens_emitted, .. } => {
+                assert_eq!(tokens_emitted, 0, "no LLM anywhere in an ingest");
+                assert!(output.contains("\"rows\":2"), "{output}");
+                assert!(output.contains("untrusted"), "{output}");
+            }
+            other => panic!("expected Completed, got {other:?}"),
+        }
+        let guard = engine.read().unwrap();
+        let store = guard.store("Leads").unwrap();
+        assert_eq!(store.row_count(), 2, "the rows are REAL");
+        assert_eq!(
+            store.batches()[0].provenance().taint,
+            crate::emcp::EpistemicTaint::Untrusted,
+            "born-Untrusted (§98)"
+        );
+        assert_eq!(store.batches()[0].provenance().source_sha256.len(), 64);
+        // The summary binds under the step name for downstream refs.
+        assert!(ctx.let_bindings.get("Leads").unwrap().contains("rows"));
+    }
+
+    #[tokio::test]
+    async fn run_ingest_missing_source_binding_fails_closed() {
+        let (mut ctx, _rx) = fresh_ctx();
+        ctx = ctx.with_dataspace_engine(engine_with_leads());
+        let err = run_ingest(&ingest_node("nowhere", "csv"), &mut ctx)
+            .await
+            .unwrap_err();
+        match err {
+            DispatchError::BackendError { message, .. } => {
+                assert!(message.contains("no in-scope binding"), "{message}");
+            }
+            other => panic!("expected BackendError, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn run_ingest_type_mismatch_refuses_and_appends_nothing() {
+        let (mut ctx, _rx) = fresh_ctx();
+        let engine = engine_with_leads();
+        ctx = ctx.with_dataspace_engine(engine.clone());
+        ctx.let_bindings.insert(
+            "raw_leads".into(),
+            "email,score\na@x.com,not_a_float\n".into(),
+        );
+        let err = run_ingest(&ingest_node("raw_leads", "csv"), &mut ctx)
+            .await
+            .unwrap_err();
+        match err {
+            DispatchError::BackendError { message, .. } => {
+                assert!(message.contains("`score`"), "names the column: {message}");
+            }
+            other => panic!("expected BackendError, got {other:?}"),
+        }
+        assert_eq!(
+            engine.read().unwrap().store("Leads").unwrap().row_count(),
+            0,
+            "a refused batch appends NOTHING (all-or-nothing)"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_ingest_bounds_refuse_before_parse() {
+        let (mut ctx, _rx) = fresh_ctx();
+        ctx = ctx.with_dataspace_engine(engine_with_leads());
+        ctx.let_bindings
+            .insert("raw_leads".into(), "\"".repeat(4096));
+        let mut node = ingest_node("raw_leads", "csv");
+        node.max_bytes = Some(64);
+        let err = run_ingest(&node, &mut ctx).await.unwrap_err();
+        match err {
+            DispatchError::BackendError { message, .. } => {
+                assert!(
+                    message.contains("BEFORE parse"),
+                    "bounds precede parsing (§100): {message}"
+                );
+            }
+            other => panic!("expected BackendError, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn run_ingest_stale_ir_without_format_fails_closed() {
+        let (mut ctx, _rx) = fresh_ctx();
+        ctx = ctx.with_dataspace_engine(engine_with_leads());
+        ctx.let_bindings.insert("raw_leads".into(), "email,score\n".into());
+        let err = run_ingest(&ingest_node("raw_leads", ""), &mut ctx)
+            .await
+            .unwrap_err();
+        match err {
+            DispatchError::BackendError { message, .. } => {
+                assert!(message.contains("axon-T929"), "names the law: {message}");
+            }
+            other => panic!("expected BackendError, got {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn run_ingest_refuses_without_dataspace_engine() {
         // §Fase 108.a — the load-bearing refusal: an `ingest` with no
@@ -1375,6 +1658,9 @@ mod tests {
             source_column: 0,
             source: "external_api".into(),
             target: "raw".into(),
+            format: "json".into(),
+            max_bytes: None,
+            max_rows: None,
         };
         let err = run_ingest(&node, &mut ctx).await.unwrap_err();
         assert!(

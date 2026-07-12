@@ -320,6 +320,9 @@ fn ingest_node() -> IRFlowNode {
         source_column: 0,
         source: String::new(),
         target: String::new(),
+        format: "json".into(),
+        max_bytes: None,
+        max_rows: None,
     })
 }
 

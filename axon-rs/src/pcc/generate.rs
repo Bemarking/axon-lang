@@ -2848,6 +2848,10 @@ fn first_declared_write_ir(steps: &[crate::ir_nodes::IRFlowNode]) -> Option<&'st
             N::Rotate(_) => Some("rotate"),
             N::Mint(_) => Some("mint"),
             N::Transact(_) => Some("transact"),
+            // Fase 108.c (D108.4) - `ingest` appends to a server-resident
+            // dataspace: state change. Mirrors the frontend's T927 walk -
+            // prover and verifier must agree on the write surface.
+            N::Ingest(_) => Some("ingest"),
             // Recurse — a nested write is still a write (an unsound proof is no proof).
             N::Conditional(c) => first_declared_write_ir(&c.then_body)
                 .or_else(|| first_declared_write_ir(&c.else_body)),

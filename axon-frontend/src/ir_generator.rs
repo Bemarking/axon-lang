@@ -954,6 +954,9 @@ impl IRGenerator {
                 source_column: s.loc.column,
                 source: s.source.clone(),
                 target: s.target.clone(),
+                format: s.format.clone(),
+                max_bytes: s.max_bytes,
+                max_rows: s.max_rows,
             }),
             FlowStep::ShieldApply(s) => IRFlowNode::ShieldApply(IRShieldApplyStep {
                 node_type: "shield_apply",

@@ -109,6 +109,67 @@ async fn redeploy_replaces_the_store_new_names_accumulate() {
     assert!(engine.store("B").is_some(), "new deploy's store lands");
 }
 
+/// §108.c — THE end-to-end: deploy a program whose flow `let`s raw CSV
+/// and `ingest`s it into a declared dataspace, execute through the REAL
+/// `/v1/execute` handler (the §95.f discipline), and observe REAL rows
+/// in the engine — typed, bounded, born-Untrusted. This is the moment
+/// `ingest` stops being a narration: pre-§108 this exact program would
+/// have sent "You are ingesting…" to a language model.
+#[tokio::test]
+async fn deployed_flow_ingest_loads_real_rows_end_to_end() {
+    let (app, state) = axon::axon_server::build_router_with_state(server_cfg());
+    let src = r#"
+dataspace Leads {
+    column email: Text
+    column score: Float
+}
+
+flow LoadLeads() -> Text {
+    let raw_leads = "email,score\na@x.com,0.9\nb@x.com,0.4\nc@x.com,0.7\n"
+    ingest raw_leads into Leads { format: csv, limits { max_bytes: 4096, max_rows: 100 } }
+}
+"#;
+    let json = deploy(app.clone(), src).await;
+    assert_eq!(
+        json.get("success").and_then(|v| v.as_bool()),
+        Some(true),
+        "deploy must succeed: {json}"
+    );
+
+    let body = serde_json::json!({ "flow": "LoadLeads", "backend": "stub" });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/execute")
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let exec_body = resp.into_body().collect().await.unwrap().to_bytes();
+    let exec_json: serde_json::Value = serde_json::from_slice(&exec_body).unwrap_or_default();
+
+    let engine = {
+        let s = state.lock().unwrap();
+        s.dataspace_engine.clone()
+    };
+    let engine = engine.read().unwrap();
+    let store = engine.store("Leads").expect("declared store");
+    assert_eq!(
+        store.row_count(),
+        3,
+        "the rows are REAL — typed and counted (execute response: {exec_json})"
+    );
+    let batch = &store.batches()[0];
+    assert_eq!(
+        batch.provenance().taint,
+        axon::emcp::EpistemicTaint::Untrusted,
+        "external data is born Untrusted (§98)"
+    );
+    assert_eq!(batch.provenance().source_sha256.len(), 64, "witness hash");
+    assert_eq!(batch.column(0).unwrap().get_text(2), Some("c@x.com"));
+    assert_eq!(batch.column(1).unwrap().get_float(0), Some(0.9));
+}
+
 #[tokio::test]
 async fn a_t928_violation_refuses_the_deploy() {
     // The compile gate runs inside deploy: an empty-schema dataspace is

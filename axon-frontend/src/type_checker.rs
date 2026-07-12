@@ -8165,6 +8165,11 @@ impl<'a> TypeChecker<'a> {
                 FlowStep::Rotate(s) => Some(("rotate", s.loc.clone())),
                 FlowStep::Mint(s) => Some(("mint", s.loc.clone())),
                 FlowStep::Transact(s) => Some(("transact", s.loc.clone())),
+                // §Fase 108.c (D108.4) — `ingest` appends batches to a
+                // server-resident dataspace: that is state change, so a safe
+                // method cannot reach it. A QUERY may focus/aggregate/explore
+                // (reads); it may NOT ingest.
+                FlowStep::Ingest(s) => Some(("ingest", s.loc.clone())),
                 // Recurse into every nested body — a nested write is still a write.
                 FlowStep::If(c) => self
                     .first_declared_write(&c.then_body)
@@ -9305,6 +9310,73 @@ impl<'a> TypeChecker<'a> {
                     if n.query_expr.is_empty() {
                         self.emit(
                             "Navigate step requires a query expression".to_string(),
+                            &n.loc,
+                        );
+                    }
+                }
+                FlowStep::Ingest(n) => {
+                    // §Fase 108.c (`axon-T929`) — the ingest law. An ingest is a
+                    // governed load into a DECLARED dataspace: target + format are
+                    // not optional metadata, they are what makes the load checkable
+                    // (schema known at compile time; bytes bounded before parse).
+                    if n.target.is_empty() {
+                        self.emit(
+                            format!(
+                                "axon-T929 ingest of `{}` names no dataspace. The governed \
+                                 form is `ingest <sourceRef> into <Dataspace> {{ format: … }}` \
+                                 — a load without a declared destination schema cannot be \
+                                 type-checked and is refused.",
+                                n.source
+                            ),
+                            &n.loc,
+                        );
+                    } else {
+                        match self.symbols.lookup(&n.target) {
+                            None => self.emit(
+                                format!(
+                                    "axon-T929 ingest targets `{}`, which is not declared. \
+                                     Declare it: `dataspace {} {{ column <name>: <Type> … }}`.",
+                                    n.target, n.target
+                                ),
+                                &n.loc,
+                            ),
+                            Some(sym) if sym.kind != "dataspace" => self.emit(
+                                format!(
+                                    "axon-T929 ingest targets `{}`, which is a {} — an ingest \
+                                     loads into a `dataspace` (the analytical store), not a {}.",
+                                    n.target, sym.kind, sym.kind
+                                ),
+                                &n.loc,
+                            ),
+                            _ => {}
+                        }
+                    }
+                    if n.format.is_empty() {
+                        self.emit(
+                            format!(
+                                "axon-T929 ingest into `{}` declares no `format:`. An ingest \
+                                 that does not say what it is parsing cannot be deterministic \
+                                 — declare `format: csv` or `format: json`.",
+                                if n.target.is_empty() { "<unset>" } else { &n.target }
+                            ),
+                            &n.loc,
+                        );
+                    } else if !matches!(n.format.as_str(), "csv" | "json") {
+                        self.emit(
+                            format!(
+                                "axon-T929 ingest declares unknown `format: {}`. The closed \
+                                 loader catalog is {{csv, json}} (deterministic, first-party — \
+                                 the §100 posture; Parquet/Arrow-IPC are deferred §108.x surface).",
+                                n.format
+                            ),
+                            &n.loc,
+                        );
+                    }
+                    if n.max_bytes == Some(0) || n.max_rows == Some(0) {
+                        self.emit(
+                            "axon-T929 ingest declares a zero limit — a bound that admits \
+                             nothing is a declaration error, not a safety measure."
+                                .to_string(),
                             &n.loc,
                         );
                     }

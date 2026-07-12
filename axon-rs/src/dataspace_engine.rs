@@ -806,6 +806,313 @@ impl DataspaceEngine {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+//  Governed ingest — deterministic loaders (§108.c)
+// ─────────────────────────────────────────────────────────────────────
+
+/// The closed loader catalog (axon-T929). Deterministic + first-party
+/// — the §100 posture. Parquet / Arrow-IPC are deferred §108.x surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IngestFormat {
+    Csv,
+    Json,
+}
+
+impl IngestFormat {
+    pub fn from_declared(s: &str) -> Option<IngestFormat> {
+        match s {
+            "csv" => Some(IngestFormat::Csv),
+            "json" => Some(IngestFormat::Json),
+            _ => None,
+        }
+    }
+}
+
+/// Bounds enforced on the RAW byte stream BEFORE any parsing (§100 —
+/// bounds-BEFORE-parse). The defaults are deliberately conservative:
+/// an ingest is bounded BY DEFAULT, never unbounded.
+#[derive(Debug, Clone, Copy)]
+pub struct IngestLimits {
+    pub max_bytes: u64,
+    pub max_rows: u64,
+}
+
+impl Default for IngestLimits {
+    fn default() -> Self {
+        IngestLimits {
+            max_bytes: 16 * 1024 * 1024, // 16 MiB
+            max_rows: 1_000_000,
+        }
+    }
+}
+
+/// Parse + type raw source bytes into ONE immutable [`RecordBatch`]
+/// against the declared schema.
+///
+/// The §108.c laws, in order:
+/// 1. **Bounds BEFORE parse** (§100): the byte bound is checked against
+///    the raw stream before a single byte is interpreted; the row bound
+///    during parsing, before typing each excess row.
+/// 2. **Type refusal, not coercion** (D108.7): a value that does not
+///    fit its column type refuses the WHOLE batch, naming row + column.
+///    A missing value (empty CSV field / absent JSON key / JSON null)
+///    is a structural null in the validity bitmap — the only
+///    flexibility.
+/// 3. The batch is stamped with `provenance` (born-Untrusted, §98) —
+///    stamping happens HERE so no unstamped batch can exist.
+pub fn ingest_bytes(
+    schema: &[(String, ColumnType)],
+    format: IngestFormat,
+    raw: &[u8],
+    limits: &IngestLimits,
+    provenance: BatchProvenance,
+) -> Result<RecordBatch, String> {
+    // Law 1 — the byte bound, before ANY interpretation of the stream.
+    if raw.len() as u64 > limits.max_bytes {
+        return Err(format!(
+            "ingest refused BEFORE parse: source is {} bytes, the declared bound is {} \
+             (§100 bounds-BEFORE-parse — raise `limits {{ max_bytes: … }}` if intended)",
+            raw.len(),
+            limits.max_bytes
+        ));
+    }
+    let mut builders: Vec<ColumnBuilder> = schema
+        .iter()
+        .map(|(_, ty)| ColumnBuilder::new(*ty))
+        .collect();
+    match format {
+        IngestFormat::Csv => fill_from_csv(schema, raw, limits, &mut builders)?,
+        IngestFormat::Json => fill_from_json(schema, raw, limits, &mut builders)?,
+    }
+    let columns: Vec<ColumnArray> = builders.into_iter().map(|b| b.finish()).collect();
+    RecordBatch::new(schema, columns, provenance)
+}
+
+/// Minimal deterministic CSV reader (RFC 4180 core): quoted fields,
+/// `""` escapes inside quotes, commas + LF/CRLF inside quotes, header
+/// row REQUIRED. Returns rows of raw string fields.
+fn parse_csv_rows(text: &str) -> Result<Vec<Vec<String>>, String> {
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    let mut row: Vec<String> = Vec::new();
+    let mut field = String::new();
+    let mut in_quotes = false;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if in_quotes {
+            match c {
+                '"' => {
+                    if chars.peek() == Some(&'"') {
+                        chars.next();
+                        field.push('"');
+                    } else {
+                        in_quotes = false;
+                    }
+                }
+                other => field.push(other),
+            }
+        } else {
+            match c {
+                '"' => {
+                    if field.is_empty() {
+                        in_quotes = true;
+                    } else {
+                        return Err(format!(
+                            "malformed CSV at row {}: a quote may only open an empty field",
+                            rows.len() + 1
+                        ));
+                    }
+                }
+                ',' => {
+                    row.push(std::mem::take(&mut field));
+                }
+                '\r' => { /* swallowed; the LF closes the record */ }
+                '\n' => {
+                    row.push(std::mem::take(&mut field));
+                    rows.push(std::mem::take(&mut row));
+                }
+                other => field.push(other),
+            }
+        }
+    }
+    if in_quotes {
+        return Err("malformed CSV: unclosed quoted field at end of input".to_string());
+    }
+    if !field.is_empty() || !row.is_empty() {
+        row.push(field);
+        rows.push(row);
+    }
+    Ok(rows)
+}
+
+fn fill_from_csv(
+    schema: &[(String, ColumnType)],
+    raw: &[u8],
+    limits: &IngestLimits,
+    builders: &mut [ColumnBuilder],
+) -> Result<(), String> {
+    let text = std::str::from_utf8(raw).map_err(|_| "source is not valid UTF-8".to_string())?;
+    let rows = parse_csv_rows(text)?;
+    let Some((header, data_rows)) = rows.split_first() else {
+        return Ok(()); // empty source → empty batch (0 rows is honest)
+    };
+    // Column mapping is BY NAME: every schema column must appear in the
+    // header (a load that silently fills a declared column with nulls
+    // because the header lacks it would be laundering); EXTRA source
+    // columns are projected away (π, not coercion).
+    let mut col_idx: Vec<usize> = Vec::with_capacity(schema.len());
+    for (name, _) in schema {
+        match header.iter().position(|h| h.trim() == name) {
+            Some(i) => col_idx.push(i),
+            None => {
+                return Err(format!(
+                    "CSV header does not contain declared column `{name}` — the header is \
+                     {header:?}. Every schema column must be present (extra source columns \
+                     are ignored; missing ones are refused, not null-filled)."
+                ));
+            }
+        }
+    }
+    // Law 1 (rows) — bound checked BEFORE typing any excess row.
+    if data_rows.len() as u64 > limits.max_rows {
+        return Err(format!(
+            "ingest refused: source carries {} rows, the declared bound is {} \
+             (`limits {{ max_rows: … }}`)",
+            data_rows.len(),
+            limits.max_rows
+        ));
+    }
+    for (r, row) in data_rows.iter().enumerate() {
+        for (s, (name, ty)) in schema.iter().enumerate() {
+            let raw_field = row.get(col_idx[s]).map(|f| f.as_str()).unwrap_or("");
+            push_csv_field(&mut builders[s], *ty, raw_field)
+                .map_err(|e| format!("row {} column `{name}`: {e}", r + 1))?;
+        }
+    }
+    Ok(())
+}
+
+fn push_csv_field(b: &mut ColumnBuilder, ty: ColumnType, field: &str) -> Result<(), String> {
+    if field.is_empty() {
+        b.push_null(); // empty field = structural null (the ONLY flexibility)
+        return Ok(());
+    }
+    match ty {
+        ColumnType::Int => {
+            let v: i64 = field
+                .trim()
+                .parse()
+                .map_err(|_| format!("expected Int, got `{field}` (refusal, not coercion)"))?;
+            b.push_int(v)
+        }
+        ColumnType::Float => {
+            let v: f64 = field
+                .trim()
+                .parse()
+                .map_err(|_| format!("expected Float, got `{field}` (refusal, not coercion)"))?;
+            b.push_float(v)
+        }
+        ColumnType::Bool => match field.trim().to_ascii_lowercase().as_str() {
+            "true" => b.push_bool(true),
+            "false" => b.push_bool(false),
+            other => Err(format!(
+                "expected Bool (`true`/`false`), got `{other}` (refusal, not coercion)"
+            )),
+        },
+        ColumnType::Timestamp => {
+            let dt = chrono::DateTime::parse_from_rfc3339(field.trim()).map_err(|_| {
+                format!("expected an RFC 3339 timestamp, got `{field}` (refusal, not coercion)")
+            })?;
+            b.push_int(dt.timestamp_micros())
+        }
+        ColumnType::Text => b.push_text(field),
+        ColumnType::Json => {
+            let v: serde_json::Value = serde_json::from_str(field)
+                .map_err(|_| format!("expected valid JSON, got `{field}`"))?;
+            // Re-serialized compact — ONE canonical byte form per value.
+            b.push_json_bytes(v.to_string().as_bytes())
+        }
+    }
+}
+
+fn fill_from_json(
+    schema: &[(String, ColumnType)],
+    raw: &[u8],
+    limits: &IngestLimits,
+    builders: &mut [ColumnBuilder],
+) -> Result<(), String> {
+    let root: serde_json::Value =
+        serde_json::from_slice(raw).map_err(|e| format!("source is not valid JSON: {e}"))?;
+    let rows = root
+        .as_array()
+        .ok_or_else(|| "JSON source must be an ARRAY of row objects".to_string())?;
+    if rows.len() as u64 > limits.max_rows {
+        return Err(format!(
+            "ingest refused: source carries {} rows, the declared bound is {} \
+             (`limits {{ max_rows: … }}`)",
+            rows.len(),
+            limits.max_rows
+        ));
+    }
+    for (r, row) in rows.iter().enumerate() {
+        let obj = row.as_object().ok_or_else(|| {
+            format!("row {}: every JSON row must be an object", r + 1)
+        })?;
+        for (s, (name, ty)) in schema.iter().enumerate() {
+            let value = obj.get(name.as_str()).unwrap_or(&serde_json::Value::Null);
+            push_json_field(&mut builders[s], *ty, value)
+                .map_err(|e| format!("row {} column `{name}`: {e}", r + 1))?;
+        }
+    }
+    Ok(())
+}
+
+fn push_json_field(
+    b: &mut ColumnBuilder,
+    ty: ColumnType,
+    v: &serde_json::Value,
+) -> Result<(), String> {
+    if v.is_null() {
+        b.push_null(); // absent key or explicit null = structural null
+        return Ok(());
+    }
+    match ty {
+        ColumnType::Int => match v.as_i64() {
+            Some(i) => b.push_int(i),
+            None => Err(format!(
+                "expected Int, got {v} (a fractional number or non-number is a refusal, \
+                 not a coercion)"
+            )),
+        },
+        // JSON has ONE number type — an integer literal in a Float
+        // column is the same JSON number, not a coercion.
+        ColumnType::Float => match v.as_f64() {
+            Some(f) => b.push_float(f),
+            None => Err(format!("expected Float, got {v} (refusal, not coercion)")),
+        },
+        ColumnType::Bool => match v.as_bool() {
+            Some(x) => b.push_bool(x),
+            None => Err(format!("expected Bool, got {v} (refusal, not coercion)")),
+        },
+        ColumnType::Timestamp => match v.as_str() {
+            Some(s) => {
+                let dt = chrono::DateTime::parse_from_rfc3339(s).map_err(|_| {
+                    format!("expected an RFC 3339 timestamp string, got `{s}`")
+                })?;
+                b.push_int(dt.timestamp_micros())
+            }
+            None => Err(format!("expected an RFC 3339 timestamp string, got {v}")),
+        },
+        ColumnType::Text => match v.as_str() {
+            Some(s) => b.push_text(s),
+            None => Err(format!(
+                "expected Text, got {v} (a number is not silently stringified — \
+                 refusal, not coercion)"
+            )),
+        },
+        ColumnType::Json => b.push_json_bytes(v.to_string().as_bytes()),
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
 //  Unit tests
 // ─────────────────────────────────────────────────────────────────────
 
@@ -1065,6 +1372,192 @@ mod tests {
         store.append(b2).unwrap();
         assert_eq!(store.batches().len(), 2);
         assert_eq!(store.row_count(), 3);
+    }
+
+    // ── §108.c — the governed loaders ────────────────────────────────
+
+    fn lead_schema() -> Vec<(String, ColumnType)> {
+        vec![
+            ("email".to_string(), ColumnType::Text),
+            ("score".to_string(), ColumnType::Float),
+            ("visits".to_string(), ColumnType::Int),
+        ]
+    }
+
+    #[test]
+    fn ingest_csv_types_rows_against_the_schema() {
+        let csv = "email,score,visits,extra\na@x.com,0.9,3,zz\nb@x.com,,7,zz\n";
+        let batch = ingest_bytes(
+            &lead_schema(),
+            IngestFormat::Csv,
+            csv.as_bytes(),
+            &IngestLimits::default(),
+            provenance(),
+        )
+        .unwrap();
+        assert_eq!(batch.len(), 2);
+        assert_eq!(batch.column(0).unwrap().get_text(1), Some("b@x.com"));
+        assert_eq!(
+            batch.column(1).unwrap().get_float(1),
+            None,
+            "empty CSV field = structural null"
+        );
+        assert_eq!(batch.column(2).unwrap().get_int(1), Some(7));
+        // Extra source column projected away; provenance stamped.
+        assert_eq!(batch.provenance().taint, EpistemicTaint::Untrusted);
+    }
+
+    #[test]
+    fn ingest_refuses_bytes_bound_before_any_parse() {
+        // §100 — the refusal must be the BOUNDS error, not a parse error,
+        // even though the payload is also malformed CSV.
+        let garbage = vec![b'"'; 4096]; // unclosed quote AND oversized
+        let err = ingest_bytes(
+            &lead_schema(),
+            IngestFormat::Csv,
+            &garbage,
+            &IngestLimits {
+                max_bytes: 1024,
+                max_rows: 10,
+            },
+            provenance(),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("BEFORE parse"),
+            "bounds must precede parsing: {err}"
+        );
+    }
+
+    #[test]
+    fn ingest_refuses_rows_bound() {
+        let mut csv = String::from("email,score,visits\n");
+        for i in 0..5 {
+            csv.push_str(&format!("u{i}@x.com,0.5,1\n"));
+        }
+        let err = ingest_bytes(
+            &lead_schema(),
+            IngestFormat::Csv,
+            csv.as_bytes(),
+            &IngestLimits {
+                max_bytes: 1024 * 1024,
+                max_rows: 3,
+            },
+            provenance(),
+        )
+        .unwrap_err();
+        assert!(err.contains("5 rows"), "{err}");
+    }
+
+    #[test]
+    fn ingest_type_mismatch_refuses_naming_row_and_column() {
+        // D108.7 — refusal, not coercion; the error is actionable.
+        let csv = "email,score,visits\na@x.com,not_a_number,3\n";
+        let err = ingest_bytes(
+            &lead_schema(),
+            IngestFormat::Csv,
+            csv.as_bytes(),
+            &IngestLimits::default(),
+            provenance(),
+        )
+        .unwrap_err();
+        assert!(err.contains("row 1"), "{err}");
+        assert!(err.contains("`score`"), "{err}");
+    }
+
+    #[test]
+    fn ingest_csv_missing_schema_column_in_header_refuses() {
+        let csv = "email,visits\na@x.com,3\n"; // no `score`
+        let err = ingest_bytes(
+            &lead_schema(),
+            IngestFormat::Csv,
+            csv.as_bytes(),
+            &IngestLimits::default(),
+            provenance(),
+        )
+        .unwrap_err();
+        assert!(err.contains("`score`"), "null-filling is laundering: {err}");
+    }
+
+    #[test]
+    fn ingest_csv_quoted_fields_roundtrip() {
+        let csv = "email,score,visits\n\"a,with,commas@x.com\",0.5,1\n\"say \"\"hi\"\"\",0.1,2\n";
+        let schema = vec![
+            ("email".to_string(), ColumnType::Text),
+            ("score".to_string(), ColumnType::Float),
+            ("visits".to_string(), ColumnType::Int),
+        ];
+        let batch = ingest_bytes(
+            &schema,
+            IngestFormat::Csv,
+            csv.as_bytes(),
+            &IngestLimits::default(),
+            provenance(),
+        )
+        .unwrap();
+        assert_eq!(
+            batch.column(0).unwrap().get_text(0),
+            Some("a,with,commas@x.com")
+        );
+        assert_eq!(batch.column(0).unwrap().get_text(1), Some("say \"hi\""));
+    }
+
+    #[test]
+    fn ingest_json_rows_with_nulls_timestamps_and_json_columns() {
+        let schema = vec![
+            ("who".to_string(), ColumnType::Text),
+            ("at".to_string(), ColumnType::Timestamp),
+            ("meta".to_string(), ColumnType::Json),
+        ];
+        let src = r#"[
+            {"who":"ana","at":"2026-07-12T10:00:00Z","meta":{"k":1}},
+            {"who":null,"at":null}
+        ]"#;
+        let batch = ingest_bytes(
+            &schema,
+            IngestFormat::Json,
+            src.as_bytes(),
+            &IngestLimits::default(),
+            provenance(),
+        )
+        .unwrap();
+        assert_eq!(batch.len(), 2);
+        assert!(batch.column(1).unwrap().get_int(0).unwrap() > 0);
+        assert_eq!(batch.column(1).unwrap().get_int(1), None, "null + absent = null");
+        assert_eq!(
+            batch.column(2).unwrap().get_text(0),
+            Some(r#"{"k":1}"#),
+            "Json column keeps ONE canonical compact byte form"
+        );
+        assert_eq!(batch.column(2).unwrap().get_bytes(1), None);
+    }
+
+    #[test]
+    fn ingest_json_int_column_refuses_fractional_number() {
+        let schema = vec![("n".to_string(), ColumnType::Int)];
+        let err = ingest_bytes(
+            &schema,
+            IngestFormat::Json,
+            br#"[{"n": 1.5}]"#,
+            &IngestLimits::default(),
+            provenance(),
+        )
+        .unwrap_err();
+        assert!(err.contains("expected Int"), "{err}");
+    }
+
+    #[test]
+    fn ingest_json_non_array_root_refuses() {
+        let schema = vec![("n".to_string(), ColumnType::Int)];
+        let err = ingest_bytes(
+            &schema,
+            IngestFormat::Json,
+            br#"{"n": 1}"#,
+            &IngestLimits::default(),
+            provenance(),
+        )
+        .unwrap_err();
+        assert!(err.contains("ARRAY"), "{err}");
     }
 
     #[test]

@@ -1404,6 +1404,14 @@ pub struct IRIngestStep {
     pub source_column: u32,
     pub source: String,
     pub target: String,
+    /// §Fase 108.c — the declared wire format (`csv` | `json`, validated
+    /// by axon-T929). Empty only in a pre-108.c artifact — the runtime
+    /// handler fails CLOSED on it.
+    pub format: String,
+    /// §Fase 108.c — bounds enforced on the raw byte stream BEFORE
+    /// parsing (§100). `None` ⇒ the engine's conservative defaults.
+    pub max_bytes: Option<u64>,
+    pub max_rows: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]

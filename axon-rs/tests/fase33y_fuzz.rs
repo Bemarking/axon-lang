@@ -392,6 +392,9 @@ fn random_ingest(lcg: &mut Lcg) -> IRFlowNode {
         source_column: 0,
         source: lcg.ascii_with_random_len(16),
         target: lcg.ascii_with_random_len(12),
+        format: "json".into(),
+        max_bytes: None,
+        max_rows: None,
     })
 }
 

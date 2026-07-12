@@ -299,6 +299,9 @@ async fn fuzz_ingest_never_panics_random_input() {
             source_column: 0,
             source,
             target,
+            format: "json".into(),
+            max_bytes: None,
+            max_rows: None,
         });
         let outcome = dispatch_node(&node, &mut ctx).await;
         assert_no_panic(&format!("ingest iter={iter}"), &outcome);
@@ -471,6 +474,9 @@ async fn fuzz_cognitive_nested_in_orchestration_never_panics() {
                 source_column: 0,
                 source: "s".into(),
                 target: "t".into(),
+                format: "json".into(),
+                max_bytes: None,
+                max_rows: None,
             }),
             8 => IRFlowNode::Navigate(IRNavigateStep {
                 node_type: "navigate",

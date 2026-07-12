@@ -955,6 +955,9 @@ fn d1_catalog_totality_pin_45_variants() {
             source_column: 0,
             source: String::new(),
             target: String::new(),
+            format: "json".into(),
+            max_bytes: None,
+            max_rows: None,
         }),
         IRFlowNode::ShieldApply(IRShieldApplyStep {
             node_type: "shield_apply",

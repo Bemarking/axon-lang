@@ -3407,6 +3407,12 @@ async fn collect_via_dispatcher(
     .with_anchors(anchors)
     .with_tool_registry(registry)
     .with_pinned_conns(pinned);
+    // §Fase 108.b — attach the deployment's columnar engine so the five
+    // data-plane verbs execute against the DECLARED stores; absent, each
+    // fails CLOSED in its handler (the §108.a honesty floor).
+    if let Some(engine) = &nav_dispatch.dataspace_engine {
+        ctx = ctx.with_dataspace_engine(engine.clone());
+    }
     // §Fase 72.c — attach the linear-effect budget gate (daemon path only).
     if let Some(gate) = budget {
         ctx = ctx.with_budget(gate);
@@ -4930,6 +4936,9 @@ mod fase65_navigate_bridge {
             source_column: 0,
             source: "s".into(),
             target: "t".into(),
+            format: "json".into(),
+            max_bytes: None,
+            max_rows: None,
         });
         assert!(routes_through_dispatcher(&ingest));
         // A genuinely-cognitive verb stays on the LLM path.

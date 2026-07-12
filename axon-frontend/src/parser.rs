@@ -4663,11 +4663,28 @@ impl Parser {
         }))
     }
 
+    /// §Fase 108.c — the governed ingest step:
+    ///
+    /// ```text
+    /// ingest <sourceRef> into <Dataspace> {
+    ///     format: csv | json
+    ///     limits { max_bytes: N, max_rows: N }
+    /// }
+    /// ```
+    ///
+    /// Until 108.c the body was consumed by `skip_braced_block()`. Now it
+    /// is a closed grammar: `format:` (raw here; required + validated by
+    /// `axon-T929`) and an optional `limits { … }` block whose bounds are
+    /// enforced on the raw byte stream BEFORE parsing (§100). An unknown
+    /// body entry is a parse error.
     fn parse_ingest_step(&mut self) -> Result<FlowStep, ParseError> {
         let tok = self.current().clone();
         self.advance();
         let source = self.consume_any_ident_or_kw()?.value.clone();
         let mut target = String::new();
+        let mut format = String::new();
+        let mut max_bytes: Option<u64> = None;
+        let mut max_rows: Option<u64> = None;
         if !self.at_declaration_start() && !self.check(TokenType::RBrace) {
             let next = self.current().clone();
             if next.value == "into" || next.ttype == TokenType::Into {
@@ -4676,11 +4693,83 @@ impl Parser {
             }
         }
         if self.check(TokenType::LBrace) {
-            self.skip_braced_block()?;
+            self.consume(TokenType::LBrace)?;
+            while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+                // Optional separators between body entries.
+                if self.check(TokenType::Comma) {
+                    self.advance();
+                    continue;
+                }
+                let entry = self.current().clone();
+                match entry.value.as_str() {
+                    "format" => {
+                        self.advance();
+                        self.consume(TokenType::Colon)?;
+                        format = self.consume_any_ident_or_kw()?.value.clone();
+                    }
+                    "limits" => {
+                        self.advance();
+                        self.consume(TokenType::LBrace)?;
+                        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+                            let bound = self.current().clone();
+                            self.advance();
+                            self.consume(TokenType::Colon)?;
+                            let num_tok = self.consume(TokenType::Integer)?.clone();
+                            let value = num_tok.value.parse::<u64>().map_err(|_| ParseError {
+                                message: format!(
+                                    "ingest `limits` bound `{}` must be a non-negative \
+                                     integer byte/row count, got `{}`.",
+                                    bound.value, num_tok.value
+                                ),
+                                line: num_tok.line,
+                                column: num_tok.column,
+                                ..Default::default()
+                            })?;
+                            match bound.value.as_str() {
+                                "max_bytes" => max_bytes = Some(value),
+                                "max_rows" => max_rows = Some(value),
+                                other => {
+                                    return Err(ParseError {
+                                        message: format!(
+                                            "Unknown ingest limit `{other}`. The closed \
+                                             limits grammar is `max_bytes: <N>` and \
+                                             `max_rows: <N>` — bounds enforced on the raw \
+                                             stream BEFORE parsing (§100).",
+                                        ),
+                                        line: bound.line,
+                                        column: bound.column,
+                                        ..Default::default()
+                                    });
+                                }
+                            }
+                            if self.check(TokenType::Comma) {
+                                self.advance();
+                            }
+                        }
+                        self.consume(TokenType::RBrace)?;
+                    }
+                    other => {
+                        return Err(ParseError {
+                            message: format!(
+                                "Unknown entry `{other}` in ingest body. The closed \
+                                 grammar is `format: csv|json` and \
+                                 `limits {{ max_bytes: <N>, max_rows: <N> }}`.",
+                            ),
+                            line: entry.line,
+                            column: entry.column,
+                            ..Default::default()
+                        });
+                    }
+                }
+            }
+            self.consume(TokenType::RBrace)?;
         }
         Ok(FlowStep::Ingest(IngestStep {
             source,
             target,
+            format,
+            max_bytes,
+            max_rows,
             loc: Loc {
                 line: tok.line,
                 column: tok.column,

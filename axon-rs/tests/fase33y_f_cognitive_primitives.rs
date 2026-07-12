@@ -115,6 +115,9 @@ fn ingest(source: &str, target: &str) -> IRFlowNode {
         source_column: 0,
         source: source.into(),
         target: target.into(),
+        format: "json".into(),
+        max_bytes: None,
+        max_rows: None,
     })
 }
 

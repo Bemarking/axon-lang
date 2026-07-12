@@ -189,6 +189,106 @@ fn ir_json_carries_dataspace_specs_with_canonical_types() {
     );
 }
 
+// ── 4. axon-T929 — the ingest law (§108.c) ───────────────────────────────────
+
+const DS: &str = "dataspace Leads { column email: Text\n column score: Float }\n";
+
+#[test]
+fn t929_governed_ingest_checks_clean() {
+    let src = format!(
+        "{DS}flow Load(raw_leads: Text) -> Text {{\n    ingest raw_leads into Leads {{ format: csv, limits {{ max_bytes: 1048576, max_rows: 10000 }} }}\n}}\n"
+    );
+    let errs = check_errors(&src);
+    assert!(
+        !errs.iter().any(|e| e.contains("axon-T929")),
+        "the governed form must check clean: {errs:?}"
+    );
+}
+
+#[test]
+fn t929_refuses_an_ingest_without_a_dataspace() {
+    let src = "flow Load(raw: Text) -> Text {\n    ingest raw\n}\n";
+    let errs = check_errors(src);
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("axon-T929") && e.contains("names no dataspace")),
+        "{errs:?}"
+    );
+}
+
+#[test]
+fn t929_refuses_an_undeclared_or_wrong_kind_target() {
+    let src = "flow Load(raw: Text) -> Text {\n    ingest raw into Ghost { format: csv }\n}\n";
+    let errs = check_errors(src);
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("axon-T929") && e.contains("not declared")),
+        "{errs:?}"
+    );
+}
+
+#[test]
+fn t929_refuses_a_missing_or_unknown_format() {
+    let src = format!("{DS}flow Load(raw: Text) -> Text {{\n    ingest raw into Leads\n}}\n");
+    let errs = check_errors(&src);
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("axon-T929") && e.contains("no `format:`")),
+        "{errs:?}"
+    );
+    let src = format!(
+        "{DS}flow Load(raw: Text) -> Text {{\n    ingest raw into Leads {{ format: parquet }}\n}}\n"
+    );
+    let errs = check_errors(&src);
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("axon-T929") && e.contains("parquet")),
+        "{errs:?}"
+    );
+}
+
+#[test]
+fn t929_refuses_a_zero_limit() {
+    let src = format!(
+        "{DS}flow Load(raw: Text) -> Text {{\n    ingest raw into Leads {{ format: csv, limits {{ max_bytes: 0 }} }}\n}}\n"
+    );
+    let errs = check_errors(&src);
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("axon-T929") && e.contains("zero limit")),
+        "{errs:?}"
+    );
+}
+
+// ── 5. axon-T927 × D108.4 — an ingest is a declared write ────────────────────
+
+#[test]
+fn t927_refuses_a_query_endpoint_whose_flow_ingests() {
+    // D108.4 — an ingest appends to server-resident state: a safe method
+    // cannot reach it. A QUERY may focus/aggregate; it may NOT ingest.
+    let src = format!(
+        "{DS}flow Load(raw: Text) -> Text {{\n    ingest raw into Leads {{ format: csv }}\n}}\n\
+         axonendpoint LoadLeads {{\n    method: QUERY\n    path: \"/leads/load\"\n    execute: Load\n    backend: stub\n    requires: [flow.execute]\n}}\n"
+    );
+    let errs = check_errors(&src);
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("axon-T927") && e.contains("ingest")),
+        "an ingest behind a safe method must refuse: {errs:?}"
+    );
+}
+
+#[test]
+fn ir_ingest_carries_format_and_limits() {
+    let src = format!(
+        "{DS}flow Load(raw: Text) -> Text {{\n    ingest raw into Leads {{ format: json, limits {{ max_bytes: 2048, max_rows: 10 }} }}\n}}\n"
+    );
+    let json = ir_json(&src);
+    assert!(json.contains("\"format\":\"json\""), "{json}");
+    assert!(json.contains("\"max_bytes\":2048"), "{json}");
+    assert!(json.contains("\"max_rows\":10"), "{json}");
+}
+
 #[test]
 fn ir_canonicalizes_aliases() {
     let src = r#"

@@ -2972,6 +2972,16 @@ pub struct ExploreStepNode {
 pub struct IngestStep {
     pub source: String,
     pub target: String,
+    /// §Fase 108.c — the declared wire format of the source bytes
+    /// (closed catalog: `csv` | `json`). Kept RAW at parse; the §108.c
+    /// type-checker requires it and validates it (`axon-T929`) — an
+    /// ingest that does not declare what it is parsing is refused.
+    pub format: String,
+    /// §Fase 108.c — bounds enforced on the RAW byte stream BEFORE any
+    /// parsing (the §100 discipline). `None` ⇒ the engine's conservative
+    /// defaults apply (bounded by default, never unbounded).
+    pub max_bytes: Option<u64>,
+    pub max_rows: Option<u64>,
     pub loc: Loc,
 }
 #[derive(Debug)]
