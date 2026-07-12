@@ -1,0 +1,121 @@
+---
+name: a_safe_method_is_proven_safe
+title: "A safe method is PROVEN safe — HTTP QUERY (RFC 10008) is not a promise here, it is a compile-time proof (§Fase 107)"
+summary: "The law governing `method: QUERY` (§107). RFC 10008 (Proposed Standard, June 2026) adds QUERY: safe + idempotent + cacheable, WITH a request body — the first new HTTP method in two decades, closing the 'GET cannot carry a body / POST is not safe' gap for complex reads. The RFC says a QUERY MUST be processed 'in a safe and idempotent manner'. In every other stack that MUST is a CONVENTION nobody enforces: a QUERY handler that writes to the database compiles, deploys and runs in Express / FastAPI / Spring / axum. And it is not academic — caches, proxies and clients are ENTITLED to retry and cache a QUERY freely, so a lying handler is a correctness AND security bug, not a style lapse. axon has an effect system, so here the MUST is a PROOF: `axon-T927` refuses AT COMPILE TIME any `method: QUERY` endpoint whose bound flow reaches a declared write (`persist`/`mutate`/`purge`/`emit`/`publish`/`rotate`/`mint`/`transact`, at ANY nesting depth — the walk recurses into `if`/`for`/`par`/`warden`, because a proof that misses a nested write is not a proof), or whose program declares a `deliver`(§105)/`document`(§106) egress (those fire for every flow). The PCC class `QuerySafetySoundness` re-derives the law from the stored IR, so a hand-edited artifact cannot smuggle a write behind a safe method — it is refuted BEFORE deploy. The honest perimeter: axon proves its DECLARED write surface; it cannot prove an arbitrary external `tool` is read-only (a `tool { provider: http }` may POST to a vendor), and it says so plainly rather than overclaiming."
+---
+
+# A safe method is proven safe
+
+**RFC 10008** (Proposed Standard, June 2026 — Reschke, Snell, Bishop) gives
+HTTP its first genuinely new method in two decades:
+
+> **QUERY** — *safe*, *idempotent*, *cacheable*, **and it carries a request
+> body.**
+
+It closes a gap every API author has worked around for years: `GET` cannot
+safely carry a body (so complex filters get crammed into a URI, or truncated
+at ~8000 characters), and `POST` is neither safe, nor idempotent, nor
+cacheable (so every "search" endpoint that POSTs is *lying about its
+semantics*). QUERY is the honest method for a complex read.
+
+## The gap the RFC cannot close by itself
+
+RFC 10008 §2 is normative: a QUERY request **MUST** be processed "in a safe
+and idempotent manner". But an RFC cannot *enforce* anything. In Express,
+FastAPI, Spring, Rails or bare axum, a QUERY handler may `INSERT`, may charge
+a card, may send an email — and it will compile, deploy and serve traffic.
+The MUST is backed by nothing but the author's discipline.
+
+**That is not a theoretical worry.** The whole *value* of QUERY is that
+intermediaries may act on its guarantees: a CDN may cache the response, a
+proxy or a client may **retry** the request. They are entitled to. So a QUERY
+that writes is not a style lapse — it is a correctness bug (duplicate writes
+on retry) and a security bug (a mutating request served from, or replayed
+through, a cache). The ecosystem is about to acquire millions of them.
+
+> **The law.** In axon, a method declared safe **is** safe. An
+> `axonendpoint` with `method: QUERY` whose bound flow performs a declared
+> write does not compile (`axon-T927`), and the proof is re-derived from the
+> stored IR at deploy (`QuerySafetySoundness`) so it cannot be edited away.
+> Everyone else's QUERY is safe by convention; axon's is safe by
+> construction.
+
+## The surface
+
+```axon
+axonstore leads { backend: in_memory }
+
+# A complex read: the filter travels in the BODY (that is why QUERY exists),
+# the flow only READS, and the method's safety is a compile-time fact.
+flow SearchLeads(industry: Text, min_score: Int) -> Unit {
+    retrieve leads { where: "industry = ${industry}" as: hits }
+}
+
+axonendpoint LeadSearch {
+    method:  QUERY            # safe + idempotent + cacheable, WITH a body
+    path:    "/leads/search"
+    execute: SearchLeads
+    backend: stub
+}
+```
+
+Add a single write and the program stops compiling:
+
+```axon
+flow SearchLeads(industry: Text) -> Unit {
+    retrieve leads { where: "industry = ${industry}" as: hits }
+    persist into leads { kind: "audit" content: "searched" }   # ← axon-T927
+}
+# axon-T927: axonendpoint 'LeadSearch' declares `method: QUERY`, but its flow
+# 'SearchLeads' performs a declared write (`persist`). RFC 10008 §2: a QUERY MUST
+# be processed in a SAFE and IDEMPOTENT manner — caches, proxies and clients are
+# entitled to retry and cache it freely, so a QUERY that changes state is a
+# correctness + security bug, not a style choice. Use `method: POST` … .
+```
+
+The refusal is **not defeatable by indentation** — the walk recurses into
+`if`, `for`, `par` branches and `warden` bodies. A proof that misses a write
+nested one level deep is not a proof.
+
+## The two write sources the law checks
+
+1. **The flow's own body** — `persist` / `mutate` / `purge` (store writes),
+   `emit` / `publish` (channel egress), `rotate` / `mint` (secret + credential
+   state), `transact` (a transaction has no business inside a safe method).
+2. **A program-level egress declaration** — a `deliver` (§105) or `document`
+   (§106) FIRES for every flow the deployed executor runs, so a QUERY endpoint
+   in such a program would write a CRM row / persist an artifact. Coarse, but
+   sound under the current firing semantics.
+
+## The RFC's server behaviours axon honours
+
+- **`Content-Type` is a MUST** (§4): a QUERY carries a body, so a missing type
+  is `400` and an unsupported one is `415`.
+- **`Accept-Query`** (§5): the response advertises which query media types the
+  endpoint accepts, so a client discovering the API can self-correct.
+- **No idempotency key.** QUERY is idempotent *by definition* — demanding a key
+  would be redundant ceremony (`default_idempotency_on` is off, as for GET).
+- **CORS is not automatic.** The RFC does not safelist QUERY: a browser
+  preflights it, so an adopter must list it in `cors { allow_methods: [QUERY] }`.
+
+## The honest perimeter (we claim this, and only this)
+
+axon proves a QUERY flow performs **no declared write**. It **cannot** prove an
+arbitrary external `tool` is read-only — a `tool { provider: http }` may POST to
+a vendor, and an effect row of `network` does not distinguish a read from a
+write. Refusing every network-touching tool would make QUERY useless (a
+read-only vendor lookup is a legitimate, common part of a query), so the law
+stops at axon's declared surface. That boundary is the adopter's honesty — the
+same perimeter §94/§95 draw for secrets.
+
+**What it still buys, and it is a lot:** every write axon *can* see is refused,
+at compile time, and re-proven at deploy — where every other stack offers
+nothing at all.
+
+## See also
+
+- `every_boundary_is_guarded` (§89) — the authorization dual of this law.
+- `effects_are_linear` / `dispatch_vs_cognition` — the effect system this proof
+  rests on.
+- `delivery_is_assertion_egress` (§105) — the other place axon turns a
+  convention (provenance) into a proof.

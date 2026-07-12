@@ -1071,11 +1071,11 @@ mod tests {
         // temporal_cognitive_context + 2 session_types + 1 shields +
         // 1 effects + 1 streaming + 5 data [+ §Fase 94
         // secret_custody_rotation + §Fase 95 secret_partition_multitenant +
-        // §Fase 105 governed_crm_delivery] + 2 agents + 3 endpoints [+ §Fase 83
-        // cors_named_origin_policy + §Fase 92 widget_ephemeral_credential] +
-        // 1 memory + 2 validation).
-        assert_eq!(payload["count"], 25);
-        assert_eq!(payload["examples"].as_array().unwrap().len(), 25);
+        // §Fase 105 governed_crm_delivery] + 2 agents + 4 endpoints [+ §Fase 83
+        // cors_named_origin_policy + §Fase 92 widget_ephemeral_credential +
+        // §Fase 107 query_safe_search] + 1 memory + 2 validation).
+        assert_eq!(payload["count"], 26);
+        assert_eq!(payload["examples"].as_array().unwrap().len(), 26);
         // Listing path omits `source` — keeps the payload bounded.
         let first = &payload["examples"][0];
         assert!(first["name"].is_string());

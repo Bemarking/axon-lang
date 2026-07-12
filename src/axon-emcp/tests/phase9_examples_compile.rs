@@ -64,6 +64,8 @@ const EXPECTED: &[(&str, ExampleTopic)] = &[
     ("cors_named_origin_policy", ExampleTopic::Endpoints),
     // §Fase 92 — the ephemeral widget credential (credential + mint + cors).
     ("widget_ephemeral_credential", ExampleTopic::Endpoints),
+    // §Fase 107 — HTTP QUERY (RFC 10008): a complex read, safe by compile-time proof.
+    ("query_safe_search", ExampleTopic::Endpoints),
     // Memory (1)
     ("memory_scopes", ExampleTopic::Memory),
     // Validation (2)

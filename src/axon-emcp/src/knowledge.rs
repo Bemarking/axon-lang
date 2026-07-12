@@ -1399,6 +1399,10 @@ Body prose.
             // system of record carries its epistemic origin, or the author vouched
             // (the egress-dual of §98 acquisition + the §99 document T916 barrier).
             (ReferenceKind::Logic, "delivery_is_assertion_egress"),
+            // §Fase 107 — a safe method is PROVEN safe: RFC 10008's normative
+            // "QUERY MUST be safe and idempotent" made a compile-time proof
+            // (axon-T927) instead of a convention nobody enforces.
+            (ReferenceKind::Logic, "a_safe_method_is_proven_safe"),
             (ReferenceKind::Compliance, "hipaa"),
             (ReferenceKind::Compliance, "gdpr"),
             (ReferenceKind::Compliance, "pci_dss"),
@@ -1446,7 +1450,8 @@ Body prose.
             // §Fase 95: 15 → 16 with `selection_without_revelation`.
             // §Fase 96: 16 → 17 with `connections_release_across_cognition`.
             // §Fase 105: 17 → 18 with `delivery_is_assertion_egress`.
-            18,
+            // §Fase 107: 18 → 19 with `a_safe_method_is_proven_safe` (RFC 10008 QUERY).
+            19,
             "logic family count drift"
         );
         assert_eq!(
