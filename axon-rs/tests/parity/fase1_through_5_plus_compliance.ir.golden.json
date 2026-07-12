@@ -234,6 +234,7 @@
       ]
     }
   ],
+  "dataspace_specs": [],
   "resources": [
     {
       "node_type": "resource",

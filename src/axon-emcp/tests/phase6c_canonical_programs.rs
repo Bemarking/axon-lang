@@ -337,17 +337,23 @@ axonstore Tenants {
 
 #[test]
 fn dataspace_canonical_program_compiles() {
-    // dataspace's body is currently open at the parser level — the
-    // declaration alone is the canonical exercise. AXON comments are
-    // `//` line comments (NOT `#` — that token is reserved by the
-    // lexer for #-prefix uses elsewhere).
+    // §Fase 108.b — the body is TYPED now: `column <name>: <Type>` over
+    // the closed 6-type catalog. (The pre-108.b "free-form body skipped
+    // structurally" is gone — an unknown body entry is a parse error,
+    // and an empty schema is an axon-T928 refusal: a dataspace IS its
+    // schema.)
     let src = r#"
 dataspace ClinicalData {
+    column patient_id: Text
+    column cost:       Float
+    column visits:     Int
 }
 
 dataspace BillingData {
-    // Free-form body — the parser skips it structurally. Future
-    // Fase increments will land typed fields here.
+    column invoice_id: Text
+    column issued_at:  Timestamp
+    column paid:       Bool
+    column detail:     Json
 }
 "#;
     must_compile("dataspace/canonical", src);

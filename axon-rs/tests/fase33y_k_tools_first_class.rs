@@ -283,7 +283,10 @@ async fn cognitive_framing_variants_unchanged_no_tool_call() {
 
     for node in variants {
         let (mut ctx, mut rx) = fresh_ctx();
-        dispatch_node(&node, &mut ctx).await.unwrap();
+        // Fase 108.a - the five data-plane verbs REFUSE without an engine
+        // port; navigate/corroborate still Complete. Either way the D4
+        // property under test is identical: NO ToolCall event is emitted.
+        let _ = dispatch_node(&node, &mut ctx).await;
         let mut tool_call_count = 0;
         while let Ok(ev) = rx.try_recv() {
             if matches!(ev, FlowExecutionEvent::ToolCall { .. }) {

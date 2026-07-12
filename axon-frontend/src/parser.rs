@@ -5757,11 +5757,28 @@ impl Parser {
         Ok(out)
     }
 
+    /// §Fase 108.b — the typed dataspace declaration:
+    ///
+    /// ```text
+    /// dataspace <Name> {
+    ///     column <name>: <Type>
+    ///     …
+    /// }
+    /// ```
+    ///
+    /// Until 108.b the body was consumed by `skip_braced_block()` — any
+    /// content, including garbage, compiled clean and reached nothing.
+    /// Now each entry must be a `column` field; the declared type is
+    /// kept RAW here and resolved against the closed 6-type catalog by
+    /// the type-checker (`axon-T928`), so all schema errors accumulate
+    /// in a single compile. An unknown body keyword is a parse error
+    /// (the grammar is closed — the §38 axonstore posture).
     fn parse_dataspace(&mut self) -> Result<DataspaceDefinition, ParseError> {
         let tok = self.consume(TokenType::Dataspace)?;
         let name = self.consume(TokenType::Identifier)?.value;
-        let node = DataspaceDefinition {
+        let mut node = DataspaceDefinition {
             name,
+            columns: Vec::new(),
             loc: Loc {
                 line: tok.line,
                 column: tok.column,
@@ -5770,7 +5787,38 @@ impl Parser {
             trailing_trivia: Vec::new(),
         };
         if self.check(TokenType::LBrace) {
-            self.skip_braced_block()?;
+            self.consume(TokenType::LBrace)?;
+            while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+                let entry = self.current().clone();
+                if entry.value != "column" {
+                    return Err(ParseError {
+                        message: format!(
+                            "Unknown entry `{}` in dataspace `{}`. A dataspace body \
+                             declares its columnar schema: `column <name>: <Type>` \
+                             (one per line, over the closed type catalog — \
+                             Text, Int, Float, Bool, Timestamp, Json).",
+                            entry.value, node.name
+                        ),
+                        line: entry.line,
+                        column: entry.column,
+                        ..Default::default()
+                    });
+                }
+                self.advance(); // `column`
+                let col_tok = self.current().clone();
+                let col_name = self.consume_any_ident_or_kw()?.value.clone();
+                self.consume(TokenType::Colon)?;
+                let declared_type = self.consume_any_ident_or_kw()?.value.clone();
+                node.columns.push(crate::ast::DataspaceColumn {
+                    name: col_name,
+                    declared_type,
+                    loc: Loc {
+                        line: col_tok.line,
+                        column: col_tok.column,
+                    },
+                });
+            }
+            self.consume(TokenType::RBrace)?;
         }
         Ok(node)
     }

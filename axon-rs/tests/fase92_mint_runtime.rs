@@ -132,6 +132,7 @@ fn e2e_mint_without_a_port_fails_the_flow_loudly() {
         &ir, "Bootstrap", "stub", "", "<fase92>", None, None, &empty, &empty, None, None, None,
         None, None, None,
         None, // §Fase 94.d — secret custody (test: none)
+        None, // §Fase 108.b dataspace_engine (tests: fail closed)
         None, // §Fase 102 scrape_overrides
 )
     .expect("execute returns metrics");

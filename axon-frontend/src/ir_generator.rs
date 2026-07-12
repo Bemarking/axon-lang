@@ -1411,6 +1411,22 @@ impl IRGenerator {
             source_line: n.loc.line,
             source_column: n.loc.column,
             name: n.name.clone(),
+            // §108.b — canonicalize the declared type (aliases resolved
+            // here, once): the engine's deploy hook and the §108.d PCC
+            // class read ONE spelling. A type the checker refused (T928)
+            // never reaches IR generation on the happy path; a raw
+            // passthrough survives only in a stale/hand-edited artifact,
+            // which is the PCC class's problem, not this visitor's.
+            columns: n
+                .columns
+                .iter()
+                .map(|c| crate::ir_nodes::IRDataspaceColumn {
+                    name: c.name.clone(),
+                    column_type: crate::ast::DataspaceColumnType::from_token(&c.declared_type)
+                        .map(|t| t.canonical_name().to_string())
+                        .unwrap_or_else(|| c.declared_type.clone()),
+                })
+                .collect(),
         }
     }
 

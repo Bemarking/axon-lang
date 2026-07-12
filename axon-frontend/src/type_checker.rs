@@ -1905,7 +1905,7 @@ impl<'a> TypeChecker<'a> {
                 Declaration::Ledger(n) => self.check_ledger(n),
                 Declaration::Psyche(n) => self.check_psyche(n),
                 Declaration::Corpus(n) => self.check_corpus(n),
-                Declaration::Dataspace(_) => {} // name-only, no field validation
+                Declaration::Dataspace(n) => self.check_dataspace(n), // §108.b — axon-T928
                 Declaration::Ots(n) => self.check_ots(n),
                 Declaration::Mandate(n) => self.check_mandate(n),
                 Declaration::Compute(_) => {} // no Python validation exists
@@ -4691,6 +4691,81 @@ impl<'a> TypeChecker<'a> {
         let epistemic_ok = matches!(self.current_epistemic_mode.as_str(), "believe" | "know");
         for block in &node.blocks {
             self.check_doc_block(node, block, &node.target, /*parent*/ "", epistemic_ok);
+        }
+    }
+
+    /// §Fase 108.b — validate a `dataspace` declaration: the schema law
+    /// (`axon-T928`). A dataspace IS its schema — the deterministic engine
+    /// materializes one physical columnar buffer per declared column, so a
+    /// declaration the engine cannot materialize is refused at compile time:
+    ///
+    ///   1. **empty schema** — a dataspace with no columns can never be
+    ///      ingested into or queried; it is a lie-in-waiting.
+    ///   2. **duplicate column** — one name, one buffer.
+    ///   3. **unknown column type** — the catalog is CLOSED (D108.1: Text,
+    ///      Int, Float, Bool, Timestamp, Json — each mapping 1:1 to a
+    ///      physical layout). Misses get a smart-suggest hint.
+    ///
+    /// All violations accumulate (the parser keeps declared types raw), so
+    /// one compile surfaces every schema error in the declaration.
+    fn check_dataspace(&mut self, node: &crate::ast::DataspaceDefinition) {
+        use crate::ast::DataspaceColumnType;
+
+        // (1) empty schema.
+        if node.columns.is_empty() {
+            self.emit(
+                format!(
+                    "axon-T928 dataspace '{}' declares no columns. A dataspace IS its \
+                     schema — the columnar engine materializes one typed buffer per \
+                     declared column, and a dataspace with none can never be ingested \
+                     into or queried. Declare at least one: `column <name>: <Type>` \
+                     over {{Text, Int, Float, Bool, Timestamp, Json}}.",
+                    node.name
+                ),
+                &node.loc,
+            );
+        }
+
+        // (2) duplicate columns — one name, one buffer.
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for col in &node.columns {
+            if !seen.insert(col.name.as_str()) {
+                self.emit(
+                    format!(
+                        "axon-T928 dataspace '{}' declares column `{}` more than once — \
+                         one column name maps to exactly one physical buffer.",
+                        node.name, col.name
+                    ),
+                    &col.loc,
+                );
+            }
+        }
+
+        // (3) closed type catalog.
+        for col in &node.columns {
+            if DataspaceColumnType::from_token(&col.declared_type).is_none() {
+                let names = DataspaceColumnType::all_canonical_names();
+                let suggestion = crate::smart_suggest::suggest_for(&col.declared_type, &names);
+                let suggest_suffix = if suggestion.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {suggestion}")
+                };
+                self.emit(
+                    format!(
+                        "axon-T928 dataspace '{}' column `{}` has unknown type `{}`. The \
+                         closed dataspace column-type catalog (D108.1) is {{{}}} — each \
+                         type maps 1:1 to a physical columnar buffer layout, so the \
+                         catalog admits no open extension.{}",
+                        node.name,
+                        col.name,
+                        col.declared_type,
+                        names.join(", "),
+                        suggest_suffix
+                    ),
+                    &col.loc,
+                );
+            }
         }
     }
 

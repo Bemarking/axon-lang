@@ -361,30 +361,59 @@ async fn assert_pure_shape_like(node: IRFlowNode, expected_slug: &str) {
     assert_eq!(audit.len(), 1);
 }
 
-#[tokio::test]
-async fn focus_emits_step_token_via_pure_shape_core() {
-    assert_pure_shape_like(focus("key_insight"), "focus").await;
+/// §Fase 108.a — the five data-plane verbs REFUSE without an engine
+/// port: `Err(MissingDependency { name: "dataspace_engine" })` after
+/// the attributable StepStart. Pre-108.a they routed through
+/// `run_pure_shape` and NARRATED their result — the hallucination the
+/// honesty floor ended. No audit row: the refusal happens before any
+/// LLM dispatch.
+async fn assert_data_plane_refusal(node: IRFlowNode, expected_slug: &str) {
+    let (mut ctx, mut rx) = fresh_ctx();
+    let err = dispatch_node(&node, &mut ctx).await.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            axon::flow_dispatcher::DispatchError::MissingDependency {
+                name: "dataspace_engine"
+            }
+        ),
+        "{expected_slug}: got {err:?}"
+    );
+    match rx.try_recv().unwrap() {
+        FlowExecutionEvent::StepStart { step_type, .. } => {
+            assert_eq!(step_type, expected_slug);
+        }
+        e => panic!("expected StepStart, got {e:?}"),
+    }
+    assert_eq!(ctx.step_counter, 1, "the refusal still claims its step index");
+    let audit = ctx.step_audit_records.lock().await;
+    assert_eq!(audit.len(), 0, "no LLM dispatch => no audit row");
 }
 
 #[tokio::test]
-async fn associate_emits_step_token_via_pure_shape_core() {
-    assert_pure_shape_like(associate("A", "B", "id"), "associate").await;
+async fn focus_refuses_without_dataspace_engine() {
+    assert_data_plane_refusal(focus("key_insight"), "focus").await;
 }
 
 #[tokio::test]
-async fn aggregate_emits_step_token_via_pure_shape_core() {
-    assert_pure_shape_like(aggregate("events", vec!["region"], "by_region"), "aggregate")
+async fn associate_refuses_without_dataspace_engine() {
+    assert_data_plane_refusal(associate("A", "B", "id"), "associate").await;
+}
+
+#[tokio::test]
+async fn aggregate_refuses_without_dataspace_engine() {
+    assert_data_plane_refusal(aggregate("events", vec!["region"], "by_region"), "aggregate")
         .await;
 }
 
 #[tokio::test]
-async fn explore_emits_step_token_via_pure_shape_core() {
-    assert_pure_shape_like(explore("hypothesis_space", Some(5)), "explore").await;
+async fn explore_refuses_without_dataspace_engine() {
+    assert_data_plane_refusal(explore("hypothesis_space", Some(5)), "explore").await;
 }
 
 #[tokio::test]
-async fn ingest_emits_step_token_via_pure_shape_core() {
-    assert_pure_shape_like(ingest("external_api", "raw"), "ingest").await;
+async fn ingest_refuses_without_dataspace_engine() {
+    assert_data_plane_refusal(ingest("external_api", "raw"), "ingest").await;
 }
 
 #[tokio::test]
@@ -519,6 +548,8 @@ async fn cognitive_handlers_all_advance_step_counter_by_one() {
     // wrapper). It is no longer a "advance by exactly 1" cognitive handler;
     // excluded from this simple-handler contract.
     let before_focus = ctx.step_counter;
-    dispatch_node(&focus("x"), &mut ctx).await.unwrap();
+    // Fase 108.a - focus REFUSES without an engine, but still claims
+    // its step index first (the refusal is attributable).
+    dispatch_node(&focus("x"), &mut ctx).await.unwrap_err();
     assert_eq!(ctx.step_counter, before_focus + 1);
 }

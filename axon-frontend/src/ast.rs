@@ -1511,9 +1511,99 @@ pub struct CorpusStoreSource {
 
 // ── Dataspace ────────────────────────────────────────────────────────────────
 
+/// §Fase 108.b (D108.1) — the closed dataspace column-type catalog.
+///
+/// Six types, because a dataspace column type maps 1:1 to a physical
+/// columnar buffer layout in the deterministic engine (§108.b, plan §5.1):
+///
+/// | Type        | Physical layout                                    |
+/// |-------------|----------------------------------------------------|
+/// | `Text`      | offsets `O ∈ ℤ₊^{N+1}` + raw UTF-8 byte buffer     |
+/// | `Int`       | contiguous `i64` buffer (8 bytes/element)          |
+/// | `Float`     | contiguous `f64` buffer (8 bytes/element)          |
+/// | `Bool`      | bit-packed buffer                                  |
+/// | `Timestamp` | contiguous `i64` epoch-microseconds buffer         |
+/// | `Json`      | offsets + raw serialized-JSON byte buffer          |
+///
+/// Deliberately NOT `StoreColumnType` (§38): that catalog is
+/// SQL-backend-oriented (Uuid, Numeric, Bytea, …); this one is the
+/// engine's physical truth. `Float` is **f64** — diverging from the
+/// research paper's Float32 on purpose: axon's determinism norm is
+/// exact f64 (the §51 reference-simulator precedent), and halving
+/// width is a performance claim we do not make pre-Sandbox (D101.19).
+/// Every column is nullable via the validity bitmap; nullability is
+/// the ONLY flexibility (D108.7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DataspaceColumnType {
+    Text,
+    Int,
+    Float,
+    Bool,
+    Timestamp,
+    Json,
+}
+
+impl DataspaceColumnType {
+    /// The closed catalog in canonical declaration order.
+    pub fn all() -> [DataspaceColumnType; 6] {
+        [
+            DataspaceColumnType::Text,
+            DataspaceColumnType::Int,
+            DataspaceColumnType::Float,
+            DataspaceColumnType::Bool,
+            DataspaceColumnType::Timestamp,
+            DataspaceColumnType::Json,
+        ]
+    }
+
+    pub fn canonical_name(self) -> &'static str {
+        match self {
+            DataspaceColumnType::Text => "Text",
+            DataspaceColumnType::Int => "Int",
+            DataspaceColumnType::Float => "Float",
+            DataspaceColumnType::Bool => "Bool",
+            DataspaceColumnType::Timestamp => "Timestamp",
+            DataspaceColumnType::Json => "Json",
+        }
+    }
+
+    pub fn all_canonical_names() -> Vec<&'static str> {
+        Self::all().iter().map(|t| t.canonical_name()).collect()
+    }
+
+    /// Resolve a declared type token — canonical names plus the common
+    /// lowercase aliases (the §38 `from_token` convention).
+    pub fn from_token(name: &str) -> Option<DataspaceColumnType> {
+        match name {
+            "Text" | "text" | "string" | "String" => Some(DataspaceColumnType::Text),
+            "Int" | "int" | "integer" | "i64" => Some(DataspaceColumnType::Int),
+            "Float" | "float" | "double" | "f64" => Some(DataspaceColumnType::Float),
+            "Bool" | "bool" | "boolean" => Some(DataspaceColumnType::Bool),
+            "Timestamp" | "timestamp" | "datetime" => Some(DataspaceColumnType::Timestamp),
+            "Json" | "json" => Some(DataspaceColumnType::Json),
+            _ => None,
+        }
+    }
+}
+
+/// §Fase 108.b — one declared dataspace column: `column <name>: <Type>`.
+/// The type is kept RAW at parse time (the string the adopter wrote);
+/// the §108.b type-checker resolves it against the closed catalog and
+/// emits `axon-T928` on a miss — so ALL schema errors in a declaration
+/// accumulate in one compile, instead of dying at the first bad token.
+#[derive(Debug)]
+pub struct DataspaceColumn {
+    pub name: String,
+    pub declared_type: String,
+    pub loc: Loc,
+}
+
 #[derive(Debug)]
 pub struct DataspaceDefinition {
     pub name: String,
+    /// §Fase 108.b — the typed columnar schema. A dataspace IS its
+    /// schema: the §108.b type-checker refuses an empty one (axon-T928).
+    pub columns: Vec<DataspaceColumn>,
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia attached to this declaration
     /// (comments preceding the declaration's first token, since the

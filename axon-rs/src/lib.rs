@@ -69,6 +69,9 @@ pub mod conversation;
 pub mod cors;
 pub mod cost_estimator;
 pub mod daemon;
+/// §Fase 108.b — the deterministic columnar engine behind `dataspace`
+/// (immutable record batches, validity bitmaps, zone maps, provenance).
+pub mod dataspace_engine;
 pub mod db_pool;
 pub mod deployer;
 pub mod emcp;

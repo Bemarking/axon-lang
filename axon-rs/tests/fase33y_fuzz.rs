@@ -696,6 +696,15 @@ fn assert_clean_outcome(
         Err(DispatchError::BackendError { name, message }) => panic!(
             "33.y.n fuzz: unexpected BackendError for {kind} iter {iter}: name={name} msg={message}"
         ),
+        // Fase 108.a - the five data-plane verbs REFUSE without an engine
+        // port (MissingDependency: dataspace_engine). Under this fuzz ctx
+        // (no engine attached) that refusal is the CORRECT total outcome.
+        Err(DispatchError::MissingDependency {
+            name: "dataspace_engine",
+        }) if matches!(
+            kind,
+            "focus" | "associate" | "aggregate" | "explore" | "ingest"
+        ) => {}
         Err(DispatchError::MissingDependency { name }) => panic!(
             "33.y.n fuzz: unexpected MissingDependency for {kind} iter {iter}: name={name}"
         ),

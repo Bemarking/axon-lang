@@ -301,6 +301,13 @@ pub struct DispatchCtx {
     /// fallthrough. The enterprise executor injects its envelope-encrypted
     /// Postgres custody (§94.h); tests use `secret_custody::InMemoryCustody`.
     pub secret_custody: Option<std::sync::Arc<dyn crate::secret_custody::SecretCustody>>,
+    /// §Fase 108.b — the deterministic columnar engine port behind the five
+    /// data-plane verbs (`ingest` §108.c; `focus`/`associate`/`aggregate`/
+    /// `explore` §108.d). `None` (the `new` default) ⇒ each verb fails
+    /// CLOSED with `MissingDependency { name: "dataspace_engine" }` — never
+    /// an LLM narration (the §108.a honesty floor). The deploy hook builds
+    /// it from the compiled `ir.dataspace_specs`.
+    pub dataspace_engine: Option<crate::dataspace_engine::SharedDataspaceEngine>,
     pub cancel: CancellationFlag,
     pub tx: mpsc::UnboundedSender<FlowExecutionEvent>,
     pub enforcement_summaries: Arc<
@@ -528,6 +535,9 @@ impl DispatchCtx {
             // §Fase 94.d — no custody by default: rotate / secrets-retrieve /
             // secret-bearing tool dispatch all fail CLOSED until one is attached.
             secret_custody: None,
+            // §Fase 108.b — no engine by default: the five data-plane verbs
+            // fail CLOSED until the deploy hook attaches one.
+            dataspace_engine: None,
             cancel,
             tx,
             enforcement_summaries: Arc::new(Mutex::new(HashMap::new())),
@@ -581,6 +591,19 @@ impl DispatchCtx {
         custody: std::sync::Arc<dyn crate::secret_custody::SecretCustody>,
     ) -> Self {
         self.secret_custody = Some(custody);
+        self
+    }
+
+    /// §Fase 108.b — Builder: attach the deterministic columnar engine so
+    /// the five data-plane verbs have live declared stores behind them.
+    /// Without this, all five fail CLOSED (`MissingDependency`, the
+    /// §108.a honesty floor). Built at deploy from `ir.dataspace_specs`
+    /// via [`crate::dataspace_engine::DataspaceEngine::from_ir`].
+    pub fn with_dataspace_engine(
+        mut self,
+        engine: crate::dataspace_engine::SharedDataspaceEngine,
+    ) -> Self {
+        self.dataspace_engine = Some(engine);
         self
     }
 

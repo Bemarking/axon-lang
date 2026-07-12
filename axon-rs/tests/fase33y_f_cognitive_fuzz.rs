@@ -97,6 +97,13 @@ fn assert_no_panic(
         Ok(_) => {}
         Err(DispatchError::UpstreamCancelled) => {}
         Err(DispatchError::ChannelClosed) => {}
+        // Fase 108.a - the data-plane verbs (focus/associate/aggregate/
+        // explore/ingest) fail CLOSED without an engine port: a structured
+        // refusal is the CORRECT outcome under fuzz (the property is
+        // "never panics", not "never refuses").
+        Err(DispatchError::MissingDependency {
+            name: "dataspace_engine",
+        }) => {}
         Err(other) => panic!("{label}: unexpected variant: {other:?}"),
     }
 }

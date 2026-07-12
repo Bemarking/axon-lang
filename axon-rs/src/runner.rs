@@ -1354,6 +1354,9 @@ struct NavDispatch {
     store_sources:
         std::sync::Arc<std::collections::HashMap<String, crate::ir_nodes::IRCorpusStoreSource>>,
     adaptive: std::sync::Arc<std::collections::HashSet<String>>,
+    /// §Fase 108.b — the columnar engine port, threaded from the caller's
+    /// deployment (`None` ⇒ the data-plane verbs fail CLOSED in dispatch).
+    dataspace_engine: Option<crate::dataspace_engine::SharedDataspaceEngine>,
 }
 
 /// §Fase 65.A — kill-switch for the structural-dispatch bridge. ON by default:
@@ -1474,6 +1477,11 @@ async fn dispatch_structural(
     .with_mdn_adaptive(nd.adaptive.clone())
     .with_mdn_store_sources(nd.store_sources.clone())
     .with_pinned_conns(pin_arc.clone());
+    // §Fase 108.b — attach the columnar engine when the deployment owns one;
+    // absent, the data-plane verbs fail CLOSED in their handlers (§108.a).
+    if let Some(engine) = &nd.dataspace_engine {
+        dctx = dctx.with_dataspace_engine(engine.clone());
+    }
     // Share the flow's MDN interaction history across all of its navigate nodes
     // so adaptive ω reinforcement sees cross-navigation variance (SSE parity).
     dctx.mdn_histories = histories.clone();
@@ -3666,6 +3674,14 @@ pub fn execute_server_flow(
     // fails CLOSED with a loud missing-dependency error, never a silent
     // stub and never a fabricated result.
     secret_custody: Option<std::sync::Arc<dyn crate::secret_custody::SecretCustody>>,
+    // §Fase 108.b — the deterministic columnar engine port behind the five
+    // data-plane verbs. `Some` only when the deployment instantiated the
+    // declared dataspaces (the OSS deploy hook / the enterprise executor —
+    // the same injection shape as `credential_minter`); `None` for every
+    // other caller ⇒ each data-plane verb fails CLOSED with a loud
+    // missing-dependency error (the §108.a honesty floor), never an LLM
+    // narration.
+    dataspace_engine: Option<crate::dataspace_engine::SharedDataspaceEngine>,
     // §Fase 102 (D102.9) — per-tenant scrape overrides (proxy / crawl
     // concurrency) resolved by the deployed executor's `SecretResolver`, applied
     // to the request-scoped registry before any scrape dispatch (the same
@@ -3858,6 +3874,9 @@ pub fn execute_server_flow(
             corpora: std::sync::Arc::new(corpora),
             store_sources: std::sync::Arc::new(store_sources),
             adaptive: std::sync::Arc::new(adaptive),
+            // §Fase 108.b — thread the deployment's columnar engine (the OSS
+            // deploy hook's / enterprise executor's) to the dispatcher.
+            dataspace_engine: dataspace_engine.clone(),
         }
     };
 
@@ -5049,6 +5068,7 @@ flow Recall(q: Text) -> Text {
             None, // §Fase 74.f — event outbox (test: no durable sink)
             None, // §Fase 92.c — credential minter (test: none)
             None, // §Fase 94.d — secret custody (test: none)
+                None, // §Fase 108.b dataspace_engine (tests: fail closed)
                 None, // §Fase 102 scrape_overrides
 )
         .expect("flow runs");
@@ -5110,6 +5130,7 @@ flow Recall(q: Text) -> Text {
             corpora: std::sync::Arc::new(corpora),
             store_sources: std::sync::Arc::new(std::collections::HashMap::new()),
             adaptive: std::sync::Arc::new(std::collections::HashSet::new()),
+            dataspace_engine: None,
         };
         let pb = vec![("q".to_string(), "DocA".to_string())];
         let collected = collect_via_dispatcher(
@@ -5178,6 +5199,7 @@ flow Lead() -> Text {
             None,
             None,
             None,
+            None, // §Fase 108.b dataspace_engine (tests: fail closed)
         )
         .expect("flow runs");
         assert!(metrics.success, "the let flow runs");
@@ -5227,6 +5249,7 @@ flow Echo(p: Text) -> Text {
             None, // outbox
             None, // §Fase 92.c — credential minter (test: none)
             None, // §Fase 94.d — secret custody (test: none)
+                None, // §Fase 108.b dataspace_engine (tests: fail closed)
                 None, // §Fase 102 scrape_overrides
 )
         .expect("flow runs");
@@ -5265,6 +5288,7 @@ flow Learn(tenant_id: Text, session_id_generic: Text) -> Text {
             None, None, None, None, None,
             None, // §Fase 92.c — credential minter (test: none)
             None, // §Fase 94.d — secret custody (test: none)
+                None, // §Fase 108.b dataspace_engine (tests: fail closed)
                 None, // §Fase 102 scrape_overrides
 )
         .expect("flow runs");
@@ -5320,6 +5344,7 @@ flow Producer(tenant_id: Text) -> Text {
             Some(probe.clone() as std::sync::Arc<dyn EventOutbox>),
             None, // §Fase 92.c — credential minter (test: none)
             None, // §Fase 94.d — secret custody (test: none)
+                None, // §Fase 108.b dataspace_engine (tests: fail closed)
                 None, // §Fase 102 scrape_overrides
 )
         .expect("flow runs");
@@ -5349,6 +5374,7 @@ flow Producer(tenant_id: Text) -> Text {
             corpora: std::sync::Arc::new(std::collections::HashMap::new()),
             store_sources: std::sync::Arc::new(store_sources),
             adaptive: std::sync::Arc::new(std::collections::HashSet::new()),
+            dataspace_engine: None,
         }
     }
 }

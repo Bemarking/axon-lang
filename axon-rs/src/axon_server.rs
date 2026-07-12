@@ -438,6 +438,13 @@ pub struct ServerState {
     pub backend_registry: HashMap<String, BackendRegistryEntry>,
     pub axon_stores: HashMap<String, AxonStoreInstance>,
     pub dataspaces: HashMap<String, DataspaceInstance>,
+    /// §Fase 108.b — the deterministic columnar engine holding every
+    /// DECLARED dataspace (populated by the deploy hook from the compiled
+    /// `ir.dataspace_specs`; the injection port the data-plane verbs
+    /// execute against). Distinct from `dataspaces` above — that map is
+    /// the pre-§108 REST/MCP surface, re-founded over this engine in
+    /// §108.e (D108.6).
+    pub dataspace_engine: crate::dataspace_engine::SharedDataspaceEngine,
     pub shields: HashMap<String, ShieldInstance>,
     pub corpora: HashMap<String, CorpusInstance>,
     pub mandates: HashMap<String, MandatePolicy>,
@@ -1010,6 +1017,9 @@ impl ServerState {
             backend_registry: HashMap::new(),
             axon_stores: HashMap::new(),
             dataspaces: HashMap::new(),
+            dataspace_engine: std::sync::Arc::new(std::sync::RwLock::new(
+                crate::dataspace_engine::DataspaceEngine::default(),
+            )),
             shields: HashMap::new(),
             corpora: HashMap::new(),
             mandates: HashMap::new(),
@@ -1788,6 +1798,35 @@ async fn deploy_handler(
 
     let ir = crate::ir_generator::IRGenerator::new().generate(&program);
 
+    // §Fase 108.b — the dataspace deploy hook: instantiate every DECLARED
+    // dataspace in the deterministic columnar engine, NOW. Before this hook
+    // existed, `dataspace_specs` was `#[serde(skip)]`-hidden and read by
+    // nothing — a declared dataspace reached no runtime state at all (the
+    // §108 ground-truth finding). Merge semantics: a new name creates an
+    // empty store; a re-declared name replaces its store (redeploy is
+    // restart-equivalent for that dataspace — the OSS engine is in-memory,
+    // D108.8). An invalid spec refuses the DEPLOY, all-or-nothing: a
+    // program must never half-exist.
+    if !ir.dataspace_specs.is_empty() {
+        let engine = {
+            let s = state.lock().unwrap();
+            s.dataspace_engine.clone()
+        };
+        let merge_result = engine
+            .write()
+            .expect("dataspace engine lock poisoned")
+            .merge_from_ir(&ir.dataspace_specs);
+        if let Err(msg) = merge_result {
+            let mut s = state.lock().unwrap();
+            s.metrics.total_errors += 1;
+            return Ok(Json(serde_json::json!({
+                "success": false,
+                "error": msg,
+                "phase": "dataspace_engine",
+            })));
+        }
+    }
+
     // §Fase 37.x.g (D8) — eager deploy-time store-schema verification.
     // Every declared `postgresql` axonstore is resolved + introspected
     // NOW, against the live database — the failure of a store schema
@@ -2223,6 +2262,10 @@ fn server_execute(
     // §Fase 37.y (D3) — URL query string parsed as name → value.
     // Empty map for callers with no query string.
     request_query: &std::collections::HashMap<String, String>,
+    // §Fase 108.b — the process-wide columnar engine (from ServerState,
+    // populated by the deploy hook). `None` for callers with no server
+    // state ⇒ the data-plane verbs fail CLOSED (§108.a).
+    dataspace_engine: Option<crate::dataspace_engine::SharedDataspaceEngine>,
 ) -> Result<ServerExecutionResult, String> {
     let start = Instant::now();
 
@@ -2285,6 +2328,9 @@ fn server_execute(
         // concern); rotate / secrets-retrieve / secret-bearing tool
         // dispatch fail closed with a loud missing-dependency error.
         None,
+        // §Fase 108.b — the deployment's columnar engine (deploy-hook
+        // populated); `None` for state-less callers ⇒ fail CLOSED.
+        dataspace_engine,
         None, // §Fase 102 scrape_overrides
 )?;
 
@@ -13597,6 +13643,12 @@ fn execute_with_fallback(
     request_path: &std::collections::HashMap<String, String>,
     request_query: &std::collections::HashMap<String, String>,
 ) -> (Result<ServerExecutionResult, String>, String) {
+    // §Fase 108.b — the process engine, resolved ONCE for primary +
+    // every fallback attempt (the engine is backend-independent).
+    let ds_engine = {
+        let s = state.lock().unwrap();
+        s.dataspace_engine.clone()
+    };
     // Try primary
     let result = server_execute(
         source,
@@ -13607,6 +13659,7 @@ fn execute_with_fallback(
         request_body,
         request_path,
         request_query,
+        Some(ds_engine.clone()),
     );
     if result.is_ok() {
         return (result, primary_backend.to_string());
@@ -13640,6 +13693,7 @@ fn execute_with_fallback(
             request_body,
             request_path,
             request_query,
+            Some(ds_engine.clone()),
         );
         if fb_result.is_ok() {
             return (fb_result, fallback_backend.clone());
@@ -15195,10 +15249,16 @@ async fn mcp_handler(
             // callers; empty path + query maps.
             let empty_path = std::collections::HashMap::new();
             let empty_query = std::collections::HashMap::new();
+            // §Fase 108.b — thread the process engine.
+            let ds_engine = {
+                let s = state.lock().unwrap();
+                s.dataspace_engine.clone()
+            };
             let result = server_execute(
                 &source, &source_file, flow_name, backend, resolved_key.as_deref(), None,
                 &empty_path,
                 &empty_query,
+                Some(ds_engine),
             );
 
             match result {
@@ -16279,9 +16339,14 @@ async fn mcp_stream_handler(
     // empty path + query maps.
     let empty_path = std::collections::HashMap::new();
     let empty_query = std::collections::HashMap::new();
+    // §Fase 108.b — thread the process engine.
+    let ds_engine = {
+        let s = state.lock().unwrap();
+        s.dataspace_engine.clone()
+    };
     match server_execute(
         &source, &source_file, flow_name, backend, resolved_key.as_deref(), None,
-        &empty_path, &empty_query,
+        &empty_path, &empty_query, Some(ds_engine),
     ) {
         Ok(mut er) => {
             // Record trace
@@ -28062,9 +28127,15 @@ async fn execute_warm_handler(
         // §Fase 37.y — warmup path has no HTTP request; empty path + query.
         let empty_path = std::collections::HashMap::new();
         let empty_query = std::collections::HashMap::new();
+        // §Fase 108.b — thread the process engine (warmup runs the same
+        // dispatcher as production; the port must match).
+        let ds_engine = {
+            let s = state.lock().unwrap();
+            s.dataspace_engine.clone()
+        };
         match server_execute(
             source, source_file, flow_name, "stub", None, None,
-            &empty_path, &empty_query,
+            &empty_path, &empty_query, Some(ds_engine),
         ) {
             Ok(er) => {
                 let mut entry = crate::trace_store::build_trace(&er.flow_name, &er.source_file, &er.backend, &client,

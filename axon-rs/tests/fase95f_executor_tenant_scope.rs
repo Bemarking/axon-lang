@@ -106,6 +106,7 @@ fn run_enumerate_with_tenant(tenant: &str) -> Vec<String> {
         None, // outbox
         None, // minter
         Some(custody as Arc<dyn SecretCustody>),
+        None, // §Fase 108.b dataspace_engine (tests: fail closed)
         None, // §Fase 102 scrape_overrides
 );
     let out = seen.lock().unwrap().clone();

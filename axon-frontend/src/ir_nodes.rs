@@ -43,7 +43,8 @@ pub struct IRProgram {
     /// §Fase 53 — closed-catalog extension declarations (compiled).
     /// `#[serde(skip)]` so the field is NOT emitted into the IR JSON —
     /// this keeps the static IR-JSON drift-gate fixtures green without
-    /// regenerating them (same established pattern as `dataspace_specs`).
+    /// regenerating them (the pattern `dataspace_specs` also used until
+    /// §108.b un-skipped it).
     /// The in-memory field feeds the §53.c type-checker + §53.d PCC (both
     /// read `&IRProgram`); soundness invariant #1 holds via SOURCE
     /// re-derivation — both the prover and the verifier read the
@@ -56,11 +57,16 @@ pub struct IRProgram {
     /// the proof-bundle hash.
     #[serde(skip)]
     pub extensions: Vec<IRExtension>,
-    /// Local-only: IRDataspace specs are computed during IR generation so
-    /// the cost estimator and inspectors can reach them, but Python's
-    /// reference IRProgram does not serialise this field. Hidden from JSON
-    /// output for byte-identical parity (§8.2.h.1).
-    #[serde(skip)]
+    /// §Fase 108.b — the compiled dataspace schemas, SERIALIZED into the
+    /// IR JSON (un-skipped). History: this field was `#[serde(skip)]` for
+    /// byte-identical parity with the retired Python reference frontend
+    /// (§8.2.h.1) — which meant the runtime literally could not see a
+    /// declared dataspace (the §108 ground-truth finding). The parity
+    /// constraint is gone; the deploy hook walks this field to
+    /// instantiate the deterministic columnar engine's stores. Additive
+    /// for consumers: no IR deserializer uses `deny_unknown_fields`
+    /// (verified 2026-07-12), and `IRProgram` is `Serialize`-only —
+    /// consumers re-derive from source.
     pub dataspace_specs: Vec<IRDataspace>,
     /// §λ-L-E Fase 1 — I/O cognitivo primitives (compiled).
     pub resources: Vec<IRResource>,
@@ -1867,12 +1873,25 @@ pub struct IRCorpusStoreSource {
     pub edge_weight: String,
 }
 
+/// §Fase 108.b — one compiled dataspace column. `column_type` is the
+/// CANONICAL catalog name (`Text` / `Int` / `Float` / `Bool` /
+/// `Timestamp` / `Json`) — aliases are resolved at IR generation, so
+/// every downstream consumer (the engine's deploy hook, the §108.d PCC
+/// class) reads one spelling.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRDataspaceColumn {
+    pub name: String,
+    pub column_type: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct IRDataspace {
     pub node_type: &'static str,
     pub source_line: u32,
     pub source_column: u32,
     pub name: String,
+    /// §Fase 108.b — the typed columnar schema (canonical type names).
+    pub columns: Vec<IRDataspaceColumn>,
 }
 
 #[derive(Debug, Clone, Serialize)]

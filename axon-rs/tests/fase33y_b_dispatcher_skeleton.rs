@@ -744,10 +744,17 @@ const PARALLEL_ALGEBRAIC_GRADUATED: &[&str] = &["par", "stream_block"];
 // BEFORE the strict-empty arm.
 const COGNITIVE_PEM_BOUND_GRADUATED: &[&str] = &["remember", "recall", "forge"];
 
-const COGNITIVE_FRAMING_GRADUATED: &[&str] = &[
-    "focus", "associate", "aggregate", "explore", "ingest", "navigate",
-    "corroborate",
-];
+const COGNITIVE_FRAMING_GRADUATED: &[&str] = &["navigate", "corroborate"];
+
+/// §Fase 108.a — the five DATA-PLANE verbs. They are relational
+/// operations over a declared `dataspace`; an LLM fallthrough would
+/// HALLUCINATE their results (the mint/rotate argument verbatim), so
+/// with no engine port attached (this gate's `fresh_ctx`) each MUST
+/// refuse: `Err(MissingDependency { name: "dataspace_engine" })`,
+/// AFTER emitting its attributable StepStart. The real handlers land
+/// in §108.c (ingest) / §108.d (the query verbs).
+const DATA_PLANE_GRADUATED: &[&str] =
+    &["focus", "associate", "aggregate", "explore", "ingest"];
 
 /// Algebraic-effect handler graduated variants (33.y.g) — apply
 /// capability + invoke / listen / daemon. All emit wire shape +
@@ -846,6 +853,23 @@ async fn every_ir_flow_node_routes_to_its_labeled_handler() {
                 Err(axon::flow_dispatcher::DispatchError::BackendError { name, .. })
                     if name == "forge" => {}
                 other => panic!("forge routed to an unexpected outcome: {other:?}"),
+            }
+            continue;
+        }
+
+        // §Fase 108.a — the data-plane verbs REFUSE without an engine port
+        // (this gate's ctx attaches none). The refusal IS the routing proof:
+        // pre-108.a these five prompted the stub backend and "completed"
+        // with narrated output — the hallucination the honesty floor ended.
+        if DATA_PLANE_GRADUATED.contains(&expected_kind) {
+            match outcome {
+                Err(axon::flow_dispatcher::DispatchError::MissingDependency {
+                    name: "dataspace_engine",
+                }) => {}
+                other => panic!(
+                    "data-plane variant {expected_kind:?} must fail CLOSED without \
+                     the engine (MissingDependency: dataspace_engine), got {other:?}",
+                ),
             }
             continue;
         }
@@ -956,7 +980,10 @@ fn graduated_variants_set_size_pinned_48_of_48() {
     assert_eq!(ORCHESTRATION_GRADUATED.len(), 6);
     assert_eq!(PARALLEL_ALGEBRAIC_GRADUATED.len(), 2);
     assert_eq!(COGNITIVE_PEM_BOUND_GRADUATED.len(), 3);
-    assert_eq!(COGNITIVE_FRAMING_GRADUATED.len(), 7);
+    // §Fase 108.a — the five data-plane verbs left the cognitive-framing
+    // (pure-shape/LLM) bucket for the fail-closed DATA_PLANE bucket.
+    assert_eq!(COGNITIVE_FRAMING_GRADUATED.len(), 2);
+    assert_eq!(DATA_PLANE_GRADUATED.len(), 5);
     assert_eq!(ALGEBRAIC_HANDLERS_GRADUATED.len(), 6);
     assert_eq!(WIRE_INTEGRATIONS_GRADUATED.len(), 10);
     assert_eq!(PIX_GRADUATED.len(), 3);
@@ -970,6 +997,7 @@ fn graduated_variants_set_size_pinned_48_of_48() {
         + PARALLEL_ALGEBRAIC_GRADUATED.len()
         + COGNITIVE_PEM_BOUND_GRADUATED.len()
         + COGNITIVE_FRAMING_GRADUATED.len()
+        + DATA_PLANE_GRADUATED.len()
         + ALGEBRAIC_HANDLERS_GRADUATED.len()
         + WIRE_INTEGRATIONS_GRADUATED.len()
         + PIX_GRADUATED.len()
@@ -977,7 +1005,7 @@ fn graduated_variants_set_size_pinned_48_of_48() {
         + QUANT_GRADUATED.len();
     assert_eq!(
         total, 48,
-        "partition sum check: all 10 sub-catalogs must cover exactly 48 variants"
+        "partition sum check: all 11 sub-catalogs must cover exactly 48 variants"
     );
 }
 

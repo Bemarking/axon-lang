@@ -87,6 +87,7 @@ fn nonstreaming_persist_failure_is_surfaced_not_swallowed() {
         None, // §Fase 74.f — event_outbox (test: in-process emit)
         None, // §Fase 92.c — credential minter (test: none)
         None, // §Fase 94.d — secret custody (test: none)
+        None, // §Fase 108.b dataspace_engine (tests: fail closed)
         None, // §Fase 102 scrape_overrides
 )
     .expect("the server runner returns Ok (a flow-level failure is reported in the metrics, not as an Err)");
@@ -169,6 +170,7 @@ axonendpoint GreetEndpoint { public: true
         None, // §Fase 74.f — event_outbox (test: in-process emit)
         None, // §Fase 92.c — credential minter (test: none)
         None, // §Fase 94.d — secret custody (test: none)
+        None, // §Fase 108.b dataspace_engine (tests: fail closed)
         None, // §Fase 102 scrape_overrides
 )
     .expect("run");

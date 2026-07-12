@@ -358,7 +358,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         category: "data_plane",
         top_level: true,
         since: "Fase 36",
-        summary: "A declared analytical data container — the deterministic data plane's store (§108). Name-only declaration today; the typed columnar schema + relational engine land in §108.b–d.",
+        summary: "A declared analytical data container — the deterministic data plane's store (§108). Typed columnar schema (`column <name>: <Type>` over the closed 6-type catalog, axon-T928), instantiated in the columnar engine at deploy; governed `ingest` (§108.c) + the relational query verbs (§108.d) land next.",
         doc_status: DocStatus::Documented,
     },
     PrimitiveInfo {
