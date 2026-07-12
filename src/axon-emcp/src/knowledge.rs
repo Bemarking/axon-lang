@@ -1250,7 +1250,8 @@ Body prose.
         // §Fase 99: 65 → 66 with `document` (native OOXML synthesis). §100 adds
         // NO primitive — read/edit are tool providers (D100.10), so the count
         // holds at 66; this reconciles the gate to the registry.
-        assert_eq!(s.total, 66);
+        // §Fase 105: 66 → 67 with `deliver` (Governed CRM Delivery, egress-dual).
+        assert_eq!(s.total, 67);
     }
 
     /// §Phase 5 — every MCP prompt shipped under
