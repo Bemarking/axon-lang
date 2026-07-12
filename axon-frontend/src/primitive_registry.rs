@@ -358,7 +358,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         category: "data_plane",
         top_level: true,
         since: "Fase 36",
-        summary: "A named, isolated data namespace — multi-tenant by construction, with cross-tenant proof obligations.",
+        summary: "A declared analytical data container — the deterministic data plane's store (§108). Name-only declaration today; the typed columnar schema + relational engine land in §108.b–d.",
         doc_status: DocStatus::Documented,
     },
     PrimitiveInfo {

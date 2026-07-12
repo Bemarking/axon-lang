@@ -1378,10 +1378,10 @@ fn structural_dispatch_enabled() -> bool {
 /// no per-tenant API key plumbing — that arrives with the cognitive verbs in
 /// §65.C). Today: the MDN/PIX navigation family. `navigate` (§65.A) over the
 /// live store-sourced graph; `drill` into a PIX subtree; `trail` the breadcrumb
-/// of a prior navigate. Cognitive-framing verbs (forge/focus/associate/aggregate/
-/// explore/ingest/corroborate) and the multi-agent verbs (deliberate/consensus)
-/// reuse `pure_shape` → they DO call the LLM, so they stay on the legacy path
-/// until §65.C threads the per-tenant key through `DispatchCtx`.
+/// of a prior navigate. Cognitive-framing verbs (forge/corroborate) and the
+/// multi-agent verbs (deliberate/consensus) reuse `pure_shape` → they DO call
+/// the LLM, so they stay on the legacy path until §65.C threads the per-tenant
+/// key through `DispatchCtx`.
 fn routes_through_dispatcher(node: &crate::ir_nodes::IRFlowNode) -> bool {
     use crate::ir_nodes::IRFlowNode as N;
     // §Fase 92.c — `mint` MUST route to its real dispatcher handler: an LLM
@@ -1391,9 +1391,26 @@ fn routes_through_dispatcher(node: &crate::ir_nodes::IRFlowNode) -> bool {
     // §Fase 94.b — `rotate` likewise: an LLM fallthrough would HALLUCINATE a
     // rotation (fabricated summary over untouched custody). No custody port ⇒
     // the handler fails CLOSED.
+    //
+    // §Fase 108.a — the five data-plane verbs likewise: they are relational
+    // operations over a declared `dataspace` (ingest loads, focus selects,
+    // associate joins, aggregate computes, explore profiles). An LLM
+    // fallthrough NARRATES data that was never loaded and numbers that were
+    // never computed — assertion-laundering. Their dispatcher handlers fail
+    // CLOSED (`MissingDependency: dataspace_engine`) until the columnar
+    // engine lands (§108.b–d).
     matches!(
         node,
-        N::Navigate(_) | N::Drill(_) | N::Trail(_) | N::Mint(_) | N::Rotate(_)
+        N::Navigate(_)
+            | N::Drill(_)
+            | N::Trail(_)
+            | N::Mint(_)
+            | N::Rotate(_)
+            | N::Ingest(_)
+            | N::Focus(_)
+            | N::Associate(_)
+            | N::Aggregate(_)
+            | N::Explore(_)
     )
 }
 
@@ -4844,10 +4861,12 @@ mod fase65_navigate_bridge {
         std::env::remove_var("AXON_UNIFIED_EXECUTOR");
     }
 
-    /// §Fase 65.B — `routes_through_dispatcher` selects exactly the pure-effect
-    /// MDN/PIX verbs: navigate / drill / trail. Cognitive-framing + multi-agent
-    /// verbs (which call the LLM via `pure_shape`) and store/tool verbs stay on
-    /// their existing paths.
+    /// §Fase 65.B + §108.a — `routes_through_dispatcher` selects the pure-effect
+    /// MDN/PIX verbs (navigate / drill / trail), the custody verbs (mint /
+    /// rotate), and — since §108.a — the five DATA-PLANE verbs (ingest / focus /
+    /// associate / aggregate / explore), whose dispatcher handlers fail CLOSED
+    /// until the columnar engine lands. Genuinely-cognitive verbs (forge /
+    /// corroborate) and multi-agent verbs stay on the LLM path.
     #[test]
     fn routes_only_the_pure_structural_verbs() {
         use crate::ir_nodes::*;
@@ -4875,14 +4894,34 @@ mod fase65_navigate_bridge {
             output_name: "o".into(),
         });
         assert!(routes_through_dispatcher(&drill));
-        // A cognitive-framing verb that reaches the LLM must NOT route here.
+        // §108.a — a data-plane verb MUST route to the dispatcher, where its
+        // handler refuses without the engine. The legacy alternative (this
+        // executor's LLM path) would NARRATE a selection that never scanned
+        // a row — the exact hallucination §108.a exists to end.
         let focus = IRFlowNode::Focus(IRFocusStep {
             node_type: "focus",
             source_line: 0,
             source_column: 0,
             expression: "x".into(),
         });
-        assert!(!routes_through_dispatcher(&focus));
+        assert!(routes_through_dispatcher(&focus));
+        let ingest = IRFlowNode::Ingest(IRIngestStep {
+            node_type: "ingest",
+            source_line: 0,
+            source_column: 0,
+            source: "s".into(),
+            target: "t".into(),
+        });
+        assert!(routes_through_dispatcher(&ingest));
+        // A genuinely-cognitive verb stays on the LLM path.
+        let corroborate = IRFlowNode::Corroborate(IRCorroborateStep {
+            node_type: "corroborate",
+            source_line: 0,
+            source_column: 0,
+            navigate_ref: "n".into(),
+            output_name: "o".into(),
+        });
+        assert!(!routes_through_dispatcher(&corroborate));
     }
 
     /// §Fase 65.A — THE anti-hallucination guarantee (Kivi acceptance, unit

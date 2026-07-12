@@ -19,13 +19,19 @@
 //!    tokens). Future IR extensions wire a body via a public helper.
 //!
 //! 4-10. **`Focus`, `Associate`, `Aggregate`, `Explore`, `Ingest`,
-//!    `Navigate`, `Corroborate`** — All seven reuse the pure-shape
-//!    async core ([`crate::flow_dispatcher::pure_shape::run_pure_shape`])
-//!    with each variant's cognitive framing addendum reflected in
-//!    the system prompt. The user prompt is built from the IR
-//!    fields (target / strategy / etc.). For stub backend each
-//!    handler emits 1 chunk of `"(stub)"` byte-equal with 33.y.c
-//!    pure-shape D4 invariant.
+//!    `Navigate`, `Corroborate`** — historically all seven reused the
+//!    pure-shape async core. **§Fase 108.a re-founded the five
+//!    data-plane verbs** (`focus` / `associate` / `aggregate` /
+//!    `explore` / `ingest`): they are relational-algebra operations
+//!    over a declared `dataspace`, and an LLM fallthrough would
+//!    HALLUCINATE their results — the model *narrating* a load or an
+//!    aggregate that never ran (the `mint`/`rotate` argument,
+//!    verbatim). Until the deterministic columnar engine port lands
+//!    (§108.b–d) each fails CLOSED with
+//!    `MissingDependency { name: "dataspace_engine" }` after emitting
+//!    its attributable `StepStart` — a refusal, never a narration.
+//!    `Navigate` and `Corroborate` (genuinely cognitive) keep the
+//!    pure-shape core.
 //!
 //! # PEM integration
 //!
@@ -466,151 +472,141 @@ pub async fn run_forge(
 
 /// Focus handler — narrow attention to an expression. Reuses the
 /// pure-shape async core with the focus framing addendum.
+/// §Fase 108.a — the honesty floor. `focus` is a DATA-PLANE verb:
+/// σ_φ ∘ π_v over a declared `dataspace` (§108.d). The previous
+/// behaviour prompted the model to "narrow scope … surface what
+/// matters most" — i.e. to NARRATE a selection that never scanned a
+/// row. No engine port ⇒ fail CLOSED, never narrate (the
+/// `mint`/`rotate` posture). The real relational handler replaces
+/// this refusal in §108.d.
 pub async fn run_focus(
     node: &IRFocusStep,
     ctx: &mut DispatchCtx,
 ) -> Result<NodeOutcome, DispatchError> {
-    let shape = PureShapeStep {
-        name: if node.expression.is_empty() {
-            "Focus".to_string()
-        } else {
-            node.expression.clone()
-        },
-        user_prompt: format!("Focus on: {}", node.expression),
-        framing_addendum: Some(
-            "You are focusing your attention. Narrow scope to the target; surface what matters most.".into(),
-        ),
-        kind_slug: "focus",
-        tools: Vec::new(),
-        requires_context: None,
-        temperature: None,
-        now_tz: None,
+    if ctx.cancel.is_cancelled() {
+        return Err(DispatchError::UpstreamCancelled);
+    }
+    let step_index = ctx.step_counter;
+    ctx.step_counter += 1;
+    let name = if node.expression.is_empty() {
+        "Focus"
+    } else {
+        node.expression.as_str()
     };
-    run_pure_shape(shape, ctx).await
+    emit_step_start(ctx, name, step_index, "focus")?;
+    Err(DispatchError::MissingDependency {
+        name: "dataspace_engine",
+    })
 }
 
-/// Associate handler — relate two entities via a key field.
+/// §Fase 108.a — the honesty floor. `associate` is a DATA-PLANE verb:
+/// a hash equi-join across two declared dataspaces (§108.d). The
+/// previous behaviour prompted the model to "find the meaningful
+/// relationship" — a join whose matches were INVENTED, not computed.
+/// No engine port ⇒ fail CLOSED, never narrate. The real join handler
+/// replaces this refusal in §108.d.
 pub async fn run_associate(
     node: &IRAssociateStep,
     ctx: &mut DispatchCtx,
 ) -> Result<NodeOutcome, DispatchError> {
-    let using_clause = if node.using_field.is_empty() {
-        String::new()
+    if ctx.cancel.is_cancelled() {
+        return Err(DispatchError::UpstreamCancelled);
+    }
+    let step_index = ctx.step_counter;
+    ctx.step_counter += 1;
+    let name = if node.left.is_empty() {
+        "Associate".to_string()
     } else {
-        format!(" using `{}`", node.using_field)
+        format!("{}↔{}", node.left, node.right)
     };
-    let shape = PureShapeStep {
-        name: if node.left.is_empty() {
-            "Associate".to_string()
-        } else {
-            format!("{}↔{}", node.left, node.right)
-        },
-        user_prompt: format!(
-            "Associate {} with {}{}",
-            node.left, node.right, using_clause
-        ),
-        framing_addendum: Some(
-            "You are associating. Find the meaningful relationship; return a structured link.".into(),
-        ),
-        kind_slug: "associate",
-        tools: Vec::new(),
-        requires_context: None,
-        temperature: None,
-        now_tz: None,
-    };
-    run_pure_shape(shape, ctx).await
+    emit_step_start(ctx, &name, step_index, "associate")?;
+    Err(DispatchError::MissingDependency {
+        name: "dataspace_engine",
+    })
 }
 
-/// Aggregate handler — group + summarize a target with optional
-/// group_by keys + alias.
+/// §Fase 108.a — the honesty floor. `aggregate` is a DATA-PLANE verb:
+/// γ (group + the closed aggregate catalog) over a declared dataspace
+/// (§108.d). The previous behaviour prompted the model to "group +
+/// summarize" — an aggregate is a NUMBER, and a narrated number is a
+/// fabricated one. No engine port ⇒ fail CLOSED, never narrate. The
+/// real γ handler replaces this refusal in §108.d.
 pub async fn run_aggregate(
     node: &IRAggregateStep,
     ctx: &mut DispatchCtx,
 ) -> Result<NodeOutcome, DispatchError> {
-    let group_clause = if node.group_by.is_empty() {
-        String::new()
+    if ctx.cancel.is_cancelled() {
+        return Err(DispatchError::UpstreamCancelled);
+    }
+    let step_index = ctx.step_counter;
+    ctx.step_counter += 1;
+    let name = if node.target.is_empty() {
+        "Aggregate"
     } else {
-        format!(" grouped by [{}]", node.group_by.join(", "))
+        node.target.as_str()
     };
-    let alias_clause = if node.alias.is_empty() {
-        String::new()
-    } else {
-        format!(" as `{}`", node.alias)
-    };
-    let shape = PureShapeStep {
-        name: if node.target.is_empty() {
-            "Aggregate".to_string()
-        } else {
-            node.target.clone()
-        },
-        user_prompt: format!(
-            "Aggregate {}{}{}",
-            node.target, group_clause, alias_clause
-        ),
-        framing_addendum: Some(
-            "You are aggregating. Group + summarize over the declared dimensions; surface the structure.".into(),
-        ),
-        kind_slug: "aggregate",
-        tools: Vec::new(),
-        requires_context: None,
-        temperature: None,
-        now_tz: None,
-    };
-    run_pure_shape(shape, ctx).await
+    emit_step_start(ctx, name, step_index, "aggregate")?;
+    Err(DispatchError::MissingDependency {
+        name: "dataspace_engine",
+    })
 }
 
-/// Explore handler — broad-scope exploration of a target with
-/// optional result-count limit.
+/// §Fase 108.a — the honesty floor. `explore` is a DATA-PLANE verb: a
+/// deterministic profile (row/null counts, per-column min/max, schema)
+/// over a declared dataspace (§108.d). The previous behaviour prompted
+/// the model to "sample broadly" over data it had never seen. No
+/// engine port ⇒ fail CLOSED, never narrate. The real profile handler
+/// replaces this refusal in §108.d.
 pub async fn run_explore(
     node: &IRExploreStep,
     ctx: &mut DispatchCtx,
 ) -> Result<NodeOutcome, DispatchError> {
-    let limit_clause = match node.limit {
-        Some(n) => format!(" (top {})", n),
-        None => String::new(),
+    if ctx.cancel.is_cancelled() {
+        return Err(DispatchError::UpstreamCancelled);
+    }
+    let step_index = ctx.step_counter;
+    ctx.step_counter += 1;
+    let name = if node.target.is_empty() {
+        "Explore"
+    } else {
+        node.target.as_str()
     };
-    let shape = PureShapeStep {
-        name: if node.target.is_empty() {
-            "Explore".to_string()
-        } else {
-            node.target.clone()
-        },
-        user_prompt: format!("Explore: {}{}", node.target, limit_clause),
-        framing_addendum: Some(
-            "You are exploring. Sample broadly; surface the most-relevant directions.".into(),
-        ),
-        kind_slug: "explore",
-        tools: Vec::new(),
-        requires_context: None,
-        temperature: None,
-        now_tz: None,
-    };
-    run_pure_shape(shape, ctx).await
+    emit_step_start(ctx, name, step_index, "explore")?;
+    Err(DispatchError::MissingDependency {
+        name: "dataspace_engine",
+    })
 }
 
-/// Ingest handler — bring external data in from a source into a
-/// target.
+/// §Fase 108.a — the honesty floor. `ingest` is a DATA-PLANE verb: it
+/// loads external bytes into a declared `dataspace` (§108.c). There is
+/// no LLM in that job description. The previous behaviour asked the
+/// model to "map the source's structure into the target; preserve
+/// fidelity" — i.e. to NARRATE a load that never happened; every
+/// downstream step then reasoned over hallucinated data. That is
+/// assertion-laundering, and the codebase already names the posture
+/// for it: "an LLM fallthrough would HALLUCINATE a bearer token"
+/// (`mint`/`rotate`, runner.rs). Same law here: no engine port ⇒ fail
+/// CLOSED, never narrate. The real handler (deterministic loaders,
+/// bounds-BEFORE-parse §100, born-Untrusted §98) replaces this
+/// refusal in §108.c.
 pub async fn run_ingest(
     node: &IRIngestStep,
     ctx: &mut DispatchCtx,
 ) -> Result<NodeOutcome, DispatchError> {
-    let shape = PureShapeStep {
-        name: if node.target.is_empty() {
-            "Ingest".to_string()
-        } else {
-            node.target.clone()
-        },
-        user_prompt: format!("Ingest from `{}` into `{}`", node.source, node.target),
-        framing_addendum: Some(
-            "You are ingesting. Map the source's structure into the target; preserve fidelity.".into(),
-        ),
-        kind_slug: "ingest",
-        tools: Vec::new(),
-        requires_context: None,
-        temperature: None,
-        now_tz: None,
+    if ctx.cancel.is_cancelled() {
+        return Err(DispatchError::UpstreamCancelled);
+    }
+    let step_index = ctx.step_counter;
+    ctx.step_counter += 1;
+    let name = if node.target.is_empty() {
+        "Ingest"
+    } else {
+        node.target.as_str()
     };
-    run_pure_shape(shape, ctx).await
+    emit_step_start(ctx, name, step_index, "ingest")?;
+    Err(DispatchError::MissingDependency {
+        name: "dataspace_engine",
+    })
 }
 
 /// §Fase 62.A — resolve the source document a `navigate`/`drill` indexes, from
@@ -1267,7 +1263,10 @@ mod tests {
     // ── Cognitive framing handlers ────────────────────────────────────
 
     #[tokio::test]
-    async fn run_focus_emits_focus_slug() {
+    async fn run_focus_refuses_without_dataspace_engine() {
+        // §Fase 108.a — the honesty floor: a `focus` with no engine port
+        // REFUSES (MissingDependency), it does not narrate a selection.
+        // The refusal is attributable: StepStart is emitted first.
         let (mut ctx, mut rx) = fresh_ctx();
         let node = IRFocusStep {
             node_type: "focus",
@@ -1275,9 +1274,12 @@ mod tests {
             source_column: 0,
             expression: "key_insight".into(),
         };
-        let _ = run_focus(&node, &mut ctx).await.unwrap();
-        let ev = rx.try_recv().unwrap();
-        match ev {
+        let err = run_focus(&node, &mut ctx).await.unwrap_err();
+        assert!(
+            matches!(err, DispatchError::MissingDependency { name: "dataspace_engine" }),
+            "got: {err:?}"
+        );
+        match rx.try_recv().unwrap() {
             FlowExecutionEvent::StepStart { step_type, .. } => {
                 assert_eq!(step_type, "focus");
             }
@@ -1286,7 +1288,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_associate_emits_associate_slug() {
+    async fn run_associate_refuses_without_dataspace_engine() {
+        // §Fase 108.a — a join whose matches would be invented is refused.
         let (mut ctx, mut rx) = fresh_ctx();
         let node = IRAssociateStep {
             node_type: "associate",
@@ -1296,18 +1299,24 @@ mod tests {
             right: "B".into(),
             using_field: "id".into(),
         };
-        run_associate(&node, &mut ctx).await.unwrap();
-        let ev = rx.try_recv().unwrap();
-        match ev {
-            FlowExecutionEvent::StepStart { step_type, .. } => {
+        let err = run_associate(&node, &mut ctx).await.unwrap_err();
+        assert!(
+            matches!(err, DispatchError::MissingDependency { name: "dataspace_engine" }),
+            "got: {err:?}"
+        );
+        match rx.try_recv().unwrap() {
+            FlowExecutionEvent::StepStart { step_type, step_name, .. } => {
                 assert_eq!(step_type, "associate");
+                assert_eq!(step_name, "A↔B");
             }
             e => panic!("expected StepStart, got {e:?}"),
         }
     }
 
     #[tokio::test]
-    async fn run_aggregate_emits_aggregate_slug() {
+    async fn run_aggregate_refuses_without_dataspace_engine() {
+        // §Fase 108.a — an aggregate is a NUMBER; a narrated number is a
+        // fabricated one. No engine ⇒ refusal.
         let (mut ctx, mut rx) = fresh_ctx();
         let node = IRAggregateStep {
             node_type: "aggregate",
@@ -1317,9 +1326,12 @@ mod tests {
             group_by: vec!["region".into()],
             alias: "by_region".into(),
         };
-        run_aggregate(&node, &mut ctx).await.unwrap();
-        let ev = rx.try_recv().unwrap();
-        match ev {
+        let err = run_aggregate(&node, &mut ctx).await.unwrap_err();
+        assert!(
+            matches!(err, DispatchError::MissingDependency { name: "dataspace_engine" }),
+            "got: {err:?}"
+        );
+        match rx.try_recv().unwrap() {
             FlowExecutionEvent::StepStart { step_type, .. } => {
                 assert_eq!(step_type, "aggregate");
             }
@@ -1328,7 +1340,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_explore_emits_explore_slug() {
+    async fn run_explore_refuses_without_dataspace_engine() {
+        // §Fase 108.a — a profile over data never seen is a fabrication.
         let (mut ctx, mut rx) = fresh_ctx();
         let node = IRExploreStep {
             node_type: "explore",
@@ -1337,9 +1350,12 @@ mod tests {
             target: "hypothesis_space".into(),
             limit: Some(5),
         };
-        run_explore(&node, &mut ctx).await.unwrap();
-        let ev = rx.try_recv().unwrap();
-        match ev {
+        let err = run_explore(&node, &mut ctx).await.unwrap_err();
+        assert!(
+            matches!(err, DispatchError::MissingDependency { name: "dataspace_engine" }),
+            "got: {err:?}"
+        );
+        match rx.try_recv().unwrap() {
             FlowExecutionEvent::StepStart { step_type, .. } => {
                 assert_eq!(step_type, "explore");
             }
@@ -1348,7 +1364,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_ingest_emits_ingest_slug() {
+    async fn run_ingest_refuses_without_dataspace_engine() {
+        // §Fase 108.a — the load-bearing refusal: an `ingest` with no
+        // engine port MUST NOT ask the model to pretend it loaded the
+        // data (assertion-laundering; the mint/rotate argument verbatim).
         let (mut ctx, mut rx) = fresh_ctx();
         let node = IRIngestStep {
             node_type: "ingest",
@@ -1357,9 +1376,12 @@ mod tests {
             source: "external_api".into(),
             target: "raw".into(),
         };
-        run_ingest(&node, &mut ctx).await.unwrap();
-        let ev = rx.try_recv().unwrap();
-        match ev {
+        let err = run_ingest(&node, &mut ctx).await.unwrap_err();
+        assert!(
+            matches!(err, DispatchError::MissingDependency { name: "dataspace_engine" }),
+            "got: {err:?}"
+        );
+        match rx.try_recv().unwrap() {
             FlowExecutionEvent::StepStart { step_type, .. } => {
                 assert_eq!(step_type, "ingest");
             }
