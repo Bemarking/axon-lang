@@ -1395,6 +1395,10 @@ Body prose.
             // connection is never held idle across an LLM step (pooler-aware
             // pinning; the resource-lifetime dual of dispatch_vs_cognition).
             (ReferenceKind::Logic, "connections_release_across_cognition"),
+            // §Fase 105 — delivery is assertion egress: a value written into a
+            // system of record carries its epistemic origin, or the author vouched
+            // (the egress-dual of §98 acquisition + the §99 document T916 barrier).
+            (ReferenceKind::Logic, "delivery_is_assertion_egress"),
             (ReferenceKind::Compliance, "hipaa"),
             (ReferenceKind::Compliance, "gdpr"),
             (ReferenceKind::Compliance, "pci_dss"),
@@ -1441,7 +1445,8 @@ Body prose.
             // §Fase 94: 14 → 15 with `rotation_without_revelation`.
             // §Fase 95: 15 → 16 with `selection_without_revelation`.
             // §Fase 96: 16 → 17 with `connections_release_across_cognition`.
-            17,
+            // §Fase 105: 17 → 18 with `delivery_is_assertion_egress`.
+            18,
             "logic family count drift"
         );
         assert_eq!(

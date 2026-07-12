@@ -53,6 +53,8 @@ const EXPECTED: &[(&str, ExampleTopic)] = &[
     // §Fase 95 — parametric secret injection: one tool, N sub-tenants
     // (`secret_partition:`; `selection_without_revelation`).
     ("secret_partition_multitenant", ExampleTopic::Data),
+    // §Fase 105 — governed CRM delivery (acquire→enrich→deliver, provenance intact).
+    ("governed_crm_delivery", ExampleTopic::Data),
     // Agents (2)
     ("agent_react", ExampleTopic::Agents),
     ("reflex_to_immune", ExampleTopic::Agents),
