@@ -98,19 +98,30 @@ nested one level deep is not a proof.
 - **CORS is not automatic.** The RFC does not safelist QUERY: a browser
   preflights it, so an adopter must list it in `cors { allow_methods: [QUERY] }`.
 
-## The honest perimeter (we claim this, and only this)
+## The perimeter of the proof (explicit by construction)
 
-axon proves a QUERY flow performs **no declared write**. It **cannot** prove an
-arbitrary external `tool` is read-only — a `tool { provider: http }` may POST to
-a vendor, and an effect row of `network` does not distinguish a read from a
-write. Refusing every network-touching tool would make QUERY useless (a
-read-only vendor lookup is a legitimate, common part of a query), so the law
-stops at axon's declared surface. That boundary is the adopter's honesty — the
-same perimeter §94/§95 draw for secrets.
+Static verification applies to axon code — and axon requires every reach beyond
+itself to be **declared**. The proof therefore has a boundary, and that boundary
+is *visible in the source*: the edge of the guarantee is itself explicit.
 
-**What it still buys, and it is a lot:** every write axon *can* see is refused,
-at compile time, and re-proven at deploy — where every other stack offers
-nothing at all.
+**Inside it:** every write axon can see is refused at compile time and re-proven
+at deploy — where every other stack offers nothing at all.
+
+**At the edge:** an external `tool` is a declared *assumption*, not a verified
+fact. A `tool { provider: http }` may POST to a vendor, and an effect row of
+`network` does not distinguish a read from a write. axon does not execute the
+vendor, so it cannot discharge the vendor's contract — modelling that contract
+*records* the assumption, it does not *prove* it. (Claiming otherwise would be
+the exact failure this law exists to prevent: a safety guarantee nobody checks.)
+Refusing every network-touching tool would make QUERY useless — a read-only
+vendor lookup is a legitimate, common part of a query — so the law stops at
+axon's declared surface.
+
+That is not a gap the adopter has to go find. It is a line axon draws *for* them:
+every reach outside the proof is named in the program. Elsewhere the boundary is
+not merely weaker — it is **unlocatable**. This is the same perimeter §94/§95
+draw for secrets, and stating it plainly is what makes the part we *do* prove
+worth believing.
 
 ## See also
 
