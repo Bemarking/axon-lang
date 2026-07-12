@@ -407,7 +407,19 @@ const VALID_STORE_ISOLATION: &[&str] = &["read_committed", "repeatable_read", "s
 
 const VALID_STORE_ON_BREACH: &[&str] = &["log", "raise", "rollback"];
 
-const VALID_ENDPOINT_METHODS: &[&str] = &["DELETE", "GET", "PATCH", "POST", "PUT"];
+/// §Fase 107.a — the closed `axonendpoint.method:` catalog. `QUERY` (RFC 10008,
+/// Proposed Standard, June 2026) is the safe + idempotent + cacheable method that
+/// CARRIES A REQUEST BODY — the first new HTTP method in two decades, closing the
+/// "GET has no body / POST is not safe" gap for complex reads. The `cors`
+/// `allow_methods:` catalog reuses this list (axon-T855), so declaring QUERY on an
+/// endpoint makes it CORS-declarable too (the RFC does NOT safelist QUERY — a
+/// browser preflights it, so an adopter MUST list it).
+///
+/// **QUERY carries a LAW, not just a route (`axon-T927`).** RFC 10008 §2 says a
+/// QUERY request MUST be processed "in a safe and idempotent manner". Everywhere
+/// else that is a convention the author may silently violate; here it is a
+/// compile-time proof — see [`TypeChecker::first_declared_write`].
+const VALID_ENDPOINT_METHODS: &[&str] = &["DELETE", "GET", "PATCH", "POST", "PUT", "QUERY"];
 
 const VALID_INFERENCE_MODES: &[&str] = &["active", "passive"];
 
@@ -8051,6 +8063,119 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// §Fase 107.a (`axon-T927`) — the DECLARED WRITE surface of a flow body, the
+    /// signal the QUERY-safety law decides on (D107.1, founder-ratified). Returns
+    /// the FIRST write verb reached, with its source location, so the diagnostic can
+    /// point at the exact offending step.
+    ///
+    /// The set is axon's declared state-change vocabulary: store writes
+    /// (`persist` / `mutate` / `purge`), channel egress (`emit` / `publish`),
+    /// secret + credential state (`rotate` / `mint`), and a `transact` boundary (a
+    /// transaction has no business inside a safe method). The walk RECURSES into
+    /// every nested body — `if` / `for` / `par` branches / `warden` — because a
+    /// safety proof that misses a write nested one level deep is not a proof.
+    ///
+    /// It deliberately does NOT flag a `tool` for declaring `network` / `io`: a
+    /// read-only vendor lookup is legitimate (and common) inside a query, and
+    /// refusing it would make QUERY useless. That boundary is the honest perimeter
+    /// (§107 §7) — axon proves what it declares, and says so plainly.
+    fn first_declared_write(&self, steps: &[FlowStep]) -> Option<(&'static str, Loc)> {
+        for step in steps {
+            let hit: Option<(&'static str, Loc)> = match step {
+                FlowStep::Persist(s) => Some(("persist", s.loc.clone())),
+                FlowStep::Mutate(s) => Some(("mutate", s.loc.clone())),
+                FlowStep::Purge(s) => Some(("purge", s.loc.clone())),
+                FlowStep::Emit(s) => Some(("emit", s.loc.clone())),
+                FlowStep::Publish(s) => Some(("publish", s.loc.clone())),
+                FlowStep::Rotate(s) => Some(("rotate", s.loc.clone())),
+                FlowStep::Mint(s) => Some(("mint", s.loc.clone())),
+                FlowStep::Transact(s) => Some(("transact", s.loc.clone())),
+                // Recurse into every nested body — a nested write is still a write.
+                FlowStep::If(c) => self
+                    .first_declared_write(&c.then_body)
+                    .or_else(|| self.first_declared_write(&c.else_body)),
+                FlowStep::ForIn(f) => self.first_declared_write(&f.body),
+                FlowStep::Par(p) => p
+                    .branches
+                    .iter()
+                    .find_map(|b| self.first_declared_write(b)),
+                FlowStep::Warden(w) => self.first_declared_write(&w.body),
+                _ => None,
+            };
+            if hit.is_some() {
+                return hit;
+            }
+        }
+        None
+    }
+
+    /// §Fase 107.a (`axon-T927`) — **the QUERY-safety law.** RFC 10008 §2: a QUERY
+    /// request MUST be processed "in a safe and idempotent manner" — it does not
+    /// change state. Caches, proxies and clients are ENTITLED to act on that (they
+    /// may retry and cache freely), so a QUERY that writes is not a style problem:
+    /// it is a correctness + security bug. In every other stack the MUST is a
+    /// convention nobody enforces. axon has an effect system, so here it is a
+    /// PROOF: an `axonendpoint` with `method: QUERY` whose bound flow reaches a
+    /// declared write is REFUSED AT COMPILE TIME.
+    ///
+    /// Two write sources are checked (both ratified in D107.1):
+    /// 1. the flow's own body ([`first_declared_write`]);
+    /// 2. the program declaring a `deliver` (§105) or `document` (§106) — those
+    ///    egress declarations FIRE POST-RUN for any flow the deployed executor runs
+    ///    (D105.7-B), so a QUERY endpoint in such a program would write a CRM row /
+    ///    persist an artifact. Coarse but SOUND under the current firing semantics.
+    fn check_query_is_safe(&mut self, node: &AxonEndpointDefinition) {
+        if !node.method.eq_ignore_ascii_case("QUERY") || node.execute_flow.is_empty() {
+            return;
+        }
+        // 1. A declared write anywhere in the bound flow's body.
+        let flow_body: Option<&Vec<FlowStep>> = self.program.declarations.iter().find_map(|d| {
+            match d {
+                Declaration::Flow(f) if f.name == node.execute_flow => Some(&f.body),
+                _ => None,
+            }
+        });
+        if let Some(body) = flow_body {
+            if let Some((verb, loc)) = self.first_declared_write(body) {
+                self.emit(
+                    format!(
+                        "axon-T927 axonendpoint '{}' declares `method: QUERY`, but its flow '{}' \
+                         performs a declared write (`{}`). RFC 10008 §2: a QUERY MUST be processed \
+                         in a SAFE and IDEMPOTENT manner — caches, proxies and clients are entitled \
+                         to retry and cache it freely, so a QUERY that changes state is a \
+                         correctness + security bug, not a style choice. Use `method: POST` for a \
+                         state-changing operation, or remove the `{}` from this flow.",
+                        node.name, node.execute_flow, verb, verb
+                    ),
+                    &loc,
+                );
+                return;
+            }
+        }
+        // 2. A program-level egress declaration fires post-run for ANY flow the
+        //    deployed executor runs (§105 deliver / §106 document, D105.7-B) — so a
+        //    QUERY endpoint here would write a CRM row / persist an artifact.
+        let egress: Option<(&'static str, String)> =
+            self.program.declarations.iter().find_map(|d| match d {
+                Declaration::Deliver(x) => Some(("deliver", x.name.clone())),
+                Declaration::Document(x) => Some(("document", x.name.clone())),
+                _ => None,
+            });
+        if let Some((kind, decl_name)) = egress {
+            self.emit(
+                format!(
+                    "axon-T927 axonendpoint '{}' declares `method: QUERY`, but this program \
+                     declares a `{} {}` — an egress declaration FIRES for every flow the executor \
+                     runs (it writes a CRM row / persists an artifact), so this endpoint could not \
+                     be safe. RFC 10008 §2 requires a QUERY to change no state. Use `method: POST`, \
+                     or move the `{}` into a program whose endpoints are not QUERY.",
+                    node.name, kind, decl_name, kind
+                ),
+                &node.loc,
+            );
+        }
+    }
+
     fn check_axonendpoint(&mut self, node: &AxonEndpointDefinition) {
         // HTTP method enum
         if !node.method.is_empty() {
@@ -8067,6 +8192,10 @@ impl<'a> TypeChecker<'a> {
                 );
             }
         }
+
+        // §Fase 107.a — the QUERY-safety law (axon-T927): RFC 10008's normative
+        // "safe and idempotent" MUST, made a compile-time proof.
+        self.check_query_is_safe(node);
 
         // §Fase 36.d (D2) — declared execution backend, closed catalog.
         // The parser already rejects an unknown backend with a smart-

@@ -24,7 +24,7 @@ use super::proof_term::{
     ParkedResidualSoundnessWitness, ProofTerm, PropertyClass,
     CacheSoundnessWitness, ForgeSoundnessWitness, ResourceBoundsWitness, SavantSoundnessWitness,
     DocumentIngestionSoundnessWitness, DocumentProvenanceSoundnessWitness,
-    DeliveryProvenanceSoundnessWitness,
+    DeliveryProvenanceSoundnessWitness, QuerySafetySoundnessWitness,
     InferredCeilingSoundnessWitness,
     ScrapeProvenanceSoundnessWitness, WardenSoundnessWitness,
     ShieldHaltGuaranteeWitness, TechnicianCommandSafetyWitness, ToolCallSoundnessWitness,
@@ -2831,6 +2831,97 @@ pub fn generate_delivery_provenance_soundness_proofs(
     }
 }
 
+// ── §Fase 107 — QuerySafetySoundness ─────────────────────────────────────────
+
+/// §107 — the DECLARED WRITE reached by an IR flow body, at ANY nesting depth.
+/// Mirror of the frontend `type_checker::first_declared_write` (D107.1) — MUST stay
+/// in lockstep, since the PCC class re-derives the same law. Returns the verb name.
+fn first_declared_write_ir(steps: &[crate::ir_nodes::IRFlowNode]) -> Option<&'static str> {
+    use crate::ir_nodes::IRFlowNode as N;
+    for s in steps {
+        let hit = match s {
+            N::Persist(_) => Some("persist"),
+            N::Mutate(_) => Some("mutate"),
+            N::Purge(_) => Some("purge"),
+            N::Emit(_) => Some("emit"),
+            N::Publish(_) => Some("publish"),
+            N::Rotate(_) => Some("rotate"),
+            N::Mint(_) => Some("mint"),
+            N::Transact(_) => Some("transact"),
+            // Recurse — a nested write is still a write (an unsound proof is no proof).
+            N::Conditional(c) => first_declared_write_ir(&c.then_body)
+                .or_else(|| first_declared_write_ir(&c.else_body)),
+            N::ForIn(f) => first_declared_write_ir(&f.body),
+            N::Par(p) => p.branches.iter().find_map(|b| first_declared_write_ir(b)),
+            N::Warden(w) => first_declared_write_ir(&w.body),
+            _ => None,
+        };
+        if hit.is_some() {
+            return hit;
+        }
+    }
+    None
+}
+
+/// §107 — re-derive the whole-program QUERY-safety witness. "No contract → no
+/// proof": a program with no `method: QUERY` endpoint → `None`.
+pub fn derive_query_safety_soundness_witness(
+    ir: &IRProgram,
+) -> Option<QuerySafetySoundnessWitness> {
+    let queries: Vec<&crate::ir_nodes::IRAxonEndpoint> = ir
+        .endpoints
+        .iter()
+        .filter(|e| e.method.eq_ignore_ascii_case("QUERY"))
+        .collect();
+    if queries.is_empty() {
+        return None;
+    }
+    let query_endpoints: Vec<(String, String)> = queries
+        .iter()
+        .map(|e| (e.name.clone(), e.execute_flow.clone()))
+        .collect();
+
+    let mut unsafe_queries = Vec::new();
+    for e in &queries {
+        if let Some(flow) = ir.flows.iter().find(|f| f.name == e.execute_flow) {
+            if let Some(verb) = first_declared_write_ir(&flow.steps) {
+                unsafe_queries.push(format!("{}:{}", e.name, verb));
+            }
+        }
+    }
+
+    // A program-level egress declaration fires for EVERY flow the executor runs
+    // (D105.7-B), so no QUERY endpoint here could be safe.
+    let mut egress_declarations: Vec<String> = ir
+        .deliveries
+        .iter()
+        .map(|d| format!("deliver:{}", d.name))
+        .collect();
+    egress_declarations.extend(ir.documents.iter().map(|d| format!("document:{}", d.name)));
+
+    Some(QuerySafetySoundnessWitness {
+        query_endpoints,
+        unsafe_queries,
+        egress_declarations,
+    })
+}
+
+/// §107 — generate the (at most one) QuerySafetySoundness proof for `ir`.
+pub fn generate_query_safety_soundness_proofs(
+    ir: &IRProgram,
+    axon_version: &str,
+) -> Vec<ProofTerm> {
+    match derive_query_safety_soundness_witness(ir) {
+        Some(witness) => vec![ProofTerm {
+            property: PropertyClass::QuerySafetySoundness,
+            artifact_digest: artifact_digest(ir),
+            witness: Witness::QuerySafetySoundness(witness),
+            axon_version: axon_version.to_string(),
+        }],
+        None => Vec::new(),
+    }
+}
+
 // ── §Fase 100.e — DocumentIngestionSoundness ─────────────────────────────────
 
 /// §100.e — re-derive the whole-program document-ingestion witness from
@@ -3283,6 +3374,7 @@ pub fn generate_all_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm>
     proofs.extend(generate_scrape_provenance_soundness_proofs(ir, axon_version));
     proofs.extend(generate_document_provenance_soundness_proofs(ir, axon_version));
     proofs.extend(generate_delivery_provenance_soundness_proofs(ir, axon_version));
+    proofs.extend(generate_query_safety_soundness_proofs(ir, axon_version));
     proofs.extend(generate_document_ingestion_soundness_proofs(ir, axon_version));
     proofs.extend(generate_inferred_ceiling_soundness_proofs(ir, axon_version));
     proofs.extend(generate_forge_soundness_proofs(ir, axon_version));

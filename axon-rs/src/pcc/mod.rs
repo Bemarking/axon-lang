@@ -75,6 +75,8 @@ pub use generate::{
     derive_document_provenance_soundness_witness, generate_document_provenance_soundness_proofs,
     // §Fase 105 — the CRM-delivery provenance obligation (T920 egress barrier).
     derive_delivery_provenance_soundness_witness, generate_delivery_provenance_soundness_proofs,
+    // §Fase 107 — the QUERY-safety obligation (T927; RFC 10008 §2 made a proof).
+    derive_query_safety_soundness_witness, generate_query_safety_soundness_proofs,
     derive_document_ingestion_soundness_witness, generate_document_ingestion_soundness_proofs,
     derive_inferred_ceiling_soundness_witness, generate_inferred_ceiling_soundness_proofs,
 };
@@ -91,6 +93,7 @@ pub use proof_term::{
     ScrapeProvenanceSoundnessWitness,
     DocumentProvenanceSoundnessWitness,
     DeliveryProvenanceSoundnessWitness,
+    QuerySafetySoundnessWitness,
     DocumentIngestionSoundnessWitness,
     InferredCeilingSoundnessWitness,
     SecretCustodySoundnessWitness,
@@ -3302,6 +3305,71 @@ mod tests {
         match check_proof(&proofs[0], &ir) {
             CheckOutcome::Refuted { reason } => assert!(reason.contains("T920"), "{reason}"),
             other => panic!("expected Refuted (provenance-stripping barrier), got {other:?}"),
+        }
+    }
+
+    // ── §Fase 107 — QuerySafetySoundness (RFC 10008 §2, made a proof) ────
+
+    const QUERY_PROGRAM: &str = concat!(
+        "axonstore mem { backend: in_memory }\n",
+        "flow Search() -> Unit {\n",
+        "  retrieve mem { where: \"kind = 'lead'\" as: hits }\n",
+        "}\n",
+        "axonendpoint E { method: QUERY path: \"/search\" execute: Search backend: stub }\n",
+    );
+
+    #[test]
+    fn query_safety_round_trips_and_verifies() {
+        let ir = ir_from_source(QUERY_PROGRAM);
+        let proofs = super::generate::generate_query_safety_soundness_proofs(&ir, "test");
+        assert_eq!(proofs.len(), 1, "one whole-program QUERY-safety proof");
+        assert_eq!(proofs[0].property, PropertyClass::QuerySafetySoundness);
+        if let Witness::QuerySafetySoundness(ref w) = proofs[0].witness {
+            assert_eq!(w.query_endpoints.len(), 1);
+            assert!(w.unsafe_queries.is_empty(), "a read-only QUERY is safe");
+            assert!(w.egress_declarations.is_empty());
+        } else {
+            panic!("expected a QuerySafetySoundness witness");
+        }
+        assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
+    }
+
+    #[test]
+    fn query_less_program_carries_no_proof() {
+        let ir = ir_from_source("flow Chat() -> Unit { step S { ask: \"hi\" } }\n");
+        assert!(
+            super::generate::generate_query_safety_soundness_proofs(&ir, "test").is_empty(),
+            "no QUERY endpoint → no proof"
+        );
+    }
+
+    #[test]
+    fn query_safety_refutes_a_write_smuggled_into_a_safe_method() {
+        // Tamper the stored IR: append a `persist` to the QUERY's flow — the exact
+        // attack the class exists to stop (a write hiding behind a method that
+        // caches and proxies are entitled to retry).
+        let mut ir = ir_from_source(QUERY_PROGRAM);
+        let persist = ir_from_source(
+            "axonstore mem { backend: in_memory }\n\
+             flow W() -> Unit { persist into mem { kind: \"x\" content: \"y\" } }\n",
+        )
+        .flows
+        .iter()
+        .find(|f| f.name == "W")
+        .expect("W")
+        .steps
+        .first()
+        .expect("the persist node")
+        .clone();
+        for f in ir.flows.iter_mut() {
+            if f.name == "Search" {
+                f.steps.push(persist.clone());
+            }
+        }
+        let proofs = super::generate::generate_query_safety_soundness_proofs(&ir, "test");
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => assert!(reason.contains("T927"), "{reason}"),
+            other => panic!("expected Refuted (QUERY-safety), got {other:?}"),
         }
     }
 

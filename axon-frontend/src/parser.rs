@@ -609,7 +609,16 @@ pub const AXONENDPOINT_KEEPALIVE_VALUES: &[&str] = &["5s", "15s", "30s", "60s"];
 /// runtime-managed (CORS preflight, etc.) and never declared from
 /// source. Closed enum refuses interpretation drift; smart-suggest
 /// catches near-misses at parse time.
-pub const AXONENDPOINT_METHOD_VALUES: &[&str] = &["GET", "POST", "PUT", "DELETE", "PATCH"];
+///
+/// §Fase 107.a — `QUERY` (RFC 10008, Proposed Standard, June 2026): the safe +
+/// idempotent + cacheable method that CARRIES A REQUEST BODY — the first new HTTP
+/// method in two decades. It carries a LAW, not just a route: `axon-T927` refuses
+/// at compile time a QUERY endpoint whose flow performs a declared write (the
+/// RFC's normative "safe and idempotent" MUST, made a proof).
+///
+/// Must stay in lockstep with `type_checker::VALID_ENDPOINT_METHODS`.
+pub const AXONENDPOINT_METHOD_VALUES: &[&str] =
+    &["GET", "POST", "PUT", "DELETE", "PATCH", "QUERY"];
 
 /// §Fase 36.d (D2) — Closed catalog for the `axonendpoint backend:`
 /// declaration. The set is `CANONICAL_PROVIDERS ∪ {auto, stub}`:

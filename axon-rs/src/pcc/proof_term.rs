@@ -367,6 +367,16 @@ pub enum PropertyClass {
     /// launder a vendor guess into the CRM as a bare fact is refuted BEFORE
     /// deploy. Program-wide, 0-or-1 proof; no `deliver` → no proof.
     DeliveryProvenanceSoundness,
+    /// §107 — for a program declaring any `method: QUERY` axonendpoint, re-derives
+    /// the RFC 10008 §2 safety guarantee the type-checker proved (`axon-T927`): the
+    /// endpoint's flow reaches NO declared write (`persist`/`mutate`/`purge`/`emit`/
+    /// `publish`/`rotate`/`mint`/`transact`, at any nesting depth), and the program
+    /// declares no `deliver`/`document` egress (those fire for every flow). A QUERY
+    /// is SAFE + IDEMPOTENT + CACHEABLE — caches, proxies and clients are entitled
+    /// to retry and cache it, so a stored/hand-edited IR that smuggles a write
+    /// behind a safe method is REFUTED BEFORE DEPLOY. Program-wide, 0-or-1 proof;
+    /// no QUERY endpoint → no proof.
+    QuerySafetySoundness,
     /// §100.e — for a program declaring any ingesting tool (`ingest:*`), re-
     /// derives the §100.d ingestion invariants: no tool producing
     /// `ingest:inferred` also declares `epistemic:know` (T1001, the Inferred
@@ -440,6 +450,7 @@ impl PropertyClass {
             PropertyClass::ScrapeProvenanceSoundness => "scrape_provenance_soundness",
             PropertyClass::DocumentProvenanceSoundness => "document_provenance_soundness",
             PropertyClass::DeliveryProvenanceSoundness => "delivery_provenance_soundness",
+            PropertyClass::QuerySafetySoundness => "query_safety_soundness",
             PropertyClass::DocumentIngestionSoundness => "document_ingestion_soundness",
             PropertyClass::InferredCeilingSoundness => "inferred_ceiling_soundness",
         }
@@ -1259,6 +1270,25 @@ pub struct DeliveryProvenanceSoundnessWitness {
     pub laundered_deliveries: Vec<String>,
 }
 
+/// §107 — witness for [`PropertyClass::QuerySafetySoundness`], one per program.
+/// The checker RE-DERIVES every field from `ir.endpoints` + `ir.flows` +
+/// `ir.deliveries`/`ir.documents` and rejects on disagreement. A verifying proof
+/// has both violation lists empty.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuerySafetySoundnessWitness {
+    /// `(endpoint, flow)` for every `method: QUERY` endpoint, source order.
+    pub query_endpoints: Vec<(String, String)>,
+    /// `"<endpoint>:<verb>"` for every QUERY endpoint whose flow reaches a declared
+    /// write at ANY nesting depth (`axon-T927`, re-derived). RFC 10008 §2 requires
+    /// a QUERY to change no state; a hand-edited IR that smuggles a write behind a
+    /// safe method is refuted here. Empty for a verifying proof.
+    pub unsafe_queries: Vec<String>,
+    /// `"deliver:<name>"` / `"document:<name>"` — program-level egress declarations,
+    /// which FIRE for every flow the executor runs (D105.7-B), so no QUERY endpoint
+    /// in this program could be safe. Empty for a verifying proof.
+    pub egress_declarations: Vec<String>,
+}
+
 /// §100.e — witness for [`PropertyClass::DocumentIngestionSoundness`], one per
 /// program. The checker RE-DERIVES every field from `ir.tools` + `ir.flows` and
 /// rejects on disagreement. A verifying proof has every violation list empty.
@@ -1331,6 +1361,7 @@ pub enum Witness {
     ScrapeProvenanceSoundness(ScrapeProvenanceSoundnessWitness),
     DocumentProvenanceSoundness(DocumentProvenanceSoundnessWitness),
     DeliveryProvenanceSoundness(DeliveryProvenanceSoundnessWitness),
+    QuerySafetySoundness(QuerySafetySoundnessWitness),
     DocumentIngestionSoundness(DocumentIngestionSoundnessWitness),
     InferredCeilingSoundness(InferredCeilingSoundnessWitness),
 }
@@ -1382,6 +1413,7 @@ impl Witness {
             Witness::ScrapeProvenanceSoundness(_) => "<program>",
             Witness::DocumentProvenanceSoundness(_) => "<program>",
             Witness::DeliveryProvenanceSoundness(_) => "<program>",
+            Witness::QuerySafetySoundness(_) => "<program>",
             Witness::DocumentIngestionSoundness(_) => "<program>",
             // §101.b — program-wide property, no single named subject.
             Witness::InferredCeilingSoundness(_) => "<program>",

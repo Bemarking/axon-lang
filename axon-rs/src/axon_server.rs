@@ -20330,7 +20330,17 @@ mod dynamic_route_wire_truth_table {
 /// Closed method enum per D3. Adopter-declarable methods only;
 /// HEAD/OPTIONS/CONNECT/TRACE are runtime-managed (CORS preflight,
 /// etc.) and never registered from source.
-pub const AXONENDPOINT_METHODS: &[&str] = &["GET", "POST", "PUT", "DELETE", "PATCH"];
+/// §Fase 107.b — the runtime's closed `axonendpoint.method:` catalog. `QUERY`
+/// (RFC 10008, Proposed Standard, June 2026) is the safe + idempotent + cacheable
+/// method that CARRIES A REQUEST BODY. The dynamic-route handler is mounted as an
+/// axum `.fallback(...)`, so a QUERY request already reaches it — registration is
+/// all that was missing. Must stay in lockstep with the frontend's
+/// `VALID_ENDPOINT_METHODS` / `AXONENDPOINT_METHOD_VALUES`.
+///
+/// The safety of a QUERY route is not a runtime hope: `axon-T927` refused it at
+/// compile time if its flow wrote, and the PCC `QuerySafetySoundness` class
+/// re-derives that at deploy.
+pub const AXONENDPOINT_METHODS: &[&str] = &["GET", "POST", "PUT", "DELETE", "PATCH", "QUERY"];
 
 /// Metadata stored per registered dynamic route. Populated at deploy
 /// time from `AxonEndpointDefinition`; consulted at request time by

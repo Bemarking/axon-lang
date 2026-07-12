@@ -162,6 +162,9 @@ pub fn check_proof(proof: &ProofTerm, ir: &IRProgram) -> CheckOutcome {
         (PropertyClass::DeliveryProvenanceSoundness, Witness::DeliveryProvenanceSoundness(w)) => {
             check_delivery_provenance_soundness(w, ir)
         }
+        (PropertyClass::QuerySafetySoundness, Witness::QuerySafetySoundness(w)) => {
+            check_query_safety_soundness(w, ir)
+        }
         (PropertyClass::DocumentIngestionSoundness, Witness::DocumentIngestionSoundness(w)) => {
             check_document_ingestion_soundness(w, ir)
         }
@@ -1803,6 +1806,53 @@ fn check_delivery_provenance_soundness(
                 "axon-T920 provenance-stripping barrier: `provenance: cleared` delivery(ies) \
                  laundering an unshielded flow value into a CRM: {:?}",
                 actual.laundered_deliveries
+            ),
+        };
+    }
+    CheckOutcome::Verified
+}
+
+/// §107 — verify a [`QuerySafetySoundnessWitness`]. The checker independently
+/// RE-DERIVES the whole-program QUERY safety from `ir.endpoints` + `ir.flows` +
+/// the egress declarations, and rejects on ANY of: a forged/stale witness, a QUERY
+/// endpoint whose flow reaches a declared write (`axon-T927` — RFC 10008 §2 says a
+/// QUERY MUST change no state; caches and proxies are entitled to retry it), or a
+/// program-level `deliver`/`document` egress (which fires for every flow).
+fn check_query_safety_soundness(
+    claimed: &super::proof_term::QuerySafetySoundnessWitness,
+    ir: &IRProgram,
+) -> CheckOutcome {
+    let actual = match super::generate::derive_query_safety_soundness_witness(ir) {
+        Some(w) => w,
+        None => {
+            return CheckOutcome::Refuted {
+                reason: "no QUERY endpoint exists in this artifact — forged or stale proof"
+                    .to_string(),
+            }
+        }
+    };
+    if actual != *claimed {
+        return CheckOutcome::Refuted {
+            reason: "witness disagrees with artifact re-derivation (forged or stale proof)"
+                .to_string(),
+        };
+    }
+    if !actual.unsafe_queries.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axon-T927 QUERY-safety: endpoint(s) declare `method: QUERY` but their flow \
+                 performs a declared write (RFC 10008 §2 — a QUERY MUST be safe and idempotent; \
+                 caches, proxies and clients may retry it freely): {:?}",
+                actual.unsafe_queries
+            ),
+        };
+    }
+    if !actual.egress_declarations.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axon-T927 QUERY-safety: this program declares an egress that fires for every \
+                 flow, so no QUERY endpoint here can be safe: {:?}",
+                actual.egress_declarations
             ),
         };
     }
