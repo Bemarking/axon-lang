@@ -697,6 +697,14 @@ impl DataspaceStore {
         &self.batches
     }
 
+    /// §108.x — drop ALL ingested batches (whole-dataspace granularity,
+    /// D108.2); the declaration + schema persist. Returns the count.
+    pub fn clear_batches(&mut self) -> usize {
+        let n = self.batches.len();
+        self.batches.clear();
+        n
+    }
+
     pub fn row_count(&self) -> usize {
         self.batches.iter().map(|b| b.n).sum()
     }
@@ -802,6 +810,196 @@ impl DataspaceEngine {
 
     pub fn is_empty(&self) -> bool {
         self.stores.is_empty()
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+//  Wire format — durable batch snapshots (§108.x, D108.8)
+// ─────────────────────────────────────────────────────────────────────
+//
+// A batch is IMMUTABLE, so persistence is trivially incremental: a
+// batch, once written, never changes. The wire form is deliberately
+// dumb JSON (deterministic, diffable, no format-versioning games in
+// v1); the DESERIALIZATION path re-runs every §5.1 invariant through
+// [`ColumnArray::validated`] — the single choke point — so a tampered
+// or truncated snapshot is REFUSED, never half-loaded.
+
+/// One column's buffers on the wire. Bytes are base64 (JSON-safe).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct WireColumn {
+    pub column_type: String,
+    pub validity_b64: String,
+    /// Fixed-width payloads (Int/Float/Timestamp as little-endian 8-byte
+    /// lanes; Bool bit-packed) OR the raw byte buffer (Text/Json).
+    pub data_b64: String,
+    /// Present only for variable-width columns (Text/Json).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offsets: Option<Vec<u64>>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct WireBatch {
+    pub n: usize,
+    pub columns: Vec<WireColumn>,
+    pub source: String,
+    pub source_sha256: String,
+    pub ingested_at: String,
+    /// `untrusted` | `schema_validated` | `elevated`.
+    pub taint: String,
+}
+
+fn b64_encode(bytes: &[u8]) -> String {
+    // First-party base64 (standard alphabet, padded) — 20 lines beat a
+    // dependency for a cold path.
+    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let v = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
+        out.push(A[(v >> 18) as usize & 63] as char);
+        out.push(A[(v >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 { A[(v >> 6) as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 2 { A[v as usize & 63] as char } else { '=' });
+    }
+    out
+}
+
+fn b64_decode(s: &str) -> Result<Vec<u8>, String> {
+    fn val(c: u8) -> Result<u32, String> {
+        match c {
+            b'A'..=b'Z' => Ok((c - b'A') as u32),
+            b'a'..=b'z' => Ok((c - b'a') as u32 + 26),
+            b'0'..=b'9' => Ok((c - b'0') as u32 + 52),
+            b'+' => Ok(62),
+            b'/' => Ok(63),
+            _ => Err(format!("invalid base64 byte 0x{c:02x}")),
+        }
+    }
+    let s = s.trim_end_matches('=').as_bytes();
+    let mut out = Vec::with_capacity(s.len() * 3 / 4);
+    for chunk in s.chunks(4) {
+        let mut v: u32 = 0;
+        for (i, &c) in chunk.iter().enumerate() {
+            v |= val(c)? << (18 - 6 * i);
+        }
+        out.push((v >> 16) as u8);
+        if chunk.len() > 2 {
+            out.push((v >> 8) as u8);
+        }
+        if chunk.len() > 3 {
+            out.push(v as u8);
+        }
+    }
+    Ok(out)
+}
+
+impl RecordBatch {
+    /// Serialize for durable snapshotting (§108.x). Loss-free: the wire
+    /// form carries the exact buffers + the provenance stamp.
+    pub fn to_wire(&self) -> WireBatch {
+        let columns = self
+            .columns
+            .iter()
+            .map(|c| {
+                let (data, offsets) = match &c.data {
+                    ColumnData::Int(v) | ColumnData::Timestamp(v) => (
+                        v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>(),
+                        None,
+                    ),
+                    ColumnData::Float(v) => (
+                        v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>(),
+                        None,
+                    ),
+                    ColumnData::Bool(v) => (v.clone(), None),
+                    ColumnData::Text { offsets, bytes } | ColumnData::Json { offsets, bytes } => {
+                        (bytes.clone(), Some(offsets.clone()))
+                    }
+                };
+                WireColumn {
+                    column_type: c.column_type().canonical_name().to_string(),
+                    validity_b64: b64_encode(&c.validity),
+                    data_b64: b64_encode(&data),
+                    offsets,
+                }
+            })
+            .collect();
+        WireBatch {
+            n: self.n,
+            columns,
+            source: self.provenance.source.clone(),
+            source_sha256: self.provenance.source_sha256.clone(),
+            ingested_at: self.provenance.ingested_at.clone(),
+            taint: taint_str(self.provenance.taint).to_string(),
+        }
+    }
+
+    /// Rebuild from the wire AGAINST the declared schema, re-running
+    /// every §5.1 invariant ([`ColumnArray::validated`]) + the batch
+    /// schema/length checks. A tampered, truncated or schema-drifted
+    /// snapshot is REFUSED whole — never half-loaded.
+    pub fn from_wire(
+        schema: &[(String, ColumnType)],
+        wire: &WireBatch,
+    ) -> Result<RecordBatch, String> {
+        let taint = match wire.taint.as_str() {
+            "untrusted" => EpistemicTaint::Untrusted,
+            "schema_validated" => EpistemicTaint::SchemaValidated,
+            "elevated" => EpistemicTaint::Elevated,
+            other => return Err(format!("unknown taint `{other}` in snapshot")),
+        };
+        let mut columns = Vec::with_capacity(wire.columns.len());
+        for wc in &wire.columns {
+            let ty = ColumnType::from_canonical(&wc.column_type)
+                .ok_or_else(|| format!("unknown column type `{}` in snapshot", wc.column_type))?;
+            let validity = b64_decode(&wc.validity_b64)?;
+            let raw = b64_decode(&wc.data_b64)?;
+            let data = match ty {
+                ColumnType::Int | ColumnType::Timestamp => {
+                    if raw.len() % 8 != 0 {
+                        return Err("snapshot Int/Timestamp buffer not 8-byte aligned".into());
+                    }
+                    let v: Vec<i64> = raw
+                        .chunks_exact(8)
+                        .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+                        .collect();
+                    if ty == ColumnType::Int {
+                        ColumnData::Int(v)
+                    } else {
+                        ColumnData::Timestamp(v)
+                    }
+                }
+                ColumnType::Float => {
+                    if raw.len() % 8 != 0 {
+                        return Err("snapshot Float buffer not 8-byte aligned".into());
+                    }
+                    ColumnData::Float(
+                        raw.chunks_exact(8)
+                            .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
+                            .collect(),
+                    )
+                }
+                ColumnType::Bool => ColumnData::Bool(raw),
+                ColumnType::Text => ColumnData::Text {
+                    offsets: wc.offsets.clone().ok_or("Text column missing offsets")?,
+                    bytes: raw,
+                },
+                ColumnType::Json => ColumnData::Json {
+                    offsets: wc.offsets.clone().ok_or("Json column missing offsets")?,
+                    bytes: raw,
+                },
+            };
+            columns.push(ColumnArray::validated(wire.n, validity, data)?);
+        }
+        RecordBatch::new(
+            schema,
+            columns,
+            BatchProvenance {
+                source: wire.source.clone(),
+                source_sha256: wire.source_sha256.clone(),
+                ingested_at: wire.ingested_at.clone(),
+                taint,
+            },
+        )
     }
 }
 
@@ -2669,6 +2867,60 @@ mod tests {
         assert_eq!(score["max"], 0.9);
         // No row content anywhere in the profile.
         assert!(!out.rows.to_string().contains("a@x.com"), "shape, never content");
+    }
+
+    // ── §108.x — the wire format (durable snapshots, D108.8) ─────────
+
+    #[test]
+    fn wire_roundtrip_is_lossless_across_all_types() {
+        let store = populated_store();
+        let schema = store.schema().to_vec();
+        for batch in store.batches() {
+            let wire = batch.to_wire();
+            // JSON round-trip too (the BlobStore carries JSON bytes).
+            let json = serde_json::to_string(&wire).unwrap();
+            let wire2: WireBatch = serde_json::from_str(&json).unwrap();
+            let back = RecordBatch::from_wire(&schema, &wire2).unwrap();
+            assert_eq!(back.len(), batch.len());
+            for c in 0..schema.len() {
+                for i in 0..batch.len() {
+                    assert_eq!(
+                        cell_at(back.column(c).unwrap(), i),
+                        cell_at(batch.column(c).unwrap(), i),
+                        "cell ({c},{i}) must survive the wire"
+                    );
+                }
+            }
+            assert_eq!(back.provenance().source_sha256, batch.provenance().source_sha256);
+            assert_eq!(back.provenance().taint, batch.provenance().taint);
+        }
+    }
+
+    #[test]
+    fn wire_refuses_a_tampered_or_schema_drifted_snapshot() {
+        let store = populated_store();
+        let schema = store.schema().to_vec();
+        let mut wire = store.batches()[0].to_wire();
+        // Truncated buffer → the §5.1 invariants refuse it whole.
+        wire.columns[1].data_b64 = b64_encode(&[0u8; 4]); // score: 4 bytes ≠ n×8
+        assert!(RecordBatch::from_wire(&schema, &wire).is_err());
+        // Schema drift → refused.
+        let wire = store.batches()[0].to_wire();
+        let wrong = vec![("email".to_string(), ColumnType::Int)];
+        assert!(RecordBatch::from_wire(&wrong, &wire).is_err());
+        // Unknown taint → refused.
+        let mut wire = store.batches()[0].to_wire();
+        wire.taint = "trusted_bro".into();
+        assert!(RecordBatch::from_wire(&schema, &wire).is_err());
+    }
+
+    #[test]
+    fn b64_roundtrips_arbitrary_bytes() {
+        for len in [0usize, 1, 2, 3, 4, 63, 64, 65] {
+            let bytes: Vec<u8> = (0..len).map(|i| (i * 37 % 251) as u8).collect();
+            assert_eq!(b64_decode(&b64_encode(&bytes)).unwrap(), bytes, "len {len}");
+        }
+        assert!(b64_decode("not!valid").is_err());
     }
 
     #[test]

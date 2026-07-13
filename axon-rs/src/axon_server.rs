@@ -4841,446 +4841,310 @@ async fn axonstore_transact_handler(
     })))
 }
 
-// ── Dataspace endpoints — cognitive data navigation (primitive #13) ──────────
+// ── Dataspace endpoints — the deterministic data plane (§108.x, D108.6) ─────
+//
+// Re-founded over the DECLARED engine (`ServerState.dataspace_engine`).
+// Pre-§108.x these handlers ran a free-form in-memory CRUD that no
+// compiled program could reach — two sources of truth for what a
+// dataspace IS. Now: *authority is declared* (§76) — a dataspace exists
+// because a deployed program declares it (axon-T928); this surface is a
+// governed VIEW over those declarations (list / clear / ingest / the
+// relational verbs), never a second creator.
 
-/// POST /v1/dataspace — create a named Dataspace instance.
-/// Body: { "name": "my_space", "ontology": "research_domain" }
+/// POST /v1/dataspace — RETIRED (§108.x, D108.6). A dataspace is a
+/// DECLARATION, not an API object: free-form creation would mint stores
+/// no compile-time law ever checked. The refusal teaches the grammar.
 async fn dataspace_create_handler(
     State(state): State<SharedState>,
     headers: HeaderMap,
-    Json(payload): Json<serde_json::Value>,
+    Json(_payload): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let mut s = state.lock().unwrap();
-    let client = client_key_from_headers(&headers);
     check_auth(&mut s, &headers, AccessLevel::Write)?;
-
-    let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let ontology = payload.get("ontology").and_then(|v| v.as_str()).unwrap_or("general").to_string();
-
-    if name.is_empty() {
-        return Ok(Json(serde_json::json!({"error": "name is required"})));
-    }
-    if s.dataspaces.contains_key(&name) {
-        return Ok(Json(serde_json::json!({"error": format!("dataspace '{}' already exists", name)})));
-    }
-
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-
-    let ds = DataspaceInstance {
-        name: name.clone(),
-        ontology: ontology.clone(),
-        entries: HashMap::new(),
-        associations: Vec::new(),
-        created_at: now,
-        total_ops: 0,
-        next_id: 1,
-    };
-    s.dataspaces.insert(name.clone(), ds);
-
-    s.audit_log.record(&client, AuditAction::ConfigUpdate, "dataspace",
-        serde_json::json!({"action": "create", "dataspace": &name, "ontology": &ontology}), true);
-
     Ok(Json(serde_json::json!({
-        "success": true,
-        "dataspace": name,
-        "ontology": ontology,
-        "created_at": now,
+        "success": false,
+        "error": "free-form dataspace creation is retired (§108, D108.6): a dataspace is \
+                  DECLARED in a program — `dataspace <Name> { column <name>: <Type> … }` — \
+                  and instantiated at deploy, so its schema is a compile-time law \
+                  (axon-T928). Deploy a program that declares it.",
+        "retired": true,
     })))
 }
 
-/// GET /v1/dataspace — list all Dataspace instances.
+/// GET /v1/dataspace — list the DECLARED dataspaces (schema + row/batch
+/// counts + resident bytes + epistemic taint; never row content).
 async fn dataspace_list_handler(
     State(state): State<SharedState>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let s = state.lock().unwrap();
-    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
-
-    let spaces: Vec<serde_json::Value> = s.dataspaces.values().map(|ds| {
-        serde_json::json!({
-            "name": ds.name,
-            "ontology": ds.ontology,
-            "entry_count": ds.entries.len(),
-            "association_count": ds.associations.len(),
-            "total_ops": ds.total_ops,
-            "created_at": ds.created_at,
+    let engine = {
+        let s = state.lock().unwrap();
+        check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+        s.dataspace_engine.clone()
+    };
+    let guard = engine.read().expect("dataspace engine poisoned");
+    let spaces: Vec<serde_json::Value> = guard
+        .store_names()
+        .iter()
+        .filter_map(|n| guard.store(n))
+        .map(|st| {
+            let profile = crate::dataspace_engine::explore_profile(st);
+            profile.rows
         })
-    }).collect();
-
+        .collect();
     Ok(Json(serde_json::json!({
         "dataspaces": spaces,
         "total": spaces.len(),
     })))
 }
 
-/// DELETE /v1/dataspace/{name} — delete a Dataspace and all its entries.
+/// DELETE /v1/dataspace/{name} — CLEAR a declared dataspace's batches.
+/// The declaration (and therefore the store + schema) persists — only
+/// the ingested data is dropped (whole-dataspace granularity, D108.2).
 async fn dataspace_delete_handler(
     State(state): State<SharedState>,
     headers: HeaderMap,
     Path(name): Path<String>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let mut s = state.lock().unwrap();
-    let client = client_key_from_headers(&headers);
-    check_auth(&mut s, &headers, AccessLevel::Admin)?;
-
-    match s.dataspaces.remove(&name) {
-        Some(removed) => {
+    let (engine, client) = {
+        let mut s = state.lock().unwrap();
+        let client = client_key_from_headers(&headers);
+        check_auth(&mut s, &headers, AccessLevel::Admin)?;
+        (s.dataspace_engine.clone(), client)
+    };
+    let cleared = {
+        let mut guard = engine.write().expect("dataspace engine poisoned");
+        match guard.store_mut(&name) {
+            Some(st) => Some(st.clear_batches()),
+            None => None,
+        }
+    };
+    match cleared {
+        Some(batches) => {
+            let mut s = state.lock().unwrap();
             s.audit_log.record(&client, AuditAction::ConfigUpdate, "dataspace",
-                serde_json::json!({"action": "delete", "dataspace": &name,
-                    "entries_removed": removed.entries.len(),
-                    "associations_removed": removed.associations.len()}), true);
+                serde_json::json!({"action": "clear", "dataspace": &name,
+                    "batches_dropped": batches}), true);
             Ok(Json(serde_json::json!({
                 "success": true,
                 "dataspace": name,
-                "entries_removed": removed.entries.len(),
-                "associations_removed": removed.associations.len(),
+                "batches_dropped": batches,
+                "note": "the declaration persists — only ingested data was cleared",
             })))
         }
-        None => Ok(Json(serde_json::json!({"error": format!("dataspace '{}' not found", name)}))),
+        None => Ok(Json(serde_json::json!({
+            "error": format!("'{name}' is not a declared dataspace (declare it in a \
+                              program and deploy)"),
+        }))),
     }
 }
 
-/// POST /v1/dataspace/{name}/ingest — add a data entry to the dataspace.
-/// ΛD: ingest = raw data ingestion → c=1.0, δ=raw.
-/// Body: { "ontology": "observation", "data": <any JSON>, "tags": ["tag1", "tag2"] }
+/// POST /v1/dataspace/{name}/ingest — governed HTTP ingest into a
+/// DECLARED dataspace, through the SAME deterministic loaders the
+/// `ingest` verb uses: declared format, bounds-BEFORE-parse (§100),
+/// typed refusal (D108.7), born-Untrusted provenance (§98).
+/// Body: { "source": "<raw text>", "format": "csv"|"json",
+///         "max_bytes"?: N, "max_rows"?: N }
 async fn dataspace_ingest_handler(
     State(state): State<SharedState>,
     headers: HeaderMap,
     Path(ds_name): Path<String>,
     Json(payload): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let mut s = state.lock().unwrap();
-    let client = client_key_from_headers(&headers);
-    check_auth(&mut s, &headers, AccessLevel::Write)?;
-
-    let ds = match s.dataspaces.get_mut(&ds_name) {
-        Some(d) => d,
-        None => return Ok(Json(serde_json::json!({"error": format!("dataspace '{}' not found", ds_name)}))),
+    let (engine, client) = {
+        let mut s = state.lock().unwrap();
+        let client = client_key_from_headers(&headers);
+        check_auth(&mut s, &headers, AccessLevel::Write)?;
+        (s.dataspace_engine.clone(), client)
     };
-
-    let entry_ontology = payload.get("ontology").and_then(|v| v.as_str())
-        .unwrap_or(&ds.ontology).to_string();
-    let data = payload.get("data").cloned().unwrap_or(serde_json::json!(null));
-    let tags: Vec<String> = payload.get("tags")
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
-        .unwrap_or_default();
-
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-
-    let id = format!("ds_{}_{}", ds_name, ds.next_id);
-    ds.next_id += 1;
-
-    // ΛD: ingest = raw → c=1.0, δ=raw
-    let envelope = EpistemicEnvelope::raw_config(&entry_ontology, &client);
-
-    let entry = DataspaceEntry {
-        id: id.clone(),
-        ontology: entry_ontology,
-        data,
-        envelope,
-        ingested_at: now,
-        tags,
+    let raw = payload.get("source").and_then(|v| v.as_str()).unwrap_or("");
+    let format_str = payload.get("format").and_then(|v| v.as_str()).unwrap_or("");
+    let Some(format) = crate::dataspace_engine::IngestFormat::from_declared(format_str) else {
+        return Ok(Json(serde_json::json!({
+            "error": format!("`format` must be one of the closed loader catalog {{csv, json}}, \
+                              got '{format_str}'"),
+        })));
     };
-
-    ds.entries.insert(id.clone(), entry);
-    ds.total_ops += 1;
-
+    let defaults = crate::dataspace_engine::IngestLimits::default();
+    let limits = crate::dataspace_engine::IngestLimits {
+        max_bytes: payload.get("max_bytes").and_then(|v| v.as_u64()).unwrap_or(defaults.max_bytes),
+        max_rows: payload.get("max_rows").and_then(|v| v.as_u64()).unwrap_or(defaults.max_rows),
+    };
+    let schema = {
+        let guard = engine.read().expect("dataspace engine poisoned");
+        match guard.store(&ds_name) {
+            Some(st) => st.schema().to_vec(),
+            None => {
+                return Ok(Json(serde_json::json!({
+                    "error": format!("'{ds_name}' is not a declared dataspace"),
+                })))
+            }
+        }
+    };
+    let provenance = crate::dataspace_engine::BatchProvenance {
+        source: format!("http:{client}"),
+        source_sha256: {
+            use sha2::{Digest, Sha256};
+            let mut h = Sha256::new();
+            h.update(raw.as_bytes());
+            format!("{:x}", h.finalize())
+        },
+        ingested_at: chrono::Utc::now().to_rfc3339(),
+        taint: crate::emcp::EpistemicTaint::Untrusted,
+    };
+    let batch = match crate::dataspace_engine::ingest_bytes(
+        &schema, format, raw.as_bytes(), &limits, provenance,
+    ) {
+        Ok(b) => b,
+        Err(e) => return Ok(Json(serde_json::json!({"error": format!("ingest refused: {e}")}))),
+    };
+    let rows = batch.len();
+    let sha = batch.provenance().source_sha256.clone();
+    {
+        let mut guard = engine.write().expect("dataspace engine poisoned");
+        let Some(st) = guard.store_mut(&ds_name) else {
+            return Ok(Json(serde_json::json!({"error": "dataspace vanished mid-ingest"})));
+        };
+        if let Err(e) = st.append(batch) {
+            return Ok(Json(serde_json::json!({"error": format!("append refused: {e}")})));
+        }
+    }
+    {
+        let mut s = state.lock().unwrap();
+        s.audit_log.record(&client, AuditAction::ConfigUpdate, "dataspace",
+            serde_json::json!({"action": "ingest", "dataspace": &ds_name,
+                "rows": rows, "source_sha256": &sha, "taint": "untrusted"}), true);
+    }
     Ok(Json(serde_json::json!({
         "success": true,
         "dataspace": ds_name,
-        "entry_id": id,
-        "envelope": { "certainty": 1.0, "derivation": "raw" },
+        "rows": rows,
+        "source_sha256": sha,
+        "taint": "untrusted",
     })))
 }
 
-/// POST /v1/dataspace/{name}/focus — filter entries by predicate.
-/// ΛD: focus = derived computation → c≤0.99, δ=derived (Theorem 5.1).
-/// Body: { "ontology": "observation", "tags": ["tag1"], "limit": 100 }
-/// All filter fields are optional; omitted fields match everything.
+/// Shared JSON shape for the three query handlers below.
+fn query_output_json(out: crate::dataspace_engine::QueryOutput) -> serde_json::Value {
+    serde_json::json!({
+        "rows": out.rows,
+        "taint": crate::dataspace_engine::taint_str(out.taint),
+        "stats": out.stats,
+    })
+}
+
+/// POST /v1/dataspace/{name}/focus — σ∘π over a declared dataspace.
+/// Body: { "where"?: "<the §35 filter grammar>", "select"?: [cols] }
 async fn dataspace_focus_handler(
     State(state): State<SharedState>,
     headers: HeaderMap,
     Path(ds_name): Path<String>,
     Json(payload): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let s = state.lock().unwrap();
-    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
-
-    let ds = match s.dataspaces.get(&ds_name) {
-        Some(d) => d,
-        None => return Ok(Json(serde_json::json!({"error": format!("dataspace '{}' not found", ds_name)}))),
+    let engine = {
+        let s = state.lock().unwrap();
+        check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+        s.dataspace_engine.clone()
     };
-
-    let filter_ontology = payload.get("ontology").and_then(|v| v.as_str());
-    let filter_tags: Option<Vec<String>> = payload.get("tags")
-        .and_then(|v| serde_json::from_value(v.clone()).ok());
-    let limit = payload.get("limit").and_then(|v| v.as_u64()).unwrap_or(100) as usize;
-
-    let results: Vec<serde_json::Value> = ds.entries.values()
-        .filter(|e| {
-            if let Some(ont) = filter_ontology {
-                if e.ontology != ont { return false; }
-            }
-            if let Some(ref tags) = filter_tags {
-                if !tags.iter().all(|t| e.tags.contains(t)) { return false; }
-            }
-            true
-        })
-        .take(limit)
-        .map(|e| {
-            serde_json::json!({
-                "id": e.id,
-                "ontology": e.ontology,
-                "data": e.data,
-                "tags": e.tags,
-                "ingested_at": e.ingested_at,
-                "envelope": {
-                    "certainty": e.envelope.certainty,
-                    "derivation": e.envelope.derivation,
-                    "provenance": e.envelope.provenance,
-                }
-            })
-        })
-        .collect();
-
-    // ΛD: focus result is derived (filtered subset of raw data)
-    Ok(Json(serde_json::json!({
-        "dataspace": ds_name,
-        "matched": results.len(),
-        "total_entries": ds.entries.len(),
-        "results": results,
-        "result_envelope": {
-            "certainty": 0.99,
-            "derivation": "derived",
-            "reason": "Theorem 5.1: focus is a derived computation over raw data"
-        },
-    })))
+    let where_expr = payload.get("where").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let select: Vec<String> = payload.get("select")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+    let guard = engine.read().expect("dataspace engine poisoned");
+    let Some(st) = guard.store(&ds_name) else {
+        return Ok(Json(serde_json::json!({"error": format!("'{ds_name}' is not a declared dataspace")})));
+    };
+    match crate::dataspace_engine::focus_query(st, &where_expr, &select, &Default::default()) {
+        Ok(out) => Ok(Json(query_output_json(out))),
+        Err(e) => Ok(Json(serde_json::json!({"error": format!("focus refused: {e}")}))),
+    }
 }
 
-/// POST /v1/dataspace/{name}/associate — link two entries by named relation.
-/// Body: { "from": "ds_x_1", "to": "ds_x_2", "relation": "supports", "certainty": 0.85 }
+/// POST /v1/dataspace/{name}/associate — hash equi-⋈ against another
+/// declared dataspace. Body: { "right": "<DS>", "using": "<col>" }
 async fn dataspace_associate_handler(
     State(state): State<SharedState>,
     headers: HeaderMap,
     Path(ds_name): Path<String>,
     Json(payload): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let mut s = state.lock().unwrap();
-    let client = client_key_from_headers(&headers);
-    check_auth(&mut s, &headers, AccessLevel::Write)?;
-
-    let ds = match s.dataspaces.get_mut(&ds_name) {
-        Some(d) => d,
-        None => return Ok(Json(serde_json::json!({"error": format!("dataspace '{}' not found", ds_name)}))),
+    let engine = {
+        let s = state.lock().unwrap();
+        check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+        s.dataspace_engine.clone()
     };
-
-    let from = payload.get("from").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let to = payload.get("to").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let relation = payload.get("relation").and_then(|v| v.as_str()).unwrap_or("related").to_string();
-    let certainty = payload.get("certainty").and_then(|v| v.as_f64()).unwrap_or(0.9);
-
-    if from.is_empty() || to.is_empty() {
-        return Ok(Json(serde_json::json!({"error": "from and to are required"})));
-    }
-    if !ds.entries.contains_key(&from) {
-        return Ok(Json(serde_json::json!({"error": format!("entry '{}' not found", from)})));
-    }
-    if !ds.entries.contains_key(&to) {
-        return Ok(Json(serde_json::json!({"error": format!("entry '{}' not found", to)})));
-    }
-
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-
-    // ΛD: association certainty is clamped to [0, 0.99] — associations are derived knowledge
-    let clamped_certainty = certainty.clamp(0.0, 0.99);
-
-    let assoc = DataspaceAssociation {
-        from: from.clone(),
-        to: to.clone(),
-        relation: relation.clone(),
-        certainty: clamped_certainty,
-        created_at: now,
+    let right = payload.get("right").and_then(|v| v.as_str()).unwrap_or("");
+    let using = payload.get("using").and_then(|v| v.as_str()).unwrap_or("");
+    let guard = engine.read().expect("dataspace engine poisoned");
+    let (Some(l), Some(r)) = (guard.store(&ds_name), guard.store(right)) else {
+        return Ok(Json(serde_json::json!({
+            "error": format!("both sides must be declared dataspaces ('{ds_name}', '{right}')"),
+        })));
     };
-
-    ds.associations.push(assoc);
-    ds.total_ops += 1;
-
-    Ok(Json(serde_json::json!({
-        "success": true,
-        "dataspace": ds_name,
-        "from": from,
-        "to": to,
-        "relation": relation,
-        "certainty": clamped_certainty,
-    })))
+    match crate::dataspace_engine::associate_query(l, r, using) {
+        Ok(out) => Ok(Json(query_output_json(out))),
+        Err(e) => Ok(Json(serde_json::json!({"error": format!("associate refused: {e}")}))),
+    }
 }
 
-/// POST /v1/dataspace/{name}/aggregate — reduce entries to a single value.
-/// Body: { "op": "count|sum|avg|min|max", "field": "data.score", "ontology": "observation" }
-/// For count, field is optional. For sum/avg/min/max, field must point to a numeric JSON path.
+/// POST /v1/dataspace/{name}/aggregate — γ over the closed catalog.
+/// Body: { "group_by"?: [cols], "compute"?: ["count","sum(col)",…],
+///         "where"?: "<filter>" }
 async fn dataspace_aggregate_handler(
     State(state): State<SharedState>,
     headers: HeaderMap,
     Path(ds_name): Path<String>,
     Json(payload): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let s = state.lock().unwrap();
-    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
-
-    let ds = match s.dataspaces.get(&ds_name) {
-        Some(d) => d,
-        None => return Ok(Json(serde_json::json!({"error": format!("dataspace '{}' not found", ds_name)}))),
+    let engine = {
+        let s = state.lock().unwrap();
+        check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+        s.dataspace_engine.clone()
     };
-
-    let op = payload.get("op").and_then(|v| v.as_str()).unwrap_or("count");
-    let field = payload.get("field").and_then(|v| v.as_str()).unwrap_or("");
-    let filter_ontology = payload.get("ontology").and_then(|v| v.as_str());
-
-    // Filter entries by ontology if specified
-    let filtered: Vec<&DataspaceEntry> = ds.entries.values()
-        .filter(|e| {
-            if let Some(ont) = filter_ontology {
-                e.ontology == ont
-            } else {
-                true
-            }
-        })
-        .collect();
-
-    // Extract numeric values from the specified field path
-    let extract_number = |entry: &DataspaceEntry| -> Option<f64> {
-        let parts: Vec<&str> = field.split('.').collect();
-        let mut current = &entry.data;
-        for part in &parts[..] {
-            // Skip "data" prefix if present
-            if *part == "data" { continue; }
-            current = current.get(part)?;
-        }
-        current.as_f64()
+    let where_expr = payload.get("where").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let group_by: Vec<String> = payload.get("group_by")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+    let compute_raw: Vec<String> = payload.get("compute")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+    let computes: Result<Vec<crate::dataspace_engine::AggregateSpec>, String> = if compute_raw.is_empty() {
+        crate::dataspace_engine::AggregateSpec::parse("count").map(|c| vec![c])
+    } else {
+        compute_raw.iter().map(|c| crate::dataspace_engine::AggregateSpec::parse(c)).collect()
     };
-
-    let result: serde_json::Value = match op {
-        "count" => serde_json::json!(filtered.len()),
-        "sum" => {
-            let sum: f64 = filtered.iter().filter_map(|e| extract_number(e)).sum();
-            serde_json::json!(sum)
-        }
-        "avg" => {
-            let values: Vec<f64> = filtered.iter().filter_map(|e| extract_number(e)).collect();
-            if values.is_empty() {
-                serde_json::json!(0.0)
-            } else {
-                let avg = values.iter().sum::<f64>() / values.len() as f64;
-                serde_json::json!((avg * 10000.0).round() / 10000.0)
-            }
-        }
-        "min" => {
-            let min = filtered.iter().filter_map(|e| extract_number(e))
-                .fold(f64::INFINITY, f64::min);
-            if min.is_infinite() { serde_json::json!(null) } else { serde_json::json!(min) }
-        }
-        "max" => {
-            let max = filtered.iter().filter_map(|e| extract_number(e))
-                .fold(f64::NEG_INFINITY, f64::max);
-            if max.is_infinite() { serde_json::json!(null) } else { serde_json::json!(max) }
-        }
-        other => return Ok(Json(serde_json::json!({
-            "error": format!("unknown aggregate op '{}', expected count|sum|avg|min|max", other)
-        }))),
+    let computes = match computes {
+        Ok(c) => c,
+        Err(e) => return Ok(Json(serde_json::json!({"error": format!("aggregate refused: {e}")}))),
     };
-
-    // ΛD: aggregation is a derived computation → c≤0.99
-    Ok(Json(serde_json::json!({
-        "dataspace": ds_name,
-        "op": op,
-        "field": field,
-        "entries_considered": filtered.len(),
-        "result": result,
-        "result_envelope": {
-            "certainty": 0.99,
-            "derivation": "aggregated",
-            "reason": "Theorem 5.1: aggregation is a derived reduction over raw data"
-        },
-    })))
+    let guard = engine.read().expect("dataspace engine poisoned");
+    let Some(st) = guard.store(&ds_name) else {
+        return Ok(Json(serde_json::json!({"error": format!("'{ds_name}' is not a declared dataspace")})));
+    };
+    match crate::dataspace_engine::aggregate_query(st, &where_expr, &group_by, &computes, &Default::default()) {
+        Ok(out) => Ok(Json(query_output_json(out))),
+        Err(e) => Ok(Json(serde_json::json!({"error": format!("aggregate refused: {e}")}))),
+    }
 }
 
-/// GET /v1/dataspace/{name}/explore — discover structure of the dataspace.
-/// Returns entry count, ontology distribution, tag frequency, association graph summary.
+/// GET /v1/dataspace/{name}/explore — the deterministic profile
+/// (SHAPE, never content — Text zone bounds suppressed, D108.10).
 async fn dataspace_explore_handler(
     State(state): State<SharedState>,
     headers: HeaderMap,
     Path(ds_name): Path<String>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let s = state.lock().unwrap();
-    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
-
-    let ds = match s.dataspaces.get(&ds_name) {
-        Some(d) => d,
-        None => return Ok(Json(serde_json::json!({"error": format!("dataspace '{}' not found", ds_name)}))),
+    let engine = {
+        let s = state.lock().unwrap();
+        check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+        s.dataspace_engine.clone()
     };
-
-    // Ontology distribution
-    let mut ontology_counts: HashMap<&str, u64> = HashMap::new();
-    for entry in ds.entries.values() {
-        *ontology_counts.entry(&entry.ontology).or_insert(0) += 1;
-    }
-
-    // Tag frequency
-    let mut tag_counts: HashMap<&str, u64> = HashMap::new();
-    for entry in ds.entries.values() {
-        for tag in &entry.tags {
-            *tag_counts.entry(tag).or_insert(0) += 1;
-        }
-    }
-
-    // Association summary
-    let mut relation_counts: HashMap<&str, u64> = HashMap::new();
-    for assoc in &ds.associations {
-        *relation_counts.entry(&assoc.relation).or_insert(0) += 1;
-    }
-
-    // Certainty distribution
-    let certainties: Vec<f64> = ds.entries.values().map(|e| e.envelope.certainty).collect();
-    let avg_certainty = if certainties.is_empty() {
-        0.0
-    } else {
-        certainties.iter().sum::<f64>() / certainties.len() as f64
+    let guard = engine.read().expect("dataspace engine poisoned");
+    let Some(st) = guard.store(&ds_name) else {
+        return Ok(Json(serde_json::json!({"error": format!("'{ds_name}' is not a declared dataspace")})));
     };
-    let min_certainty = certainties.iter().cloned().fold(f64::INFINITY, f64::min);
-    let max_certainty = certainties.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-
-    Ok(Json(serde_json::json!({
-        "dataspace": ds_name,
-        "ontology": ds.ontology,
-        "entry_count": ds.entries.len(),
-        "association_count": ds.associations.len(),
-        "total_ops": ds.total_ops,
-        "ontology_distribution": ontology_counts,
-        "tag_frequency": tag_counts,
-        "relation_types": relation_counts,
-        "epistemic_summary": {
-            "avg_certainty": (avg_certainty * 10000.0).round() / 10000.0,
-            "min_certainty": if min_certainty.is_infinite() { serde_json::json!(null) } else { serde_json::json!(min_certainty) },
-            "max_certainty": if max_certainty.is_infinite() { serde_json::json!(null) } else { serde_json::json!(max_certainty) },
-        },
-        "result_envelope": {
-            "certainty": 0.99,
-            "derivation": "derived",
-            "reason": "Theorem 5.1: exploration is a derived introspection"
-        },
-    })))
+    Ok(Json(query_output_json(crate::dataspace_engine::explore_profile(st))))
 }
-
-// ── Shield endpoints ────────────────────────────────────────────────────────
 
 /// POST /v1/shields — create a named Shield instance.
 /// Body: { "name": "toxicity", "mode": "output", "rules": [...] }
@@ -14063,106 +13927,77 @@ async fn mcp_handler(
                 }));
             }
 
-            // Dataspace cognitive tools (CSP §5.3 schemas)
-            for ds in s.dataspaces.values() {
-                // ingest tool
-                tools.push(serde_json::json!({
-                    "name": format!("axon_ds_{}_ingest", ds.name),
-                    "description": format!(
-                        "Ingest data into dataspace '{}' (ontology: {}) — ΛD: c=1.0, δ=raw",
-                        ds.name, ds.ontology
-                    ),
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "ontology": {
-                                "type": "string",
-                                "description": "Ontological type tag for the entry",
-                                "default": &ds.ontology,
+            // Dataspace tools (§108.x, D108.6) — generated per DECLARED
+            // dataspace (the engine's stores), backed by the deterministic
+            // data plane. One tool per verb; every result carries taint +
+            // scan stats.
+            {
+                let engine = s.dataspace_engine.clone();
+                let guard = engine.read().expect("dataspace engine poisoned");
+                for name in guard.store_names() {
+                    let schema_desc: Vec<String> = guard
+                        .store(name)
+                        .map(|st| {
+                            st.schema()
+                                .iter()
+                                .map(|(n, t)| format!("{n}: {}", t.canonical_name()))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    tools.push(serde_json::json!({
+                        "name": format!("axon_ds_{}_ingest", name),
+                        "description": format!(
+                            "Governed ingest into declared dataspace '{}' (schema: {}) — \
+                             bounds-before-parse, typed refusal, born-Untrusted",
+                            name, schema_desc.join(", ")
+                        ),
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "source": {"type": "string", "description": "raw CSV/JSON text"},
+                                "format": {"type": "string", "enum": ["csv", "json"]}
                             },
-                            "data": {
-                                "description": "Entry payload (any JSON value)",
-                            },
-                            "tags": {
-                                "type": "array",
-                                "items": { "type": "string" },
-                                "description": "Tags for filtering and grouping",
-                            }
-                        },
-                        "required": ["data"],
-                        "_axon_csp": {
-                            "constraints": [format!("ontology ∈ {}", ds.ontology)],
-                            "effect_row": "<io, epistemic:know>",
-                            "output_taint": "Raw",
+                            "required": ["source", "format"]
                         }
-                    }
-                }));
-
-                // focus tool
-                tools.push(serde_json::json!({
-                    "name": format!("axon_ds_{}_focus", ds.name),
-                    "description": format!(
-                        "Filter entries in dataspace '{}' by ontology/tags — ΛD: c≤0.99, δ=derived (Theorem 5.1)",
-                        ds.name
-                    ),
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "ontology": {
-                                "type": "string",
-                                "description": "Filter by ontological type",
-                            },
-                            "tags": {
-                                "type": "array",
-                                "items": { "type": "string" },
-                                "description": "Filter by tags (all must match)",
-                            },
-                            "limit": {
-                                "type": "integer",
-                                "description": "Max results to return",
-                                "default": 100,
+                    }));
+                    tools.push(serde_json::json!({
+                        "name": format!("axon_ds_{}_focus", name),
+                        "description": format!(
+                            "σ∘π over declared dataspace '{}' — `where` uses the §35 filter \
+                             grammar; results carry epistemic taint + scan stats", name
+                        ),
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "where": {"type": "string"},
+                                "select": {"type": "array", "items": {"type": "string"}}
                             }
-                        },
-                        "_axon_csp": {
-                            "constraints": ["result ⊆ dataspace", "Theorem 5.1: derived"],
-                            "effect_row": "<io, epistemic:speculate>",
-                            "output_taint": "Uncertainty",
                         }
-                    }
-                }));
-
-                // aggregate tool
-                tools.push(serde_json::json!({
-                    "name": format!("axon_ds_{}_aggregate", ds.name),
-                    "description": format!(
-                        "Aggregate entries in dataspace '{}' (count/sum/avg/min/max) — ΛD: c≤0.99, δ=aggregated",
-                        ds.name
-                    ),
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "op": {
-                                "type": "string",
-                                "enum": ["count", "sum", "avg", "min", "max"],
-                                "description": "Aggregation operation",
-                            },
-                            "field": {
-                                "type": "string",
-                                "description": "Dot-path to numeric field (e.g., 'score')",
-                            },
-                            "ontology": {
-                                "type": "string",
-                                "description": "Filter by ontological type before aggregating",
+                    }));
+                    tools.push(serde_json::json!({
+                        "name": format!("axon_ds_{}_aggregate", name),
+                        "description": format!(
+                            "γ over declared dataspace '{}' — closed catalog \
+                             count/sum/avg/min/max; deterministic sorted output", name
+                        ),
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "group_by": {"type": "array", "items": {"type": "string"}},
+                                "compute": {"type": "array", "items": {"type": "string"}},
+                                "where": {"type": "string"}
                             }
-                        },
-                        "required": ["op"],
-                        "_axon_csp": {
-                            "constraints": ["op ∈ {count,sum,avg,min,max}", "Theorem 5.1: aggregated"],
-                            "effect_row": "<io, epistemic:speculate>",
-                            "output_taint": "Uncertainty",
                         }
-                    }
-                }));
+                    }));
+                    tools.push(serde_json::json!({
+                        "name": format!("axon_ds_{}_explore", name),
+                        "description": format!(
+                            "Deterministic profile of declared dataspace '{}' — shape, \
+                             never content (Text zone bounds suppressed)", name
+                        ),
+                        "inputSchema": {"type": "object", "properties": {}}
+                    }));
+                }
             }
 
             // Shield cognitive tools (CSP §5.3 schemas)
@@ -14378,7 +14213,8 @@ async fn mcp_handler(
 
             // ── Dataspace tool dispatch (axon_ds_{name}_{op}) ──
             if let Some(ds_suffix) = tool_name.strip_prefix("axon_ds_") {
-                // Parse: "{dataspace_name}_{op}" where op is ingest|focus|aggregate
+                // §108.x (D108.6) — dispatch over the DECLARED engine, through
+                // the same deterministic ops the language verbs use.
                 let (ds_name, op) = if let Some(pos) = ds_suffix.rfind('_') {
                     (&ds_suffix[..pos], &ds_suffix[pos+1..])
                 } else {
@@ -14388,172 +14224,117 @@ async fn mcp_handler(
                         "_axon_blame": { "blame": "caller", "reason": "CT-2" }
                     })));
                 };
-
-                let mut s = state.lock().unwrap();
-                let client = client_key_from_headers(&headers);
-                check_auth(&mut s, &headers, AccessLevel::Write)?;
-
-                let ds = match s.dataspaces.get_mut(ds_name) {
-                    Some(d) => d,
-                    None => return Ok(Json(serde_json::json!({
-                        "jsonrpc": "2.0", "id": id,
-                        "error": { "code": -32602, "message": format!("dataspace '{}' not found", ds_name) },
-                        "_axon_blame": { "blame": "caller", "reason": "CT-2: referenced non-existent dataspace" }
-                    }))),
+                let (engine, client) = {
+                    let mut s = state.lock().unwrap();
+                    let client = client_key_from_headers(&headers);
+                    check_auth(&mut s, &headers, AccessLevel::Write)?;
+                    (s.dataspace_engine.clone(), client)
                 };
-
-                match op {
+                let err_resp = |msg: String| serde_json::json!({
+                    "jsonrpc": "2.0", "id": id,
+                    "error": { "code": -32602, "message": msg },
+                    "_axon_blame": { "blame": "caller", "reason": "CT-2" }
+                });
+                let ok_resp = |payload: serde_json::Value| serde_json::json!({
+                    "jsonrpc": "2.0", "id": id,
+                    "result": { "content": [{ "type": "text", "text": payload.to_string() }] }
+                });
+                let result = match op {
                     "ingest" => {
-                        let entry_ontology = arguments.get("ontology").and_then(|v| v.as_str())
-                            .unwrap_or(&ds.ontology).to_string();
-                        let data = arguments.get("data").cloned().unwrap_or(serde_json::json!(null));
-                        let tags: Vec<String> = arguments.get("tags")
-                            .and_then(|v| serde_json::from_value(v.clone()).ok())
-                            .unwrap_or_default();
-
-                        let now = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs();
-
-                        let entry_id = format!("ds_{}_{}", ds_name, ds.next_id);
-                        ds.next_id += 1;
-
-                        let envelope = EpistemicEnvelope::raw_config(&entry_ontology, &client);
-                        let entry = DataspaceEntry {
-                            id: entry_id.clone(),
-                            ontology: entry_ontology.clone(),
-                            data: data.clone(),
-                            envelope,
-                            ingested_at: now,
-                            tags,
+                        let raw = arguments.get("source").and_then(|v| v.as_str()).unwrap_or("");
+                        let fmt = arguments.get("format").and_then(|v| v.as_str()).unwrap_or("");
+                        let Some(format) = crate::dataspace_engine::IngestFormat::from_declared(fmt) else {
+                            return Ok(Json(err_resp(format!("`format` must be csv|json, got '{fmt}'"))));
                         };
-                        ds.entries.insert(entry_id.clone(), entry);
-                        ds.total_ops += 1;
-
-                        return Ok(Json(serde_json::json!({
-                            "jsonrpc": "2.0", "id": id,
-                            "result": {
-                                "content": [{ "type": "text", "text": format!("Ingested entry {} into dataspace {}", entry_id, ds_name) }],
-                                "isError": false,
-                                "_axon": {
-                                    "dataspace": ds_name, "entry_id": entry_id,
-                                    "epistemic_envelope": { "certainty": 1.0, "derivation": "raw" },
-                                    "lattice_position": "know",
-                                    "effect_row": ["io", "epistemic:know"],
-                                    "blame": "none",
+                        let schema = {
+                            let guard = engine.read().expect("dataspace engine poisoned");
+                            match guard.store(ds_name) {
+                                Some(st) => st.schema().to_vec(),
+                                None => return Ok(Json(err_resp(format!("'{ds_name}' is not a declared dataspace")))),
+                            }
+                        };
+                        let provenance = crate::dataspace_engine::BatchProvenance {
+                            source: format!("mcp:{client}"),
+                            source_sha256: {
+                                use sha2::{Digest, Sha256};
+                                let mut h = Sha256::new();
+                                h.update(raw.as_bytes());
+                                format!("{:x}", h.finalize())
+                            },
+                            ingested_at: chrono::Utc::now().to_rfc3339(),
+                            taint: crate::emcp::EpistemicTaint::Untrusted,
+                        };
+                        match crate::dataspace_engine::ingest_bytes(
+                            &schema, format, raw.as_bytes(),
+                            &crate::dataspace_engine::IngestLimits::default(), provenance,
+                        ) {
+                            Ok(batch) => {
+                                let rows = batch.len();
+                                let sha = batch.provenance().source_sha256.clone();
+                                let mut guard = engine.write().expect("dataspace engine poisoned");
+                                match guard.store_mut(ds_name).map(|st| st.append(batch)) {
+                                    Some(Ok(())) => Ok(serde_json::json!({
+                                        "dataspace": ds_name, "rows": rows,
+                                        "source_sha256": sha, "taint": "untrusted",
+                                    })),
+                                    Some(Err(e)) => Err(format!("append refused: {e}")),
+                                    None => Err("dataspace vanished mid-ingest".to_string()),
                                 }
                             }
-                        })));
+                            Err(e) => Err(format!("ingest refused: {e}")),
+                        }
                     }
                     "focus" => {
-                        let filter_ontology = arguments.get("ontology").and_then(|v| v.as_str());
-                        let filter_tags: Option<Vec<String>> = arguments.get("tags")
-                            .and_then(|v| serde_json::from_value(v.clone()).ok());
-                        let limit = arguments.get("limit").and_then(|v| v.as_u64()).unwrap_or(100) as usize;
-
-                        let results: Vec<serde_json::Value> = ds.entries.values()
-                            .filter(|e| {
-                                if let Some(ont) = filter_ontology {
-                                    if e.ontology != ont { return false; }
-                                }
-                                if let Some(ref tags) = filter_tags {
-                                    if !tags.iter().all(|t| e.tags.contains(t)) { return false; }
-                                }
-                                true
-                            })
-                            .take(limit)
-                            .map(|e| serde_json::json!({
-                                "id": e.id, "ontology": e.ontology, "data": e.data, "tags": e.tags,
-                            }))
-                            .collect();
-
-                        let result_text = serde_json::to_string_pretty(&results).unwrap_or_default();
-
-                        return Ok(Json(serde_json::json!({
-                            "jsonrpc": "2.0", "id": id,
-                            "result": {
-                                "content": [{ "type": "text", "text": result_text }],
-                                "isError": false,
-                                "_axon": {
-                                    "dataspace": ds_name, "matched": results.len(),
-                                    "epistemic_envelope": { "certainty": 0.99, "derivation": "derived" },
-                                    "lattice_position": "speculate",
-                                    "effect_row": ["io", "epistemic:speculate"],
-                                    "blame": "none",
-                                }
-                            }
-                        })));
+                        let where_expr = arguments.get("where").and_then(|v| v.as_str()).unwrap_or("");
+                        let select: Vec<String> = arguments.get("select")
+                            .and_then(|v| serde_json::from_value(v.clone()).ok())
+                            .unwrap_or_default();
+                        let guard = engine.read().expect("dataspace engine poisoned");
+                        match guard.store(ds_name) {
+                            Some(st) => crate::dataspace_engine::focus_query(st, where_expr, &select, &Default::default())
+                                .map(query_output_json),
+                            None => Err(format!("'{ds_name}' is not a declared dataspace")),
+                        }
                     }
                     "aggregate" => {
-                        let agg_op = arguments.get("op").and_then(|v| v.as_str()).unwrap_or("count");
-                        let field = arguments.get("field").and_then(|v| v.as_str()).unwrap_or("");
-                        let filter_ontology = arguments.get("ontology").and_then(|v| v.as_str());
-
-                        let filtered: Vec<&DataspaceEntry> = ds.entries.values()
-                            .filter(|e| filter_ontology.map_or(true, |ont| e.ontology == ont))
-                            .collect();
-
-                        let extract_number = |entry: &DataspaceEntry| -> Option<f64> {
-                            let parts: Vec<&str> = field.split('.').collect();
-                            let mut current = &entry.data;
-                            for part in &parts {
-                                if *part == "data" { continue; }
-                                current = current.get(part)?;
-                            }
-                            current.as_f64()
+                        let where_expr = arguments.get("where").and_then(|v| v.as_str()).unwrap_or("");
+                        let group_by: Vec<String> = arguments.get("group_by")
+                            .and_then(|v| serde_json::from_value(v.clone()).ok())
+                            .unwrap_or_default();
+                        let compute_raw: Vec<String> = arguments.get("compute")
+                            .and_then(|v| serde_json::from_value(v.clone()).ok())
+                            .unwrap_or_default();
+                        let computes: Result<Vec<_>, String> = if compute_raw.is_empty() {
+                            crate::dataspace_engine::AggregateSpec::parse("count").map(|c| vec![c])
+                        } else {
+                            compute_raw.iter().map(|c| crate::dataspace_engine::AggregateSpec::parse(c)).collect()
                         };
-
-                        let result_val: serde_json::Value = match agg_op {
-                            "count" => serde_json::json!(filtered.len()),
-                            "sum" => {
-                                let sum: f64 = filtered.iter().filter_map(|e| extract_number(e)).sum();
-                                serde_json::json!(sum)
-                            }
-                            "avg" => {
-                                let vals: Vec<f64> = filtered.iter().filter_map(|e| extract_number(e)).collect();
-                                if vals.is_empty() { serde_json::json!(0.0) }
-                                else { serde_json::json!((vals.iter().sum::<f64>() / vals.len() as f64 * 10000.0).round() / 10000.0) }
-                            }
-                            "min" => {
-                                let min = filtered.iter().filter_map(|e| extract_number(e)).fold(f64::INFINITY, f64::min);
-                                if min.is_infinite() { serde_json::json!(null) } else { serde_json::json!(min) }
-                            }
-                            "max" => {
-                                let max = filtered.iter().filter_map(|e| extract_number(e)).fold(f64::NEG_INFINITY, f64::max);
-                                if max.is_infinite() { serde_json::json!(null) } else { serde_json::json!(max) }
-                            }
-                            _ => return Ok(Json(serde_json::json!({
-                                "jsonrpc": "2.0", "id": id,
-                                "error": { "code": -32602, "message": format!("unknown aggregate op '{}'", agg_op) },
-                                "_axon_blame": { "blame": "caller", "reason": "CT-2" }
-                            }))),
-                        };
-
-                        return Ok(Json(serde_json::json!({
-                            "jsonrpc": "2.0", "id": id,
-                            "result": {
-                                "content": [{ "type": "text", "text": format!("{}: {}", agg_op, result_val) }],
-                                "isError": false,
-                                "_axon": {
-                                    "dataspace": ds_name, "op": agg_op, "result": result_val,
-                                    "entries_considered": filtered.len(),
-                                    "epistemic_envelope": { "certainty": 0.99, "derivation": "aggregated" },
-                                    "lattice_position": "speculate",
-                                    "effect_row": ["io", "epistemic:speculate"],
-                                    "blame": "none",
+                        match computes {
+                            Ok(computes) => {
+                                let guard = engine.read().expect("dataspace engine poisoned");
+                                match guard.store(ds_name) {
+                                    Some(st) => crate::dataspace_engine::aggregate_query(
+                                        st, where_expr, &group_by, &computes, &Default::default(),
+                                    ).map(query_output_json),
+                                    None => Err(format!("'{ds_name}' is not a declared dataspace")),
                                 }
                             }
-                        })));
+                            Err(e) => Err(e),
+                        }
                     }
-                    _ => {
-                        return Ok(Json(serde_json::json!({
-                            "jsonrpc": "2.0", "id": id,
-                            "error": { "code": -32602, "message": format!("unknown dataspace op '{}' in tool '{}'", op, tool_name) },
-                            "_axon_blame": { "blame": "caller", "reason": "CT-2" }
-                        })));
+                    "explore" => {
+                        let guard = engine.read().expect("dataspace engine poisoned");
+                        match guard.store(ds_name) {
+                            Some(st) => Ok(query_output_json(crate::dataspace_engine::explore_profile(st))),
+                            None => Err(format!("'{ds_name}' is not a declared dataspace")),
+                        }
                     }
-                }
+                    other => Err(format!("unknown dataspace op '{other}'")),
+                };
+                return Ok(Json(match result {
+                    Ok(payload) => ok_resp(payload),
+                    Err(msg) => err_resp(msg),
+                }));
             }
 
             // ── AxonStore tool dispatch (axon_as_{name}_{op}) ──

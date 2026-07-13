@@ -260,3 +260,93 @@ async fn a_t928_violation_refuses_the_deploy() {
         "a refused deploy must leave no engine state"
     );
 }
+
+// ── §108.x (D108.6) — the re-founded /v1/dataspace REST surface ─────────────
+
+async fn post_json(app: axum::Router, uri: &str, body: serde_json::Value) -> serde_json::Value {
+    let req = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    serde_json::from_slice(&bytes).unwrap_or_default()
+}
+
+async fn get_json(app: axum::Router, uri: &str) -> serde_json::Value {
+    let req = Request::builder().method("GET").uri(uri).body(Body::empty()).unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    serde_json::from_slice(&bytes).unwrap_or_default()
+}
+
+#[tokio::test]
+async fn rest_surface_is_a_view_over_declared_dataspaces() {
+    let (app, _state) = axon::axon_server::build_router_with_state(server_cfg());
+    deploy(
+        app.clone(),
+        "dataspace Metrics { column city: Text\n column pop: Int }\nflow F() -> Text { let v = \"1\" }",
+    )
+    .await;
+
+    // (1) Free-form creation is RETIRED (D108.6) — the refusal teaches.
+    let r = post_json(app.clone(), "/v1/dataspace", serde_json::json!({"name": "Rogue"})).await;
+    assert_eq!(r["retired"], true, "{r}");
+    assert!(r["error"].as_str().unwrap().contains("axon-T928"), "{r}");
+
+    // (2) The list shows the DECLARED store with its shape.
+    let r = get_json(app.clone(), "/v1/dataspace").await;
+    assert_eq!(r["total"], 1, "{r}");
+    assert_eq!(r["dataspaces"][0]["dataspace"], "Metrics");
+
+    // (3) Governed HTTP ingest through the SAME loaders.
+    let r = post_json(
+        app.clone(),
+        "/v1/dataspace/Metrics/ingest",
+        serde_json::json!({"source": "city,pop\nbogota,8000000\nmedellin,2500000\n", "format": "csv"}),
+    )
+    .await;
+    assert_eq!(r["rows"], 2, "{r}");
+    assert_eq!(r["taint"], "untrusted");
+    assert_eq!(r["source_sha256"].as_str().unwrap().len(), 64);
+
+    // (4) A typed refusal, not a coercion.
+    let r = post_json(
+        app.clone(),
+        "/v1/dataspace/Metrics/ingest",
+        serde_json::json!({"source": "city,pop\nx,not_a_number\n", "format": "csv"}),
+    )
+    .await;
+    assert!(r["error"].as_str().unwrap().contains("`pop`"), "{r}");
+
+    // (5) Aggregate: computed, with taint + stats.
+    let r = post_json(
+        app.clone(),
+        "/v1/dataspace/Metrics/aggregate",
+        serde_json::json!({"compute": ["count", "sum(pop)"]}),
+    )
+    .await;
+    assert_eq!(r["rows"][0]["count"], 2, "{r}");
+    assert_eq!(r["rows"][0]["sum_pop"], 10500000.0);
+    assert_eq!(r["taint"], "untrusted");
+
+    // (6) Explore: shape, never content.
+    let r = get_json(app.clone(), "/v1/dataspace/Metrics/explore").await;
+    assert!(!r.to_string().contains("bogota"), "shape only: {r}");
+
+    // (7) DELETE clears data; the DECLARATION persists.
+    let req = Request::builder()
+        .method("DELETE")
+        .uri("/v1/dataspace/Metrics")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let r: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(r["success"], true, "{r}");
+    let r = get_json(app, "/v1/dataspace").await;
+    assert_eq!(r["total"], 1, "the declared store survives a clear");
+    assert_eq!(r["dataspaces"][0]["rows"], 0, "its data does not");
+}
