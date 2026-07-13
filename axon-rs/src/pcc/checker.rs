@@ -168,6 +168,9 @@ pub fn check_proof(proof: &ProofTerm, ir: &IRProgram) -> CheckOutcome {
         (PropertyClass::GradientSoundness, Witness::GradientSoundness(w)) => {
             check_gradient_soundness(w, ir)
         }
+        (PropertyClass::NotificationProvenanceSoundness, Witness::NotificationProvenanceSoundness(w)) => {
+            check_notification_provenance_soundness(w, ir)
+        }
         (PropertyClass::QuerySafetySoundness, Witness::QuerySafetySoundness(w)) => {
             check_query_safety_soundness(w, ir)
         }
@@ -1812,6 +1815,44 @@ fn check_delivery_provenance_soundness(
                 "axon-T920 provenance-stripping barrier: `provenance: cleared` delivery(ies) \
                  laundering an unshielded flow value into a CRM: {:?}",
                 actual.laundered_deliveries
+            ),
+        };
+    }
+    CheckOutcome::Verified
+}
+
+/// §110.b — verify a [`NotificationProvenanceSoundnessWitness`]: re-derive
+/// the three laws from the artifact; refute disagreement or any surviving
+/// violation. A hand-edited artifact that launders a guess to a human,
+/// drops the window, or smuggles a literal recipient cannot deploy.
+fn check_notification_provenance_soundness(
+    claimed: &super::proof_term::NotificationProvenanceSoundnessWitness,
+    ir: &IRProgram,
+) -> CheckOutcome {
+    let actual = match super::generate::derive_notification_provenance_soundness_witness(ir) {
+        Some(w) => w,
+        None => {
+            return CheckOutcome::Refuted {
+                reason: "no notify declaration exists in this artifact — forged or stale proof"
+                    .to_string(),
+            }
+        }
+    };
+    if actual != *claimed {
+        return CheckOutcome::Refuted {
+            reason: "witness disagrees with artifact re-derivation (forged or stale proof)"
+                .to_string(),
+        };
+    }
+    if !actual.bad_structure.is_empty()
+        || !actual.bad_windows.is_empty()
+        || !actual.laundered_notifications.is_empty()
+    {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axon-T933/T934/T935 notification law violated (stale or hand-edited \
+                 artifact): structure={:?} windows={:?} laundered={:?}",
+                actual.bad_structure, actual.bad_windows, actual.laundered_notifications
             ),
         };
     }

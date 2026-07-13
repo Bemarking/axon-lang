@@ -1703,6 +1703,16 @@ impl<'a> TypeChecker<'a> {
                         n.loc.clone(),
                     ));
                 }
+                // §Fase 110 — register the notification (referenceable name +
+                // duplicate detection).
+                                Declaration::Notify(n) => {
+                    registrations.push((
+                        n.name.clone(),
+                        "notify".into(),
+                        n.loc.line,
+                        n.loc.clone(),
+                    ));
+                }
                 // §Fase 87.d — register the synth policy so a savant can
                 // reference it (and duplicate-name detection works).
                 Declaration::Synth(n) => {
@@ -1939,6 +1949,7 @@ impl<'a> TypeChecker<'a> {
                 // §Fase 105 — CRM delivery structure + the T920 provenance
                 // barrier (egress-dual of the §99 assertion-laundering barrier).
                 Declaration::Deliver(n) => self.check_deliver(n),
+                Declaration::Notify(n) => self.check_notify(n), // §110 — T933/T934/T935
                 // §Fase 87.d — dynamic tool-synthesis policy discipline.
                 Declaration::Synth(n) => self.check_synth(n),
                 // §Fase 88.b — the scope's own-field discipline (targets
@@ -4811,6 +4822,104 @@ impl<'a> TypeChecker<'a> {
                     &col.loc,
                 );
             }
+        }
+    }
+
+    /// §Fase 110 — validate a `notify` declaration: the three laws of
+    /// governed human notification.
+    ///
+    ///   T933 (evidence): a `provenance: cleared` notify whose template
+    ///   binds flow values (`${ref}` slots) is assertion-laundering to a
+    ///   HUMAN — refused unless vouched by an enclosing
+    ///   `epistemic { believe | know }` (the T920 shape, harder
+    ///   consequence: a human acts immediately).
+    ///
+    ///   T934 (structure): closed channel catalog; the recipient MUST be
+    ///   a §94 secret-class ref (`to: secret(<class>)`) — a literal
+    ///   phone/chat-id in source is PII where PII must never live;
+    ///   template non-empty; `effects:` must include `web`.
+    ///
+    ///   T935 (attention): `window:` is mandatory and well-formed — an
+    ///   unbounded interruption channel is refused, not defaulted.
+    fn check_notify(&mut self, node: &crate::ast::NotifyDefinition) {
+        // (T934) channel catalog.
+        if !matches!(node.channel.as_str(), "sms" | "whatsapp" | "telegram") {
+            self.emit(
+                format!(
+                    "axon-T934 notify '{}' has `channel: {}` — the closed v1 channel catalog is {{sms, whatsapp, telegram}} (D110.5; further channels are additive §110.x surface).",
+                    node.name,
+                    if node.channel.is_empty() { "<unset>" } else { &node.channel }
+                ),
+                &node.loc,
+            );
+        }
+        // (T934) recipient custody — the compile law (D110.3).
+        if !node.to_is_secret {
+            self.emit(
+                format!(
+                    "axon-T934 notify '{}' has a literal recipient (`to: {}`). A recipient is PII and never rides source, IR, prompts or audit — declare it under §94 custody and reference the class: `to: secret(ops.oncall_phone)`. The value resolves at dispatch, tenant-scoped.",
+                    node.name,
+                    if node.to_secret.is_empty() { "<unset>" } else { &node.to_secret }
+                ),
+                &node.loc,
+            );
+        }
+        // (T934) template present.
+        if node.template.is_empty() {
+            self.emit(
+                format!("axon-T934 notify '{}' has no `template:` — a notification with nothing to say is a declaration error.", node.name),
+                &node.loc,
+            );
+        }
+        // (T934) the web effect — a notification IS a network egress.
+        let has_web = node
+            .effects
+            .as_ref()
+            .map(|e| e.effects.iter().any(|x| x == "web" || x.starts_with("web:")))
+            .unwrap_or(false);
+        if !has_web {
+            self.emit(
+                format!("axon-T934 notify '{}' declares no `web` effect — a notification crosses the trust boundary over the network; declare `effects: <web>`.", node.name),
+                &node.loc,
+            );
+        }
+        // (T935) the mandatory window (D110.4).
+        let window_ok = {
+            let w = node.window.trim();
+            !w.is_empty()
+                && w.len() >= 2
+                && w[..w.len() - 1].chars().all(|c| c.is_ascii_digit())
+                && matches!(w.chars().last(), Some('s') | Some('m') | Some('h') | Some('d'))
+                && w[..w.len() - 1].parse::<u64>().map(|n| n > 0).unwrap_or(false)
+        };
+        if !window_ok {
+            self.emit(
+                format!(
+                    "axon-T935 notify '{}' has `window: {}` — a window is MANDATORY (an unbounded interruption channel is a bug, not a default) and must be a positive duration (`30m`, `4h`, `1d`). At-most-once-per-window per recipient, enforced durably; suppressions are witnessed.",
+                    node.name,
+                    if node.window.is_empty() { "<unset>" } else { &node.window }
+                ),
+                &node.loc,
+            );
+        }
+        // (T933) the evidence barrier (D110.2).
+        let binds_flow_values = node.template.contains("${");
+        let cleared = node.provenance == "cleared";
+        if !node.provenance.is_empty() && !matches!(node.provenance.as_str(), "attached" | "cleared") {
+            self.emit(
+                format!("axon-T934 notify '{}' has `provenance: {}` — one of: attached (default), cleared.", node.name, node.provenance),
+                &node.loc,
+            );
+        }
+        let epistemic_ok = matches!(self.current_epistemic_mode.as_str(), "believe" | "know");
+        if cleared && binds_flow_values && !epistemic_ok {
+            self.emit(
+                format!(
+                    "axon-T933 notify '{}' is `provenance: cleared` and binds flow values into a HUMAN notification. A guess reaching a person's pocket labeled as fact is assertion-laundering at its fastest — the human acts immediately (D110.2, the T920 barrier's human-egress sibling). Use `provenance: attached` (each bound value arrives with its epistemic label; a §108 envelope ref appends its evidence line), or vouch the values inside `epistemic {{ believe|know }}`.",
+                    node.name
+                ),
+                &node.loc,
+            );
         }
     }
 
@@ -8283,6 +8392,7 @@ impl<'a> TypeChecker<'a> {
         let egress: Option<(&'static str, String)> =
             self.program.declarations.iter().find_map(|d| match d {
                 Declaration::Deliver(x) => Some(("deliver", x.name.clone())),
+                Declaration::Notify(x) => Some(("notify", x.name.clone())),
                 Declaration::Document(x) => Some(("document", x.name.clone())),
                 _ => None,
             });

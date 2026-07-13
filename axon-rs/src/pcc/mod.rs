@@ -79,6 +79,7 @@ pub use generate::{
     derive_dataspace_schema_soundness_witness, derive_gradient_soundness_witness,
     derive_query_safety_soundness_witness,
     generate_dataspace_schema_soundness_proofs, generate_gradient_soundness_proofs,
+    generate_notification_provenance_soundness_proofs,
     generate_query_safety_soundness_proofs,
     derive_document_ingestion_soundness_witness, generate_document_ingestion_soundness_proofs,
     derive_inferred_ceiling_soundness_witness, generate_inferred_ceiling_soundness_proofs,
@@ -96,7 +97,8 @@ pub use proof_term::{
     ScrapeProvenanceSoundnessWitness,
     DocumentProvenanceSoundnessWitness,
     DeliveryProvenanceSoundnessWitness,
-    DataspaceSchemaSoundnessWitness, GradientSoundnessWitness, QuerySafetySoundnessWitness,
+    DataspaceSchemaSoundnessWitness, GradientSoundnessWitness,
+    NotificationProvenanceSoundnessWitness, QuerySafetySoundnessWitness,
     DocumentIngestionSoundnessWitness,
     InferredCeilingSoundnessWitness,
     SecretCustodySoundnessWitness,
@@ -3308,6 +3310,61 @@ mod tests {
         match check_proof(&proofs[0], &ir) {
             CheckOutcome::Refuted { reason } => assert!(reason.contains("T920"), "{reason}"),
             other => panic!("expected Refuted (provenance-stripping barrier), got {other:?}"),
+        }
+    }
+
+    // ── §Fase 110.b — NotificationProvenanceSoundness ────────────────────
+
+    const NOTIFY_PROGRAM: &str = concat!(
+        "notify LowSales {\n",
+        "  channel: sms\n",
+        "  to: secret(ops.oncall_phone)\n",
+        "  template: \"Ventas 7d: ${resumen}\"\n",
+        "  window: 4h\n",
+        "  provenance: attached\n",
+        "  effects: <web>\n",
+        "}\n",
+    );
+
+    #[test]
+    fn notification_round_trips_and_verifies() {
+        let ir = ir_from_source(NOTIFY_PROGRAM);
+        let proofs =
+            super::generate::generate_notification_provenance_soundness_proofs(&ir, "test");
+        assert_eq!(proofs.len(), 1);
+        assert_eq!(
+            proofs[0].property,
+            PropertyClass::NotificationProvenanceSoundness
+        );
+        assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
+    }
+
+    #[test]
+    fn notification_refutes_a_hand_edited_laundering() {
+        // Forge: clear the provenance on a slot-binding notify with no vouch.
+        let mut ir = ir_from_source(NOTIFY_PROGRAM);
+        ir.notifications[0].provenance = "cleared".to_string();
+        let proofs =
+            super::generate::generate_notification_provenance_soundness_proofs(&ir, "test");
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("laundered"), "{reason}")
+            }
+            other => panic!("expected Refuted (laundered notification), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn notification_refutes_a_dropped_window() {
+        let mut ir = ir_from_source(NOTIFY_PROGRAM);
+        ir.notifications[0].window = String::new();
+        let proofs =
+            super::generate::generate_notification_provenance_soundness_proofs(&ir, "test");
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("windows"), "{reason}")
+            }
+            other => panic!("expected Refuted (unbounded interruption), got {other:?}"),
         }
     }
 

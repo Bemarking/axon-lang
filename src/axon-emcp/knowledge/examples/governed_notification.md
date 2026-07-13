@@ -1,0 +1,56 @@
+---
+name: governed_notification
+title: "A governed notification — daemon → aggregate → notify (§110)"
+summary: "The founder's sales-drop case end to end: a `daemon` (§52) schedules a flow whose `aggregate` (§108) COMPUTES the signal; the flow's `if` binds the alert only when the declared threshold holds; `notify` (§110) fires post-run only when its `${ref}` resolved (fire-on-resolution, D110.1) and carries the evidence to the human — with its epistemic label, through a custody-resolved recipient, at most once per declared window. Change `to:` to a literal phone number, drop the `window:`, or clear the provenance without a vouch, and this program stops compiling (T933/T934/T935)."
+topic: data
+primitives:
+  - dataspace
+  - flow
+  - daemon
+---
+
+// Governed human notification (§110), end to end — the sales-drop
+// alert. The number in the SMS was COMPUTED (§108), the recipient
+// lives under custody (§94), and the interruption is bounded (T935).
+
+dataspace Ventas {
+    column region: Text
+    column monto:  Float
+}
+
+// The signal is ALGEBRA, not a model's opinion: γ over the batches,
+// with scan stats riding the envelope.
+flow ChequeoVentas() -> Text {
+    aggregate Ventas { compute: [sum(monto), count], as: totales }
+
+    // The flow's own logic IS the trigger (D110.1): `resumen` binds
+    // only under the declared condition, and the notify below fires
+    // only when it resolved — an unresolved ref is a witnessed no-op.
+    if totales.sum_monto < 15000.0 {
+        let resumen = totales
+    }
+    return "ok"
+}
+
+// Every 30 minutes, fire-once across replicas (§52).
+daemon VigiaVentas {
+    every: "*/30 * * * *"
+    run ChequeoVentas
+}
+
+// The governed egress. Three laws, all compile-time:
+//  T933 — `attached` (default): ${resumen} arrives WITH its evidence
+//         line ("computed over N rows, taint: untrusted"). A guess
+//         arrives labeled as a guess.
+//  T934 — the recipient is a §94 custody ref. Write a literal phone
+//         number here and compilation refuses, teaching this form.
+//  T935 — the window is MANDATORY: at most one of these per 4h per
+//         recipient, enforced durably; suppressions are audited.
+notify BajaDeVentas {
+    channel:    sms
+    to:         secret(ops.oncall_phone)
+    template:   "Alerta ventas: ${resumen}"
+    window:     4h
+    provenance: attached
+    effects:    <web>
+}

@@ -72,6 +72,9 @@ pub mod daemon;
 /// §Fase 108.b — the deterministic columnar engine behind `dataspace`
 /// (immutable record batches, validity bitmaps, zone maps, provenance).
 pub mod dataspace_engine;
+/// §Fase 110.b — Governed Human Notification: the canonical contract
+/// (evidence labels, recipient custody, fail-closed provider port).
+pub mod notification;
 pub mod db_pool;
 pub mod deployer;
 pub mod emcp;

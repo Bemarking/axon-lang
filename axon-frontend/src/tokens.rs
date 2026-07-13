@@ -215,6 +215,8 @@ pub enum TokenType {
     // form (axon-T920) refuses provenance-stripping delivery of an unshielded
     // flow value (D105.2). The `document`/`cache`/`savant` top-level shape.
     Deliver,
+    /// §Fase 110 — `notify`: governed human-notification egress.
+    Notify,
     // `quant` as a cognitive primitive (§Fase 51.a) — a flow-body block that
     // projects an MEK semantic tensor into a complex Hilbert space, evolves it
     // under a variational / kernel-feature map, and collapses back to classical
@@ -572,6 +574,7 @@ pub fn keyword_type(word: &str) -> TokenType {
         "document" => TokenType::Document,
         // `deliver` (§Fase 105) — the Governed CRM Delivery declaration.
         "deliver" => TokenType::Deliver,
+        "notify" => TokenType::Notify,
         // `savant` (§Fase 87.a) — long-horizon autonomous research primitive.
         "savant" => TokenType::Savant,
         // `synth` (§Fase 87.d) — dynamic tool-synthesis policy.

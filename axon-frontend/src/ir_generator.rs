@@ -313,6 +313,7 @@ impl IRGenerator {
             Declaration::Document(n) => ir.documents.push(self.visit_document(n)),
             // §Fase 105 — lower the `deliver` declaration into the IR.
             Declaration::Deliver(n) => ir.deliveries.push(self.visit_deliver(n)),
+            Declaration::Notify(n) => ir.notifications.push(self.visit_notify(n)),
             // §Fase 87.d — lower the `synth` tool-synthesis policy into the IR.
             Declaration::Synth(n) => ir.synths.push(self.visit_synth(n)),
             // §Fase 88.a — lower the `scope` authorization policy into the IR.
@@ -348,6 +349,12 @@ impl IRGenerator {
                         let mut ird = self.visit_document(d);
                         ird.epistemic_mode = eb.mode.clone();
                         ir.documents.push(ird);
+                    } else if let Declaration::Notify(nf) = child {
+                        // §Fase 110 — record the enclosing epistemic mode so the
+                        // T933 barrier re-derives identically at deploy.
+                        let mut irn = self.visit_notify(nf);
+                        irn.epistemic_mode = eb.mode.clone();
+                        ir.notifications.push(irn);
                     } else if let Declaration::Deliver(dl) = child {
                         // §Fase 105 — record the enclosing epistemic mode on a
                         // delivery so the T920 barrier re-derives identically at
@@ -1657,6 +1664,26 @@ impl IRGenerator {
     /// §Fase 105 — lower a `deliver` declaration into the IR. Operation order
     /// is preserved for determinism; field values reuse the document field
     /// lowering (`text`/`ref`/`list`/`int`/`bool`).
+    fn visit_notify(&self, n: &crate::ast::NotifyDefinition) -> crate::ir_nodes::IRNotify {
+        crate::ir_nodes::IRNotify {
+            node_type: "notify",
+            source_line: n.loc.line,
+            source_column: n.loc.column,
+            name: n.name.clone(),
+            channel: n.channel.clone(),
+            to_secret: n.to_secret.clone(),
+            template: n.template.clone(),
+            window: n.window.clone(),
+            provenance: n.provenance.clone(),
+            effects: n
+                .effects
+                .as_ref()
+                .map(|e| e.effects.clone())
+                .unwrap_or_default(),
+            epistemic_mode: String::new(),
+        }
+    }
+
     fn visit_deliver(&self, n: &crate::ast::DeliverDefinition) -> crate::ir_nodes::IRDeliver {
         let effect_row = n
             .effects

@@ -274,6 +274,10 @@ fn attach_trivia_to_decl(decl: &mut Declaration, leading: Vec<Trivia>, trailing:
             n.leading_trivia = leading;
             n.trailing_trivia = trailing;
         }
+        Declaration::Notify(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
         Declaration::Generic(n) => {
             n.leading_trivia = leading;
             n.trailing_trivia = trailing;
@@ -2111,6 +2115,7 @@ impl Parser {
 
             // ── §Fase 105 — Governed CRM Delivery ─
             TokenType::Deliver => self.parse_deliver().map(Declaration::Deliver),
+            TokenType::Notify => self.parse_notify().map(Declaration::Notify),
 
             // ── §Fase 87.a — the long-horizon autonomous research primitive ─
             TokenType::Savant => self.parse_savant().map(Declaration::Savant),
@@ -7760,6 +7765,101 @@ impl Parser {
     /// effects:?, <operation blocks> }`. Delivery-level scalars are handled here;
     /// anything of the form `ident { … }` is an operation block
     /// ([`parse_deliver_op`]). Unknown scalar fields are a hard error (the §99
+    /// §Fase 110.a — the governed human-notification declaration:
+    ///
+    /// ```text
+    /// notify LowSales {
+    ///     channel:    sms | whatsapp | telegram
+    ///     to:         secret(ops.oncall_phone)
+    ///     template:   "Ventas 7d: ${resumen}"
+    ///     window:     4h
+    ///     provenance: attached | cleared
+    ///     effects:    <web>
+    /// }
+    /// ```
+    ///
+    /// The closed-field discipline (§99/§105): an unknown scalar field is
+    /// a hard parse error. The LAWS (T933/T934/T935) live in the checker
+    /// so violations accumulate; the parser records shape (including a
+    /// literal `to:` — kept so T934 can refuse it TEACHING the custody
+    /// form, instead of a bare parse error).
+    fn parse_notify(&mut self) -> Result<crate::ast::NotifyDefinition, ParseError> {
+        let tok = self.consume(TokenType::Notify)?;
+        let name = self.consume(TokenType::Identifier)?.value;
+        let mut node = crate::ast::NotifyDefinition {
+            name,
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+            ..Default::default()
+        };
+        self.consume(TokenType::LBrace)?;
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            let field = self.current().clone();
+            let field_name = field.value.clone();
+            self.advance();
+            if self.check(TokenType::Colon) {
+                self.advance();
+                match field_name.as_str() {
+                    "channel" => node.channel = self.consume_any_ident_or_kw()?.value,
+                    "to" => {
+                        // The custody form: `secret(<dotted-class>)`. A string
+                        // literal parses too — the checker refuses it (T934)
+                        // with the teaching message.
+                        if self.current().value == "secret" && self.peek_is_lparen() {
+                            self.advance(); // `secret`
+                            self.consume(TokenType::LParen)?;
+                            node.to_secret = self.parse_dotted_identifier()?;
+                            self.consume(TokenType::RParen)?;
+                            node.to_is_secret = true;
+                        } else if self.check(TokenType::StringLit) {
+                            node.to_secret = self.consume(TokenType::StringLit)?.value.clone();
+                            node.to_is_secret = false;
+                        } else {
+                            node.to_secret = self.consume_any_ident_or_kw()?.value.clone();
+                            node.to_is_secret = false;
+                        }
+                    }
+                    "template" => {
+                        node.template = self.consume(TokenType::StringLit)?.value.clone()
+                    }
+                    "window" => {
+                        // `4h` lexes as Integer + ident or one ident — accept
+                        // both spellings, normalized to the joined form.
+                        if self.check(TokenType::Integer) {
+                            let n = self.consume(TokenType::Integer)?.value.clone();
+                            let unit = self.consume_any_ident_or_kw()?.value.clone();
+                            node.window = format!("{n}{unit}");
+                        } else {
+                            node.window = self.consume_any_ident_or_kw()?.value.clone();
+                        }
+                    }
+                    "provenance" => node.provenance = self.consume_any_ident_or_kw()?.value,
+                    "effects" => node.effects = Some(self.parse_effect_row()?),
+                    other => {
+                        return Err(self.error(&format!(
+                            "unknown notify field `{other}` in notify `{}` — expected \
+                             `channel:` / `to:` / `template:` / `window:` / `provenance:` / \
+                             `effects:`",
+                            node.name
+                        )))
+                    }
+                }
+            }
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(node)
+    }
+
+    /// §Fase 110.a — one-token lookahead helper for the `secret(` form.
+    fn peek_is_lparen(&self) -> bool {
+        self.tokens
+            .get(self.pos + 1)
+            .map(|t| t.ttype == TokenType::LParen)
+            .unwrap_or(false)
+    }
+
     /// closed-catalog discipline); the operation vocabulary is the checker's job.
     fn parse_deliver(&mut self) -> Result<crate::ast::DeliverDefinition, ParseError> {
         let tok = self.consume(TokenType::Deliver)?;

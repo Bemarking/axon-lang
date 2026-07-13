@@ -1412,6 +1412,10 @@ Body prose.
             // a compile-time derivation over the closed Expr, re-proven at
             // deploy, never a tape or a finite difference.
             (ReferenceKind::Logic, "a_derivative_is_derived_not_sampled"),
+            // §Fase 110 — attention is a governed resource: the third
+            // egress dual (notify spends human attention; evidence labels,
+            // recipient custody, mandatory windows).
+            (ReferenceKind::Logic, "attention_is_a_governed_resource"),
             (ReferenceKind::Compliance, "hipaa"),
             (ReferenceKind::Compliance, "gdpr"),
             (ReferenceKind::Compliance, "pci_dss"),
@@ -1462,7 +1466,8 @@ Body prose.
             // §Fase 107: 18 → 19 with `a_safe_method_is_proven_safe` (RFC 10008 QUERY).
             // §Fase 108: 19 → 20 with `analysis_is_algebra_not_conversation`.
             // §Fase 109: 20 → 21 with `a_derivative_is_derived_not_sampled`.
-            21,
+            // §Fase 110: 21 → 22 with `attention_is_a_governed_resource`.
+            22,
             "logic family count drift"
         );
         assert_eq!(

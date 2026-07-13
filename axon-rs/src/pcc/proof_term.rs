@@ -388,6 +388,12 @@ pub enum PropertyClass {
     /// re-differentiation of its original expression (post-simplification,
     /// D109.4). A hand-edited gradient is refuted at deploy.
     GradientSoundness,
+    /// §Fase 110.b — governed human notification (`axon-T933`/`T934`/`T935`,
+    /// re-derived): every `notify`'s recipient is a custody ref, its window
+    /// is present, and a cleared-provenance notify binding flow values is
+    /// vouched. A hand-edited artifact that launders a guess to a human's
+    /// pocket is refuted at deploy.
+    NotificationProvenanceSoundness,
     /// §100.e — for a program declaring any ingesting tool (`ingest:*`), re-
     /// derives the §100.d ingestion invariants: no tool producing
     /// `ingest:inferred` also declares `epistemic:know` (T1001, the Inferred
@@ -464,6 +470,7 @@ impl PropertyClass {
             PropertyClass::QuerySafetySoundness => "query_safety_soundness",
             PropertyClass::DataspaceSchemaSoundness => "dataspace_schema_soundness",
             PropertyClass::GradientSoundness => "gradient_soundness",
+            PropertyClass::NotificationProvenanceSoundness => "notification_provenance_soundness",
             PropertyClass::DocumentIngestionSoundness => "document_ingestion_soundness",
             PropertyClass::InferredCeilingSoundness => "inferred_ceiling_soundness",
         }
@@ -1316,6 +1323,26 @@ pub struct GradientSoundnessWitness {
     pub violations: Vec<String>,
 }
 
+/// §110.b — witness for [`PropertyClass::NotificationProvenanceSoundness`],
+/// one per program. The checker RE-DERIVES every field from
+/// `ir.notifications` and rejects on disagreement. A verifying proof has
+/// every violation list empty.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotificationProvenanceSoundnessWitness {
+    /// `(name, channel)` per notify, source order.
+    pub notifications: Vec<(String, String)>,
+    /// Unknown channel / empty template / missing `web` effect / empty
+    /// recipient ref (`axon-T934`, re-derived). Empty for a verifying proof.
+    pub bad_structure: Vec<String>,
+    /// Missing or malformed `window:` (`axon-T935`, re-derived — an
+    /// unbounded interruption channel cannot deploy). Empty when verifying.
+    pub bad_windows: Vec<String>,
+    /// `provenance: cleared` + `${ref}` slots + no epistemic vouch
+    /// (`axon-T933`, the human-egress laundering barrier, re-derived).
+    /// Empty for a verifying proof.
+    pub laundered_notifications: Vec<String>,
+}
+
 /// §108.d — witness for [`PropertyClass::DataspaceSchemaSoundness`], one per
 /// program. The checker RE-DERIVES every field from `ir.dataspace_specs` +
 /// `ir.flows` and rejects on disagreement. A verifying proof has the
@@ -1409,6 +1436,8 @@ pub enum Witness {
     DataspaceSchemaSoundness(DataspaceSchemaSoundnessWitness),
     /// §Fase 109.b.
     GradientSoundness(GradientSoundnessWitness),
+    /// §Fase 110.b.
+    NotificationProvenanceSoundness(NotificationProvenanceSoundnessWitness),
     DocumentIngestionSoundness(DocumentIngestionSoundnessWitness),
     InferredCeilingSoundness(InferredCeilingSoundnessWitness),
 }
@@ -1463,6 +1492,7 @@ impl Witness {
             Witness::QuerySafetySoundness(_) => "<program>",
             Witness::DataspaceSchemaSoundness(_) => "<program>",
             Witness::GradientSoundness(_) => "<program>",
+            Witness::NotificationProvenanceSoundness(_) => "<program>",
             Witness::DocumentIngestionSoundness(_) => "<program>",
             // §101.b — program-wide property, no single named subject.
             Witness::InferredCeilingSoundness(_) => "<program>",

@@ -60,6 +60,8 @@ const EXPECTED: &[(&str, ExampleTopic)] = &[
     // §Fase 108 — the deterministic data plane: ingest → σ → γ, every
     // number COMPUTED (dataspace + the governed pipeline).
     ("governed_data_pipeline", ExampleTopic::Data),
+    // §Fase 110 — governed human notification (daemon → aggregate → notify).
+    ("governed_notification", ExampleTopic::Data),
     // Agents (2)
     ("agent_react", ExampleTopic::Agents),
     ("reflex_to_immune", ExampleTopic::Agents),

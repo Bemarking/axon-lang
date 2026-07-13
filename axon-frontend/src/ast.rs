@@ -204,6 +204,8 @@ pub enum Declaration {
     /// `provenance: cleared` delivery of an unshielded flow value — a guess must
     /// arrive labeled as a guess (docs/fase/fase_105_governed_crm_delivery.md).
     Deliver(DeliverDefinition),
+    /// §Fase 110 — governed human notification.
+    Notify(NotifyDefinition),
     /// Tier 3+ declarations parsed structurally (balanced braces, no detailed AST).
     Generic(GenericDeclaration),
 }
@@ -313,6 +315,7 @@ impl DocScalar {
 /// catalog (axon-T925). Field values reuse [`DocScalar`]: a `Ref` is a binding to
 /// a flow value (what the T920 barrier inspects), the rest are literals.
 #[derive(Debug, Default)]
+
 pub struct DeliverDefinition {
     pub name: String,
     /// `crm` — closed catalog (axon-T921).
@@ -329,6 +332,40 @@ pub struct DeliverDefinition {
     pub effects: Option<EffectRow>,
     /// The delivery body — the closed-catalog operation list.
     pub ops: Vec<DeliverOp>,
+    pub loc: Loc,
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
+}
+
+/// §Fase 110 — Governed Human Notification: the third egress dual
+/// (`deliver` = systems of record, `document` = artifacts, `notify` =
+/// human attention). Three laws: T933 (the evidence barrier — a guess
+/// reaches a human labeled as a guess, or is refused), T934 (structure:
+/// closed channel catalog; the recipient is a §94 secret-class ref,
+/// NEVER a literal — PII never rides source or IR), T935 (attention:
+/// a `window:` is mandatory — unbounded interruption is refused).
+#[derive(Debug, Default)]
+pub struct NotifyDefinition {
+    pub name: String,
+    /// `sms | whatsapp | telegram` — closed catalog (axon-T934).
+    pub channel: String,
+    /// The §94 secret-class ref the recipient resolves from AT DISPATCH
+    /// (`to: secret(ops.oncall_phone)`). The literal number/chat-id never
+    /// appears anywhere axon stores or reasons over.
+    pub to_secret: String,
+    /// True iff `to:` was written in the `secret(...)` form. A literal
+    /// recipient is an axon-T934 refusal (with a teaching message).
+    pub to_is_secret: bool,
+    /// The message template; `${ref}` slots bind flow values post-run.
+    pub template: String,
+    /// §71-style duration (`30m`, `4h`, `1d`) — at-most-once-per-window
+    /// per recipient (axon-T935; enforced durably by the ENT ledger).
+    pub window: String,
+    /// `attached | cleared` — how epistemic labels cross to the human
+    /// (D110.2). Empty ⇒ `attached` (the safe default).
+    pub provenance: String,
+    /// Must include `web` (a notification crosses the trust boundary).
+    pub effects: Option<EffectRow>,
     pub loc: Loc,
     pub leading_trivia: Vec<crate::tokens::Trivia>,
     pub trailing_trivia: Vec<crate::tokens::Trivia>,

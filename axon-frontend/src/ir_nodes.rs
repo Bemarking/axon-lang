@@ -155,6 +155,8 @@ pub struct IRProgram {
     /// (`axon::delivery`) + the `DeliveryProvenanceSoundness` PCC class (T920).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deliveries: Vec<IRDeliver>,
+    /// §Fase 110 — governed human notifications (the third egress dual).
+    pub notifications: Vec<IRNotify>,
     /// §Fase 87.d — dynamic tool-synthesis policies (compiled). Same
     /// `skip_serializing_if = empty` IR-SHA discipline as `savants`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -238,6 +240,7 @@ impl IRProgram {
             savants: Vec::new(),
             documents: Vec::new(),
             deliveries: Vec::new(),
+            notifications: Vec::new(),
             synths: Vec::new(),
             scopes: Vec::new(),
             effects: Vec::new(),
@@ -2143,6 +2146,28 @@ pub struct IRDocField {
 /// (`axon::delivery`) transduces this to the configured CRM engine; the
 /// `DeliveryProvenanceSoundness` PCC class (T920) re-derives the barrier from it.
 /// `ops` is the closed-catalog operation list.
+/// §Fase 110 — the compiled `notify` declaration. `epistemic_mode`
+/// records the enclosing vouch (the §99.d/§105 discipline) so T933
+/// re-derives identically at deploy (PCC `NotificationProvenanceSoundness`).
+#[derive(Debug, Clone, Serialize)]
+pub struct IRNotify {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub name: String,
+    pub channel: String,
+    /// The §94 secret-class ref (the recipient value NEVER rides the IR).
+    pub to_secret: String,
+    pub template: String,
+    pub window: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub provenance: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effects: Vec<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub epistemic_mode: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct IRDeliver {
     pub node_type: &'static str,

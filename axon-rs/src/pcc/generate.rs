@@ -25,7 +25,8 @@ use super::proof_term::{
     CacheSoundnessWitness, ForgeSoundnessWitness, ResourceBoundsWitness, SavantSoundnessWitness,
     DocumentIngestionSoundnessWitness, DocumentProvenanceSoundnessWitness,
     DataspaceSchemaSoundnessWitness, DeliveryProvenanceSoundnessWitness,
-    GradientSoundnessWitness, QuerySafetySoundnessWitness,
+    GradientSoundnessWitness, NotificationProvenanceSoundnessWitness,
+    QuerySafetySoundnessWitness,
     InferredCeilingSoundnessWitness,
     ScrapeProvenanceSoundnessWitness, WardenSoundnessWitness,
     ShieldHaltGuaranteeWitness, TechnicianCommandSafetyWitness, ToolCallSoundnessWitness,
@@ -2931,6 +2932,79 @@ pub fn generate_query_safety_soundness_proofs(
     }
 }
 
+// ── §Fase 110.b — NotificationProvenanceSoundness ────────────────────────────
+
+/// §110.b — re-derive the whole-program notification witness. "No
+/// contract → no proof": a program with no `notify` yields `None`.
+pub fn derive_notification_provenance_soundness_witness(
+    ir: &IRProgram,
+) -> Option<NotificationProvenanceSoundnessWitness> {
+    if ir.notifications.is_empty() {
+        return None;
+    }
+    let mut bad_structure = Vec::new();
+    let mut bad_windows = Vec::new();
+    let mut laundered = Vec::new();
+    for n in &ir.notifications {
+        // T934 — structure.
+        if !matches!(n.channel.as_str(), "sms" | "whatsapp" | "telegram") {
+            bad_structure.push(format!("{}:channel:{}", n.name, n.channel));
+        }
+        if n.template.is_empty() {
+            bad_structure.push(format!("{}:empty-template", n.name));
+        }
+        if n.to_secret.is_empty() {
+            bad_structure.push(format!("{}:empty-recipient-ref", n.name));
+        }
+        if !n.effects.iter().any(|e| e == "web" || e.starts_with("web:")) {
+            bad_structure.push(format!("{}:no-web-effect", n.name));
+        }
+        // T935 — the mandatory window.
+        let w = n.window.trim();
+        let window_ok = !w.is_empty()
+            && w.len() >= 2
+            && w[..w.len() - 1].chars().all(|c| c.is_ascii_digit())
+            && matches!(w.chars().last(), Some('s') | Some('m') | Some('h') | Some('d'))
+            && w[..w.len() - 1].parse::<u64>().map(|x| x > 0).unwrap_or(false);
+        if !window_ok {
+            bad_windows.push(format!("{}:window:{}", n.name, n.window));
+        }
+        // T933 — the evidence barrier.
+        if n.provenance == "cleared"
+            && n.template.contains("${")
+            && !matches!(n.epistemic_mode.as_str(), "believe" | "know")
+        {
+            laundered.push(n.name.clone());
+        }
+    }
+    Some(NotificationProvenanceSoundnessWitness {
+        notifications: ir
+            .notifications
+            .iter()
+            .map(|n| (n.name.clone(), n.channel.clone()))
+            .collect(),
+        bad_structure,
+        bad_windows,
+        laundered_notifications: laundered,
+    })
+}
+
+/// §110.b — generate the (at most one) proof.
+pub fn generate_notification_provenance_soundness_proofs(
+    ir: &IRProgram,
+    axon_version: &str,
+) -> Vec<ProofTerm> {
+    match derive_notification_provenance_soundness_witness(ir) {
+        Some(witness) => vec![ProofTerm {
+            property: PropertyClass::NotificationProvenanceSoundness,
+            artifact_digest: artifact_digest(ir),
+            witness: Witness::NotificationProvenanceSoundness(witness),
+            axon_version: axon_version.to_string(),
+        }],
+        None => Vec::new(),
+    }
+}
+
 // ── §Fase 109.b — GradientSoundness ──────────────────────────────────────────
 
 /// §109.b — canonical fingerprint of a derivative list: the serde JSON of
@@ -3799,6 +3873,7 @@ pub fn generate_all_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm>
     proofs.extend(generate_query_safety_soundness_proofs(ir, axon_version));
     proofs.extend(generate_dataspace_schema_soundness_proofs(ir, axon_version));
     proofs.extend(generate_gradient_soundness_proofs(ir, axon_version));
+    proofs.extend(generate_notification_provenance_soundness_proofs(ir, axon_version));
     proofs.extend(generate_document_ingestion_soundness_proofs(ir, axon_version));
     proofs.extend(generate_inferred_ceiling_soundness_proofs(ir, axon_version));
     proofs.extend(generate_forge_soundness_proofs(ir, axon_version));
