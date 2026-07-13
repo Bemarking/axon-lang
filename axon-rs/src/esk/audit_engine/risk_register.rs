@@ -324,6 +324,35 @@ pub fn generate_risk_register(program: &IRProgram) -> Vec<Risk> {
         let likelihood = tpl.likelihood.as_str().to_string();
         let impact = tpl.impact.as_str().to_string();
         let residual_score = residual(&likelihood, &impact);
+
+        // §Fase 111 F8 — a risk may only be reported as MITIGATED by a
+        // primitive that actually runs. The Cognitive-I/O kernels
+        // (`heal`/`reconcile`/`lease`/`immune`/`reflex`/`ensemble`/`observe`/
+        // `resource`) have no dispatch path, so a template claiming
+        // `treatment: Mitigate` on the strength of one is telling an auditor
+        // that a control is in place when nothing enforces it.
+        //
+        // Such a risk is not mitigated — it is ACCEPTED, silently. We now say
+        // so, and we say who is at fault: the gap is AXON's, not the adopter's.
+        let treated_by_unenforced = tpl
+            .feature_gate
+            .is_some_and(|g| !super::runtime_wiring::feature_is_enforced(g));
+
+        let (treatment, axon_primitive) = if treated_by_unenforced
+            && tpl.treatment == Treatment::Mitigate
+        {
+            (
+                Treatment::Accept.as_str().to_string(),
+                format!(
+                    "{} — NOT ENFORCED: the primitive is declared but has no runtime \
+                     dispatch path, so this risk is accepted, not mitigated (§111 F8)",
+                    tpl.primitive
+                ),
+            )
+        } else {
+            (tpl.treatment.as_str().to_string(), tpl.primitive.to_string())
+        };
+
         rows.push(Risk {
             risk_id: format!("AXON-RISK-{:03}", counter),
             threat: tpl.threat.into(),
@@ -331,8 +360,8 @@ pub fn generate_risk_register(program: &IRProgram) -> Vec<Risk> {
             likelihood,
             impact,
             applicable_controls: tpl.controls.iter().map(|s| (*s).to_string()).collect(),
-            treatment: tpl.treatment.as_str().to_string(),
-            axon_primitive: tpl.primitive.into(),
+            treatment,
+            axon_primitive,
             residual_score,
         });
     }

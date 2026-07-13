@@ -39,6 +39,15 @@ pub struct GapAnalysis {
     pub pending_external: usize,
     pub assessments: Vec<ControlAssessment>,
     pub missing_features: Vec<String>,
+    /// §Fase 111 F8 — controls this catalog claims are held by a
+    /// `RuntimeInvariant` whose kernel is orphaned (no production caller) or
+    /// absent (the cited symbol does not exist). **These are OUR defect, not
+    /// the adopter's.** They can never be `ready` until the kernel is wired.
+    pub unbacked_runtime_claims: Vec<String>,
+    /// §Fase 111 F8 — features the program legitimately DECLARES and that
+    /// AXON does not enforce. **This is the sentence an adopter most needs to
+    /// read**: you wrote `lease`, and we do not run it.
+    pub declared_but_unenforced: Vec<String>,
 }
 
 impl GapAnalysis {
@@ -64,6 +73,21 @@ impl GapAnalysis {
             "missing_features".into(),
             Value::Array(
                 self.missing_features.iter().cloned().map(Value::String).collect(),
+            ),
+        );
+        // §111 F8 — both lists ride the wire so a consumer (CLI, evidence
+        // package, adopter dashboard) cannot render a readiness percentage
+        // without also being able to render what we do not back.
+        m.insert(
+            "unbacked_runtime_claims".into(),
+            Value::Array(
+                self.unbacked_runtime_claims.iter().cloned().map(Value::String).collect(),
+            ),
+        );
+        m.insert(
+            "declared_but_unenforced".into(),
+            Value::Array(
+                self.declared_but_unenforced.iter().cloned().map(Value::String).collect(),
             ),
         );
         m.insert(
@@ -93,7 +117,14 @@ impl GapAnalysis {
 //  Feature detection
 // ═══════════════════════════════════════════════════════════════════
 
-fn program_features(program: &IRProgram) -> HashSet<String> {
+/// Features the program **declares in source**.
+///
+/// §Fase 111 F8 — declaring is not enforcing. This set answers "what is
+/// written in the program", NOT "what actually runs". Control requirements are
+/// checked against [`enforced_features`]; this set exists only so the analyzer
+/// can tell an auditor the difference between *you did not declare it* and
+/// *you declared it and AXON does not enforce it*.
+fn declared_features(program: &IRProgram) -> HashSet<String> {
     let mut features: HashSet<String> = HashSet::new();
     if !program.shields.is_empty()      { features.insert("has_shield".into()); }
     if !program.resources.is_empty()    { features.insert("has_resource".into()); }
@@ -116,6 +147,27 @@ fn program_features(program: &IRProgram) -> HashSet<String> {
         features.insert("has_compliance_annotation".into());
     }
     features
+}
+
+/// Features the program declares AND that AXON actually enforces at runtime.
+///
+/// §Fase 111 F8. The Cognitive-I/O family (`observe`/`reconcile`/`lease`/
+/// `ensemble`/`immune`/`reflex`/`heal`/`resource`) parses, type-checks and
+/// reaches the IR — and then nothing dispatches it (there is no `IRFlowNode`
+/// arm for any of them, and no runtime path reads
+/// `IRProgram.{observations,leases,heals,…}`). A control may only be satisfied
+/// by a feature that runs, so those are filtered out here.
+///
+/// Wiring one of them into the executor = delete its row from
+/// `runtime_wiring::UNENFORCED_FEATURES` in the same PR, and the controls it
+/// backs go `ready` on their own. That is the only sanctioned way to raise a
+/// readiness score.
+fn enforced_features(declared: &HashSet<String>) -> HashSet<String> {
+    declared
+        .iter()
+        .filter(|f| super::runtime_wiring::feature_is_enforced(f))
+        .cloned()
+        .collect()
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -162,41 +214,94 @@ fn is_external_kind(kind: EvidenceKind) -> bool {
     )
 }
 
-fn assess_control(control: &Control, features: &HashSet<String>) -> ControlAssessment {
+/// Assess one control against the program.
+///
+/// # §Fase 111 F8 — the unsoundness this function used to carry
+///
+/// Before §111 the final arm read `("ready", "enforced by {primitive}")` as
+/// soon as the program *declared* the required primitive. That made the audit
+/// engine assert a `RuntimeInvariant` — "a kernel enforces this while the
+/// program runs" — on the strength of a declaration alone. For the whole
+/// Cognitive-I/O family the kernel has **no production caller**, and for a
+/// third of the catalog the cited symbol **does not exist at all** (dangling
+/// Python anchors from the removed `axon/runtime/` tree).
+///
+/// The consequence was concrete and serious: writing `lease Foo { … }` and
+/// never running it — never being *able* to run it — marked SOC2 CC6.3
+/// `ready`, which `control_statements` then renders to an auditor as
+/// **"implemented"**. A customer could pass a compliance gate we generated and
+/// that we cannot back.
+///
+/// Now: a `RuntimeInvariant` control is `ready` only if
+/// [`runtime_wiring::Wiring::is_enforced`] holds for its evidence locator.
+/// Everything else fails CLOSED, and says why in the rationale — including the
+/// case that matters most to a user, *"you declared it; we do not enforce it"*,
+/// which is a different (and far more actionable) sentence than *"you did not
+/// declare it"*.
+fn assess_control(
+    control: &Control,
+    declared: &HashSet<String>,
+    enforced: &HashSet<String>,
+) -> ControlAssessment {
     let locator = control.evidence_locator;
     let is_pending = locator.contains(PENDING_KEYWORD);
     let reqs = feature_requirements();
     let required: HashSet<&str> = reqs.get(control.control_id).cloned().unwrap_or_default();
-    let missing: Vec<&str> = required
+
+    // Split the unmet requirements into the two honest categories.
+    let mut not_declared: Vec<&str> = required
         .iter()
-        .filter(|f| !features.contains(**f))
+        .filter(|f| !declared.contains(**f))
         .copied()
         .collect();
+    let mut declared_but_unenforced: Vec<&str> = required
+        .iter()
+        .filter(|f| declared.contains(**f) && !enforced.contains(**f))
+        .copied()
+        .collect();
+    not_declared.sort();
+    declared_but_unenforced.sort();
+
+    // §111 F8 — a runtime claim is only as good as its wire.
+    let wiring = super::runtime_wiring::wiring_or_absent(locator);
+    let runtime_claim_unbacked =
+        control.evidence_kind == EvidenceKind::RuntimeInvariant && !wiring.is_enforced();
 
     let (status, rationale) = if is_pending && is_external_kind(control.evidence_kind) {
         (
             "pending_external",
-            format!(
-                "requires external engagement (accredited lab / CPA) — {locator}"
-            ),
+            format!("requires external engagement (accredited lab / CPA) — {locator}"),
         )
     } else if is_pending {
         (
             "pending_code",
             format!("evidence artifact not yet produced — {locator}"),
         )
-    } else if !missing.is_empty() {
-        let mut m_sorted: Vec<&str> = missing.clone();
-        m_sorted.sort();
+    } else if runtime_claim_unbacked {
+        // The load-bearing arm. Never `ready`, whatever the program declares.
+        ("pending_code", wiring.rationale(locator))
+    } else if !declared_but_unenforced.is_empty() {
+        (
+            "pending_code",
+            format!(
+                "program declares {} but AXON does not enforce {} at runtime — \
+                 the primitive has no dispatch path (§111 F14); declaring it is not evidence",
+                declared_but_unenforced.join(", "),
+                if declared_but_unenforced.len() == 1 { "it" } else { "them" },
+            ),
+        )
+    } else if !not_declared.is_empty() {
         (
             "pending_code",
             format!(
                 "program does not declare required primitive(s): {}",
-                m_sorted.join(", ")
+                not_declared.join(", ")
             ),
         )
     } else if control.evidence_kind == EvidenceKind::ExternalOperational {
         ("ready", format!("operational artifact: {locator}"))
+    } else if control.evidence_kind == EvidenceKind::RuntimeInvariant {
+        ("ready", wiring.rationale(locator))
     } else {
         ("ready", format!("enforced by {}", control.axon_primitive))
     };
@@ -217,7 +322,8 @@ fn assess_control(control: &Control, features: &HashSet<String>) -> ControlAsses
 // ═══════════════════════════════════════════════════════════════════
 
 pub fn analyze_gaps(program: &IRProgram, framework: FrameworkId) -> GapAnalysis {
-    let features = program_features(program);
+    let declared = declared_features(program);
+    let enforced = enforced_features(&declared);
     let controls = controls_for(framework);
     let mut analysis = GapAnalysis {
         framework: framework.as_str().into(),
@@ -227,17 +333,42 @@ pub fn analyze_gaps(program: &IRProgram, framework: FrameworkId) -> GapAnalysis 
         pending_external: 0,
         assessments: Vec::new(),
         missing_features: Vec::new(),
+        unbacked_runtime_claims: Vec::new(),
+        declared_but_unenforced: Vec::new(),
     };
     let reqs = feature_requirements();
+
+    // §111 F8 — surface the defect LOUDLY. A control that silently drops out
+    // of `ready` is an improvement over a false `ready`, but it still leaves
+    // the reader guessing. These two lists say the quiet part out loud:
+    // which of OUR runtime claims are unbacked, and which of THEIR
+    // declarations we do not honour.
+    let mut declared_unenforced: Vec<String> = declared
+        .iter()
+        .filter(|f| !enforced.contains(*f))
+        .cloned()
+        .collect();
+    declared_unenforced.sort();
+    analysis.declared_but_unenforced = declared_unenforced;
+
     for c in &controls {
-        let a = assess_control(c, &features);
+        if c.evidence_kind == EvidenceKind::RuntimeInvariant
+            && !super::runtime_wiring::wiring_or_absent(c.evidence_locator).is_enforced()
+        {
+            analysis.unbacked_runtime_claims.push(format!(
+                "{} ({})",
+                c.control_id, c.evidence_locator
+            ));
+        }
+
+        let a = assess_control(c, &declared, &enforced);
         match a.status.as_str() {
             "ready" => analysis.ready += 1,
             "pending_code" => {
                 analysis.pending_code += 1;
                 if let Some(req) = reqs.get(c.control_id) {
                     for feat in req {
-                        if !features.contains(*feat)
+                        if !enforced.contains(*feat)
                             && !analysis.missing_features.contains(&feat.to_string())
                         {
                             analysis.missing_features.push(feat.to_string());
@@ -287,22 +418,20 @@ mod tests {
         assert!(gap.pending_code > 0);
     }
 
+    /// The full Cognitive-I/O stack, declared. Before §Fase 111 this program
+    /// was asserted to make **≥25 SOC2 controls `ready`** — and that assertion
+    /// was the bug, written down and pinned by a passing test.
+    ///
+    /// None of `resource`/`observe`/`reconcile`/`lease`/`ensemble`/`immune`/
+    /// `reflex`/`heal` has a dispatch arm. Declaring them causes exactly
+    /// nothing to run. A compliance posture built on this program is a
+    /// certificate we cannot back.
+    ///
+    /// This test now pins the OPPOSITE, and is the regression guard for F8:
+    /// declaring an unenforced primitive must never buy a `ready`.
     #[test]
-    fn program_with_full_stack_passes_most_soc2_controls() {
-        let ir = compile(r#"
-            type R compliance [HIPAA] { x: String }
-            flow F(r: R) -> R { step S { ask: "x" output: R } }
-            shield G {
-                scan: [prompt_injection]
-                on_breach: halt
-                severity: high
-                compliance: [HIPAA]
-            }
-            axonendpoint E {
-                method: POST path: "/p" body: R execute: F output: R
-                shield: G
-                compliance: [HIPAA]
-            }
+    fn declaring_the_cognitive_io_stack_buys_no_compliance_credit() {
+        let stack = r#"
             resource Db { kind: postgres lifetime: linear }
             fabric Vpc { provider: aws }
             manifest M { resources: [Db] fabric: Vpc compliance: [HIPAA] }
@@ -314,13 +443,74 @@ mod tests {
             immune I { watch: [O] scope: tenant }
             reflex Rf { trigger: I on_level: doubt action: quarantine scope: tenant }
             heal H { source: I scope: tenant }
-        "#);
-        let gap = analyze_gaps(&ir, FrameworkId::Soc2TypeII);
+        "#;
+        let base = "type R compliance [HIPAA] { x: String }\n\
+                    flow F(r: R) -> R { step S { ask: \"x\" output: R } }\n";
+
+        let without = analyze_gaps(&compile(base), FrameworkId::Soc2TypeII);
+        let with = analyze_gaps(&compile(&format!("{base}{stack}")), FrameworkId::Soc2TypeII);
+
+        // The headline invariant: bolting the whole unenforced stack onto a
+        // program must not move the readiness needle by a single control.
+        assert_eq!(
+            with.ready, without.ready,
+            "declaring the Cognitive-I/O stack changed `ready` from {} to {} — \
+             an unwired primitive bought compliance credit (§111 F8 regression)",
+            without.ready, with.ready
+        );
+
+        // …and the adopter must be TOLD, not merely denied. Silence would be
+        // an improvement over a lie, but it is not an answer.
+        for f in ["has_lease", "has_heal", "has_reconcile", "has_immune", "has_ensemble"] {
+            assert!(
+                with.declared_but_unenforced.contains(&f.to_string()),
+                "`{f}` is declared and unenforced; the analysis must say so"
+            );
+        }
+
+        // Every control the catalog backs with an orphaned/absent kernel is
+        // named as OUR defect, and none of them is `ready`.
         assert!(
-            gap.ready >= 25,
-            "expected >= 25 ready, got {} (missing: {:?})",
-            gap.ready,
-            gap.missing_features
+            !with.unbacked_runtime_claims.is_empty(),
+            "SOC2 cites LeaseKernel / HealKernel / ReconcileLoop / ensemble_aggregator — \
+             all orphaned; they must be reported as unbacked runtime claims"
+        );
+        for a in &with.assessments {
+            if a.evidence_kind == "runtime_invariant"
+                && !crate::esk::audit_engine::runtime_wiring::wiring_or_absent(&a.evidence_locator)
+                    .is_enforced()
+            {
+                assert_ne!(
+                    a.status, "ready",
+                    "control {} is `ready` on an unbacked runtime invariant (`{}`)",
+                    a.control_id, a.evidence_locator
+                );
+            }
+        }
+    }
+
+    /// The other half of fail-closed: a control whose runtime kernel IS wired
+    /// must still be able to reach `ready`. A fix that made everything pending
+    /// would be honest and useless.
+    #[test]
+    fn a_wired_runtime_invariant_can_still_be_ready() {
+        let ir = compile(
+            r#"
+            type R { x: String }
+            flow F(r: R) -> R { step S { ask: "x" output: R } }
+        "#,
+        );
+        let gap = analyze_gaps(&ir, FrameworkId::Soc2TypeII);
+        let wired_ready = gap.assessments.iter().any(|a| {
+            a.evidence_kind == "runtime_invariant"
+                && a.status == "ready"
+                && crate::esk::audit_engine::runtime_wiring::wiring_or_absent(&a.evidence_locator)
+                    .is_enforced()
+        });
+        assert!(
+            wired_ready,
+            "no wired RuntimeInvariant reached `ready` — the ProvenanceChain / HmacSigner \
+             audit chain IS on the production path and must still count"
         );
     }
 
