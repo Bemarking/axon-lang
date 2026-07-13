@@ -226,12 +226,21 @@ shield Everything {
     redact: [ssn]
     log: full
     deflect_message: "no"
-    taint: strict
     compliance: [GDPR]
     sign: hmac_sha256
 }
 "#,
     );
+    // §Fase 111 — `taint:` was here, and it was the ONE field in this
+    // "everything-shield" that did nothing at all: parsed, lowered into the IR,
+    // never read by the runtime. It is now RETRACTED (axon-T936), so it is
+    // deliberately absent — a shield field that errors is not a documented
+    // field. Do not "fix" this test by putting it back; see
+    // `tests/fase111_retractions.rs::t936_shield_taint_is_refused`.
+    //
+    // It stays in the parser + SHIELD_FIELD_CATALOG on purpose: that is what
+    // lets T936 greet an existing program with a full explanation, instead of a
+    // vague W010 "unknown field" warning that would let it keep compiling.
     assert!(errs.is_empty(), "the everything-shield must check clean: {errs:?}");
     let w010: Vec<_> = warns
         .iter()

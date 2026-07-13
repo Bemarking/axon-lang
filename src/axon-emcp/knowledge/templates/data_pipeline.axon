@@ -2,8 +2,14 @@
 //
 // Differs from `corporate_integration.axon` (multi-source sync): this
 // scaffold targets a SINGLE pipeline pass — ingest → validate →
-// enrich (cognitive) → load — with explicit data-quality anchors and
-// a transact block over the load step.
+// enrich (cognitive) → load — with explicit data-quality anchors.
+//
+// §Fase 111 — this scaffold used to show a `transact { }` block over the
+// load step. It was empty, and `transact` never opened a transaction
+// anyway (axon-T938): it set an unread marker string and rolled nothing
+// back. Teaching a guarantee that does not exist is worse than teaching
+// nothing. Until real transactional semantics land, make the load
+// IDEMPOTENT — so a retry converges instead of corrupting.
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -92,8 +98,6 @@ flow ProcessBatch(batch: RawBatch) -> FlowEnvelope<LoadReceipt> {
         given: Validate.output
         ask: "Enrich each record with cognitive features (entity tags, sentiment, classification); cite the source for each feature."
         output: FlowEnvelope<EnrichedRecord>
-    }
-    transact {
     }
     step Acknowledge {
         given: Enrich.output

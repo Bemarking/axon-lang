@@ -17,10 +17,10 @@
   <code>stream</code> · <code>effects</code> · <code>@contract_tool</code> · <code>@csp_tool</code><br>
   <code>pix</code> · <code>navigate</code> · <code>drill</code> · <code>trail</code> · <code>corpus</code><br>
   <code>psyche</code> · <code>ots</code><br>
-  <code>mcp</code> · <code>taint</code> · <code>mandate</code> · <code>lambda</code><br>
-  <code>compute</code> · <code>logic</code><br>
+  <code>mcp</code> · <code>mandate</code> · <code>lambda</code><br>
+  <code>compute</code><br>
   <code>daemon</code> · <code>listen</code><br>
-  <code>axonendpoint</code> · <code>axpoint</code> · <code>axonstore</code> · <code>apx</code><br>
+  <code>axonendpoint</code> · <code>axpoint</code> · <code>axonstore</code><br>
   <!-- Cognitive I/O & compliance (λ-L-E calculus, Phases 1–9) -->
   <strong>Cognitive I/O:</strong>
   <code>resource</code> · <code>fabric</code> · <code>manifest</code> · <code>observe</code> ·
@@ -4590,16 +4590,13 @@ know {
 | Psyche     | `psyche`     | Psychological-epistemic modeling on Riemannian manifold |
 | OTS        | `ots`        | Ontological Tool Synthesis for open-ended teleological generation |
 | MCP        | `mcp`        | EMCP resource/tool ingestion from external MCP servers           |
-| Taint      | `taint`      | Epistemic trust label for untrusted external data sources        |
 | Mandate    | `mandate`    | Cybernetic Refinement Calculus — PID control for deterministic LLM output |
 | Lambda     | `lambda`     | Epistemic State Vectors — compile-time degradation enforcement for data  |
 | Compute    | `compute`    | Deterministic muscle — native Fast-Path execution bypassing the LLM      |
-| Logic      | `logic`      | Compute body scope — arithmetic DSL for pure deterministic transforms    |
 | Daemon     | `daemon`     | π-Calculus reactive process — persistent event-driven agent with OTP supervision |
 | Listen     | `listen`     | Co-algebraic event subscription — binds daemon to typed EventBus channels       |
 | AxonEndpoint | `axonendpoint` (`axpoint`) | Native HTTP boundary primitive — typed ingress, flow dispatch, and holographic endpoint telemetry |
 | AxonStore  | `axonstore`  | Cognitive data plane — epistemically-typed rows, HMAC-Merkle audit chain, `Stream<Row>`, capability-typed access |
-| APX        | `apx`        | Epistemic dependency manager — MEC/PCC verification, EPR ranking, quarantine, and compliance gates |
 
 **Block 2 — the 18 Cognitive I/O primitives (Fases 1–9, λ-L-E calculus):**
 
@@ -5080,13 +5077,13 @@ honesty:
 | 16    | Multi-Document Navigation (`corpus` MDN framework)| ✅ Done |
 | 17    | Memory-Augmented MDN (structural learning via μ)  | ✅ Done |
 | 18    | Ontological Tool Synthesis (`ots` primitive)      | ✅ Done |
-| 19    | Epistemic MCP (`mcp` + `taint` primitives)        | ✅ Done |
+| 19    | Epistemic MCP (`mcp`)                            | ✅ Done — `taint` **retracted in §111** (it was a dead `shield` field, never read by the runtime; the epistemic-taint law lives in the lattice: external data is born `Untrusted`, axon-T908) |
 | 20    | Lambda Data (`lambda` — ΛD epistemic state vectors)| ✅ Done |
-| 21    | Deterministic Muscle (`compute` + `logic`)        | ✅ Done |
+| 21    | Deterministic Muscle (`compute` + `logic`)        | 🔴 **Not done.** `logic` **retracted in §111** (reserved keyword, zero parser production). `compute` does **not** execute natively — it binds the literal string `"compute:Name(args)"`; its body is discarded at IR-gen. Under §111 review (implement or retract) |
 | 22    | Reactive Daemons (`daemon` + `listen` π-calculus) | ✅ Done |
 | 23    | AxonServer Process (HTTP/WS API + EventBus FFI)   | ✅ Done |
 | 24    | Transactional Persistence (`axonstore` — HoTT + Linear Logic + DbC + Enterprise hardening) | ✅ Done |
-| 25    | Epistemic Dependency Management (`apx` — lattice + MEC/PCC + EPR + registry + observability/compliance) | ✅ Done |
+| 25    | Epistemic Dependency Management (`apx`)           | 🔴 **Retracted in §111.** Never implemented: the policy block was parsed and discarded (`skip_braced_block`), reached no IR, and no MEC/PCC verification, EPR ranking, quarantine or compliance gate ever existed. `import … with apx { … }` is now a compile error |
 | 26    | Native Endpoint Surface (`axonendpoint` / `axpoint` — typed HTTP ingress + flow dispatch + endpoint telemetry) | ✅ Done |
 | **K**     | **Production Hardening — Observability, Resilience, Persistence** | ✅ Done |
 | v1.10–v1.20 | Runtime wiring (`let` / lambda-apply / IR meta-audit) + production hardening + daemon supervisor + 7 native Rust LLM backends + algebraic-effects runtime + adopter diagnostics | ✅ Done |

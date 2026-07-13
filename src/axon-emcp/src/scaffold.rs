@@ -296,9 +296,14 @@ mod tests {
 
     #[test]
     fn skeleton_for_nested_primitive_uses_nested_polarity_paragraph() {
+        // §Fase 111 — this used to scaffold `transact`, which has been RETRACTED
+        // (axon-T938: it never opened a transaction) and is therefore no longer
+        // in PRIMITIVE_REGISTRY. `forge` is a live nested primitive and serves
+        // the same purpose here: the test is about the `top_level: false`
+        // polarity paragraph, not about which primitive carries it.
         let dir = tempdir("nested");
-        let _ = run("transact", &dir).expect("scaffold should succeed");
-        let body = fs::read_to_string(dir.join("primitives").join("transact.md")).unwrap();
+        let _ = run("forge", &dir).expect("scaffold should succeed");
+        let body = fs::read_to_string(dir.join("primitives").join("forge.md")).unwrap();
         // Polarity paragraph reflects the registry's `top_level: false`.
         // The nested wording is "is **nested**"; the top-level wording is
         // "is a **top-level declaration**". The nested paragraph DOES
@@ -306,7 +311,7 @@ mod tests {
         // top-level declaration"), so we pin the assertion to the
         // primary marker that distinguishes the two arms.
         assert!(body.contains("top_level: false"));
-        assert!(body.contains("`transact` is **nested**"));
+        assert!(body.contains("`forge` is **nested**"));
         assert!(
             !body.contains("is a **top-level declaration**"),
             "nested polarity arm must not use the top-level affirmative wording"

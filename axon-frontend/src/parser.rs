@@ -2221,13 +2221,39 @@ impl Parser {
             self.consume(TokenType::RBrace)?;
         }
 
-        // Skip optional APX policy (with apx { ... })
-        if self.current().value == "with" {
-            self.advance();
-            self.advance(); // consume "apx"
-            if self.check(TokenType::LBrace) {
-                self.skip_braced_block()?;
-            }
+        // ── §Fase 111 — `apx` is RETRACTED ───────────────────────────────
+        //
+        // `import X with apx { … }` used to parse and then call
+        // `skip_braced_block()` — the policy was consumed and thrown on the
+        // floor. It never reached the AST, let alone the IR. In `axon-rs` the
+        // string "apx" occurred only inside comments: there is no APX crate,
+        // no binary, no MEC/PCC dependency verification, no EPR ranking, no
+        // quarantine and no compliance gate. The public README advertised all
+        // five.
+        //
+        // A dependency policy that silently evaporates is the worst possible
+        // shape for this particular promise: the adopter believes their supply
+        // chain is being verified, which is exactly the belief that stops them
+        // from verifying it themselves. Refuse, loudly.
+        let next_is_apx = self
+            .tokens
+            .get(self.pos + 1)
+            .map(|t| t.value == "apx")
+            .unwrap_or(false);
+        if self.current().value == "with" && next_is_apx {
+            let tok = self.current().clone();
+            return Err(ParseError {
+                message: "`import … with apx { … }` is RETRACTED (§111). The apx policy block was \
+                          parsed and silently DISCARDED — it never reached the IR, and no epistemic \
+                          dependency manager exists: no MEC/PCC verification, no EPR ranking, no \
+                          quarantine, no compliance gate. Declaring it verified nothing while \
+                          implying your supply chain was checked. Remove the `with apx { … }` \
+                          clause; the plain `import` is unaffected."
+                    .to_string(),
+                line: tok.line,
+                column: tok.column,
+                ..Default::default()
+            });
         }
 
         Ok(ImportNode {

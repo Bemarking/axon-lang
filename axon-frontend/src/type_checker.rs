@@ -5703,6 +5703,39 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn check_shield(&mut self, node: &ShieldDefinition) {
+        // ── §Fase 111 (T936) — `taint:` is retracted ────────────────────
+        //
+        // The public README advertised `taint` as a primitive: "Epistemic
+        // trust label for untrusted external data sources". It never was one.
+        // It is a `shield` FIELD, and the field is DEAD: the parser reads it,
+        // `ir_generator` copies it into the IR, and **nothing in the runtime
+        // ever reads it back**. A program that wrote `taint: untrusted`
+        // received exactly the protection of a comment.
+        //
+        // `primitive_registry` already disowned `taint` in §Fase 6.c ("an
+        // entry without a parser production lies"); §111 makes the language
+        // and the advertising agree with the code.
+        //
+        // The epistemic-taint LAW is real — it just lives somewhere else:
+        // values acquired from the outside world are born `Untrusted`
+        // (axon-T908, §98), the lattice degrades on contact, and `shield`
+        // gates egress. That law is enforced whether or not anyone writes
+        // this field, which is precisely why the field could rot unnoticed.
+        if !node.taint.is_empty() {
+            self.emit(
+                format!(
+                    "axon-T936 shield '{}' declares `taint: {}` — a DEAD field, retracted in §111. \
+                     It was parsed, carried into the IR, and never read by the runtime: it bought \
+                     you nothing. Delete it. Epistemic taint is not a shield knob — external data \
+                     is born `Untrusted` by law (axon-T908) and degrades the lattice on contact; \
+                     to constrain what may leave, use the shield's `scan:` / `on_breach:` / \
+                     `redact:` gates, which do run.",
+                    node.name, node.taint
+                ),
+                &node.loc,
+            );
+        }
+
         // Scan categories
         for cat in &node.scan {
             // §Fase 53.c — accept an extension-declared scan category as
@@ -9770,13 +9803,71 @@ impl<'a> TypeChecker<'a> {
                         self.emit("Trail step requires a navigate_ref".to_string(), &n.loc);
                     }
                 }
+                // ── §Fase 111 (T937) — `corroborate` is retracted ─────────
+                //
+                // The handler's ENTIRE body was an LLM prompt interpolating
+                // the NAME of the reference — never its content:
+                //
+                //     format!("Corroborate navigation result `{}`", navigate_ref)
+                //
+                // No second source was fetched. No content was read. No
+                // agreement metric was computed. And the framing addendum told
+                // the model: "Cross-validate independently; surface agreement
+                // strength + disagreements." So the model INVENTED a
+                // corroboration — including how strongly two sources it never
+                // saw agreed with each other.
+                //
+                // This is the §108 sin at its purest: not a missing feature but
+                // a manufactured warrant. A step that fabricates verification is
+                // strictly worse than no verification, because a reader trusts
+                // it. Fail CLOSED (the §108 posture) until it is real.
                 FlowStep::Corroborate(n) => {
-                    if n.navigate_ref.is_empty() {
-                        self.emit(
-                            "Corroborate step requires a navigate_ref".to_string(),
-                            &n.loc,
-                        );
-                    }
+                    self.emit(
+                        format!(
+                            "axon-T937 `corroborate {}` is RETRACTED (§111). It never corroborated \
+                             anything: the runtime interpolated the reference's NAME into an LLM \
+                             prompt, fetched no independent source, read no content, and computed no \
+                             agreement metric — while instructing the model to report 'agreement \
+                             strength'. It manufactured a warrant. Fabricated verification is worse \
+                             than none, because it is believed. To cross-check a claim today, \
+                             `navigate` a second corpus and compare the results explicitly, or gate \
+                             the value behind an `anchor`.",
+                            if n.navigate_ref.is_empty() { "<ref>" } else { &n.navigate_ref }
+                        ),
+                        &n.loc,
+                    );
+                }
+                // ── §Fase 111 (T938) — `transact` is retracted ────────────
+                //
+                // `transact { … }` promised atomicity and delivered a string.
+                // The runtime handler inserted `__txn_active = "true"` into the
+                // let-bindings — a key nothing in the tree ever reads — and
+                // opened no transaction, took no lock, and rolled nothing back.
+                // `TransactBlock` carries only a source location: the block's
+                // BODY is not even lowered into the IR.
+                //
+                // This is the most dangerous kind of dead primitive, because it
+                // is load-bearing exactly when things go wrong. An adopter wraps
+                // two `mutate`s in `transact` precisely so a failure between them
+                // cannot leave the store half-written — and got no such
+                // guarantee, silently, on the unhappy path they will only meet in
+                // production. We even shipped it in a knowledge template.
+                //
+                // Fail CLOSED. A missing feature is survivable; a fabricated
+                // atomicity guarantee corrupts data.
+                FlowStep::Transact(n) => {
+                    self.emit(
+                        "axon-T938 `transact { … }` is RETRACTED (§111). It never opened a \
+                         transaction: the runtime set an unread marker string, the block's body \
+                         was never lowered into the IR, and no lock was taken and nothing was \
+                         rolled back. Writes inside it were as atomic as writes outside it — which \
+                         is to say, not. A fabricated atomicity guarantee is worse than an absent \
+                         one, because you only discover it on the failure path. Until real \
+                         transactional semantics land (§111.x), issue the writes directly and make \
+                         them idempotent, so a retry converges instead of corrupting."
+                            .to_string(),
+                        &n.loc,
+                    );
                 }
                 FlowStep::DaemonStep(n) => {
                     if !n.daemon_ref.is_empty() {

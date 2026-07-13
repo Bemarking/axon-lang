@@ -3,13 +3,22 @@
 //! Every primitive doc shipped under `src/knowledge/primitives/` for
 //! Tier 3 (`axonendpoint`, `axpoint`, `daemon`, `mcp`, `listen`,
 //! `shield`, `mandate`, `compute`, `lambda`, `forge`, `ots`,
-//! `psyche`, `immune`, `reflex`, `heal`, `transact`) must be backed
+//! `psyche`, `immune`, `reflex`, `heal`) must be backed
 //! by a canonical `.axon` program that round-trips through the same
 //! `axon-frontend` pipeline the `axon` CLI uses.
 //!
-//! `taint` and `logic` are NOT in this batch — both are reserved
-//! lexer tokens with no parser production (see the §Fase 6.c
-//! commit and the §Fase 6.d registry note).
+//! `taint` and `logic` were never in this batch — both were reserved
+//! lexer tokens with no parser production (see the §Fase 6.c commit
+//! and the §Fase 6.d registry note). §Fase 111 finished the job the
+//! registry started: both are now RETRACTED from the language and
+//! from the README that still advertised them.
+//!
+//! §Fase 111 also removed `transact` from this batch. It HAD a parser
+//! production — so §6.c's rule ("an entry without a parser production
+//! lies") never caught it — and it lied anyway: it opened no
+//! transaction. Its canonical program is kept below, inverted into a
+//! retraction guard. The widened rule: an entry whose SUMMARY the
+//! runtime does not honour lies just as loudly, and is more dangerous.
 //!
 //! Mirrors the pattern from `phase2/6b/6c_canonical_programs.rs`.
 
@@ -419,10 +428,31 @@ heal MitigateExposure {
     must_compile("heal/canonical", src);
 }
 
-// ── Data plane block (1) ─────────────────────────────────────────────
+// ── Data plane block (1) — `transact` RETRACTED in §Fase 111 ─────────
 
+/// §Fase 111 — this used to be `transact_canonical_program_compiles`, and its
+/// canonical program was **double-entry accounting**: post a journal entry
+/// inside a `transact { }` block. It is the sharpest possible illustration of
+/// the defect §111 found, so it is worth stating plainly rather than quietly
+/// deleting.
+///
+/// `transact` never opened a transaction. The runtime inserted an unread marker
+/// string (`__txn_active = "true"`); `TransactBlock` carries only a source
+/// location, so the block's BODY was never lowered into the IR; no lock was
+/// taken and nothing was rolled back. And the canonical example we shipped —
+/// teaching an accountant that their journal posting was atomic — contained an
+/// **empty** `transact { }` block. It was decorative.
+///
+/// A fabricated atomicity guarantee is worse than an absent one: it is
+/// load-bearing exactly on the failure path, which is the one path the adopter
+/// will not exercise until production.
+///
+/// The primitive is now refused at compile time (axon-T938), removed from
+/// `PRIMITIVE_REGISTRY`, and its corpus doc deleted. This test inverts: the gate
+/// now guards the RETRACTION, so a future change that silently resurrects a
+/// no-op `transact` fails here.
 #[test]
-fn transact_canonical_program_compiles() {
+fn transact_is_retracted_and_refuses_to_compile() {
     let src = r#"
 type JournalEntry { period: Text  account: Text  amount: Numeric }
 type ValidatedEntry { entry: JournalEntry }
@@ -443,5 +473,19 @@ flow PostJournalEntry(entry: JournalEntry) -> PostReceipt {
     }
 }
 "#;
-    must_compile("transact/canonical", src);
+    match run(src, "transact/retracted") {
+        Outcome::Ok { .. } => panic!(
+            "`transact` compiled clean — but it opens no transaction and rolls nothing back. \
+             If real transactional semantics have landed (§111.x), replace this gate with a \
+             canonical program AND restore the registry entry + corpus doc; do not simply \
+             delete the refusal."
+        ),
+        Outcome::Err { errors, .. } => {
+            let joined = format!("{errors:#?}");
+            assert!(
+                joined.contains("axon-T938"),
+                "expected the T938 retraction diagnostic, got: {joined}"
+            );
+        }
+    }
 }

@@ -130,7 +130,15 @@ pub enum TokenType {
     Synth,
     // Compute
     Compute,
-    Logic,
+    // §Fase 111 — `Logic` REMOVED. It was a reserved keyword with no parser
+    // production, no type-checker arm and no IR node — dead in the ENTIRE
+    // frontend, while the README advertised it as primitive #50 ("Compute body
+    // scope — arithmetic DSL for pure deterministic transforms").
+    // `primitive_registry` deleted its entry back in §Fase 6.d, stating the
+    // rule it broke: "registry entries match parser productions one-to-one; an
+    // entry without a parser production lies." The keyword outlived the entry
+    // by four years and kept `logic` reserved — so an adopter could not even
+    // name a variable `logic`. It is now an ordinary identifier again.
     // Lambda Data
     Lambda,
     Ontology,
@@ -519,7 +527,7 @@ pub fn keyword_type(word: &str) -> TokenType {
         "listen" => TokenType::Listen,
         "budget_per_event" => TokenType::BudgetPerEvent,
         "compute" => TokenType::Compute,
-        "logic" => TokenType::Logic,
+        // §Fase 111 — "logic" is no longer a keyword (see the TokenType enum).
         "lambda" => TokenType::Lambda,
         "ontology" => TokenType::Ontology,
         "certainty" => TokenType::Certainty,

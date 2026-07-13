@@ -385,14 +385,22 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         summary: "Audit chain — an append-only, hash-linked record of every state transition over a bound surface, tamper-evident by construction (formerly the Provenance-Index reading of pix).",
         doc_status: DocStatus::Documented,
     },
-    PrimitiveInfo {
-        name: "transact",
-        category: "data_plane",
-        top_level: false,
-        since: "Fase 36",
-        summary: "A flow-body block that wraps multiple data-plane mutations in a single transactional unit with rollback semantics.",
-        doc_status: DocStatus::Documented,
-    },
+    // §Fase 111 — `transact` REMOVED (retracted, axon-T938).
+    //
+    // Its summary here read: "wraps multiple data-plane mutations in a single
+    // transactional unit with rollback semantics." None of that was true. The
+    // runtime inserted an unread marker string (`__txn_active = "true"`),
+    // `TransactBlock` carried only a source location so the block's body was
+    // never even lowered into the IR, and no transaction was opened, no lock
+    // taken, nothing rolled back. We shipped it in a knowledge template.
+    //
+    // The registry's own rule — "an entry without a parser production lies" —
+    // was too weak: `transact` HAD a parser production. §111 widens it: an
+    // entry whose SUMMARY the runtime does not honour lies just as loudly, and
+    // is more dangerous, because a rollback that does not happen is only
+    // discovered on the failure path. A retracted primitive is not an exposed
+    // primitive; it leaves the closed set, and `axon check` teaches the truth
+    // via T938 instead.
     // ── Session types (§Fase 41) ──────────────────────────────────────
     PrimitiveInfo {
         name: "session",
@@ -797,9 +805,10 @@ mod tests {
         // §Fase 94 added `rotate` (the mediated secret-renewal verb) → 64→65.
         // §Fase 99 added `document` (Native Document Synthesis) → 65→66.
         // §Fase 105 added `deliver` (Governed CRM Delivery, egress-dual) → 66→67.
+        // §Fase 111 RETRACTED `transact` (it never opened a transaction) → 67→66.
         assert_eq!(
             PRIMITIVE_REGISTRY.len(),
-            67,
+            66,
             "PRIMITIVE_REGISTRY count drift — add/remove the primitive intentionally + update this assertion"
         );
     }
@@ -882,7 +891,7 @@ mod tests {
             // Tier 3
             "axonendpoint", "axpoint", "daemon", "mcp", "listen",
             "shield", "mandate", "compute", "lambda", "forge", "ots",
-            "psyche", "immune", "reflex", "heal", "transact",
+            "psyche", "immune", "reflex", "heal",
             // §Fase 51 (v2.19.0)
             "observable", "quant",
             // §Fase 71 — the temporal execution-window guard.
@@ -939,13 +948,14 @@ mod tests {
         // §Fase 94: 64 → 65 with `rotate` (the mediated secret-renewal verb).
         // §Fase 99: 65 → 66 with `document` (Native Document Synthesis).
         // §Fase 105: 66 → 67 with `deliver` (Governed CRM Delivery).
-        assert_eq!(s.total, 67);
+        // §Fase 111: 67 → 66 — `transact` retracted (axon-T938).
+        assert_eq!(s.total, 66);
         assert_eq!(s.documented + s.pending, s.total);
         // §Fase 6.d achieves **100% coverage** — every entry in the
         // registry has a `.md` and a passing drift-gated canonical
         // program. Pending count is 0; any future drop is a
         // regression the gate catches.
-        assert_eq!(s.documented, 67);
+        assert_eq!(s.documented, 66);
         assert_eq!(s.pending, 0);
     }
 
@@ -971,7 +981,7 @@ mod tests {
         // checks against `axon://grammar/top_level` which is the
         // human-readable mirror of this same polarity.
         for nested in ["step", "reason", "probe", "validate", "refine", "weave",
-                       "listen", "forge", "transact", "quant",
+                       "listen", "forge", "quant",
                        // §Fase 77 — the channel quartet's nested members.
                        "emit", "publish", "discover"] {
             let info = find(nested).expect("must be in registry");

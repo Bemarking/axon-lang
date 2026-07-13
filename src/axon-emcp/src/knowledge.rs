@@ -1251,7 +1251,12 @@ Body prose.
         // NO primitive — read/edit are tool providers (D100.10), so the count
         // holds at 66; this reconciles the gate to the registry.
         // §Fase 105: 66 → 67 with `deliver` (Governed CRM Delivery, egress-dual).
-        assert_eq!(s.total, 67);
+        // §Fase 111: 67 → 66 — `transact` RETRACTED (axon-T938). It never opened
+        // a transaction: the runtime set an unread marker string, the block's
+        // body was never lowered into the IR, and nothing was rolled back. A
+        // retracted primitive leaves the closed set and its corpus doc is
+        // deleted, so the coverage gate stays in lockstep on both sides.
+        assert_eq!(s.total, 66);
     }
 
     /// §Phase 5 — every MCP prompt shipped under
