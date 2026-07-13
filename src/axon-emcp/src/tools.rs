@@ -1073,9 +1073,10 @@ mod tests {
         // secret_custody_rotation + §Fase 95 secret_partition_multitenant +
         // §Fase 105 governed_crm_delivery] + 2 agents + 4 endpoints [+ §Fase 83
         // cors_named_origin_policy + §Fase 92 widget_ephemeral_credential +
-        // §Fase 107 query_safe_search] + 1 memory + 2 validation).
-        assert_eq!(payload["count"], 26);
-        assert_eq!(payload["examples"].as_array().unwrap().len(), 26);
+        // §Fase 107 query_safe_search] + 1 memory + 2 validation +
+        // §Fase 108 governed_data_pipeline [data]).
+        assert_eq!(payload["count"], 27);
+        assert_eq!(payload["examples"].as_array().unwrap().len(), 27);
         // Listing path omits `source` — keeps the payload bounded.
         let first = &payload["examples"][0];
         assert!(first["name"].is_string());

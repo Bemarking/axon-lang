@@ -1,0 +1,45 @@
+---
+name: governed_data_pipeline
+title: "A governed data pipeline — ingest → σ → γ, every number COMPUTED (§108)"
+summary: "The deterministic data plane end-to-end (§108): a typed `dataspace` (axon-T928), a governed `ingest` (axon-T929 — declared format, bounds BEFORE parse §100, refusal-not-coercion, batches born Untrusted §98), then `focus` (σ∘π) and `aggregate` (γ over the closed catalog) with the shared data-plane `where:` grammar (§35). Every result is a deterministic envelope {rows, taint, stats} — the aggregate the flow returns was COMPUTED over columnar batches with sound zone-map pruning, never narrated by a model. Add one more `column` typo or one ghost column to this program and it stops compiling (T928/T930); hand-edit the IR and the PCC class `DataspaceSchemaSoundness` refutes it at deploy."
+topic: data
+primitives:
+  - dataspace
+  - flow
+---
+
+// The deterministic data plane (§108), end to end. The number this flow
+// returns was COMPUTED — scanned, filtered, grouped over typed columnar
+// batches — not narrated by a language model.
+
+// (1) The store: a dataspace IS its typed schema (axon-T928). Each type
+//     maps 1:1 to a physical buffer layout; batches are append-only.
+dataspace Sales {
+    column region:  Text
+    column amount:  Float
+    column sold_at: Timestamp
+}
+
+// (2) The pipeline. `raw` arrives as a flow parameter (bound from the
+//     request body — or from a prior tool/scrape step in a larger flow).
+flow RegionReport(raw: Text) -> Text {
+    // Governed load (axon-T929): declared format, bounds enforced on the
+    // RAW stream before any parsing (§100). A value that does not fit its
+    // column refuses the whole batch, naming row + column — refusal, not
+    // coercion. The batch lands stamped source + sha256 + born-Untrusted.
+    ingest raw into Sales { format: csv, limits { max_bytes: 1048576, max_rows: 100000 } }
+
+    // σ∘π (axon-T930): the `where:` is the ONE data-plane filter grammar
+    // (§35, shared with retrieve/navigate — closed, injection-safe).
+    // Batches whose zone maps PROVABLY exclude the predicate are pruned;
+    // the pruning is observable in the result's `stats`.
+    focus Sales { where: "amount >= 100.0", select: [region, amount], as: big_sales }
+
+    // γ over the closed aggregate catalog {count, sum, avg, min, max}.
+    // Output rows are sorted — deterministic, always. The envelope's
+    // `taint` is the epistemic meet: an aggregate over untrusted batches
+    // is born untrusted; no algebra step can raise trust.
+    aggregate Sales { group_by: [region], compute: [count, sum(amount), avg(amount)], as: by_region }
+
+    return by_region
+}

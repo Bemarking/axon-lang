@@ -1403,6 +1403,11 @@ Body prose.
             // "QUERY MUST be safe and idempotent" made a compile-time proof
             // (axon-T927) instead of a convention nobody enforces.
             (ReferenceKind::Logic, "a_safe_method_is_proven_safe"),
+            // §Fase 108 — analysis is algebra, not conversation: the
+            // deterministic data plane (dataspace/ingest/focus/aggregate/
+            // associate/explore made REAL; a narrated number is a
+            // fabricated one).
+            (ReferenceKind::Logic, "analysis_is_algebra_not_conversation"),
             (ReferenceKind::Compliance, "hipaa"),
             (ReferenceKind::Compliance, "gdpr"),
             (ReferenceKind::Compliance, "pci_dss"),
@@ -1451,7 +1456,8 @@ Body prose.
             // §Fase 96: 16 → 17 with `connections_release_across_cognition`.
             // §Fase 105: 17 → 18 with `delivery_is_assertion_egress`.
             // §Fase 107: 18 → 19 with `a_safe_method_is_proven_safe` (RFC 10008 QUERY).
-            19,
+            // §Fase 108: 19 → 20 with `analysis_is_algebra_not_conversation`.
+            20,
             "logic family count drift"
         );
         assert_eq!(

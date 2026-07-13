@@ -1,0 +1,109 @@
+---
+name: analysis_is_algebra_not_conversation
+title: "Analysis is algebra, not conversation — the deterministic data plane (§Fase 108)"
+summary: "The law governing the five data-plane verbs (§108). In every other agent stack, 'data analysis' is a prompt: the model NARRATES an aggregate, and the narration is unfalsifiable — a number that was never computed, over data that was never loaded. In axon the data plane is DETERMINISTIC: `dataspace` declares a typed columnar schema (axon-T928 — the closed 6-type catalog, one type per physical buffer layout), `ingest` loads through governed first-party parsers (axon-T929: declared dataspace + declared format; bounds enforced on the raw stream BEFORE parsing, §100; a value that does not fit its column REFUSES the batch, naming row + column — refusal, not coercion; every batch stamped source + sha256 + born-Untrusted, §98), and `focus`/`aggregate`/`associate`/`explore` are relational algebra — σ∘π, γ over the closed catalog {count, sum, avg, min, max}, hash equi-⋈, and a shape-only profile (axon-T930: declared targets, declared columns, typed join keys). Predicates share the ONE data-plane `where:` grammar with `retrieve`/`navigate` (§35: closed, whitelisted, injection-safe). Batches are pruned through zone maps ONLY when the predicate is PROVABLY false over [min, max] — sound by construction — and every result is a deterministic envelope {rows, taint, stats}: pruning observable, epistemic taint explicit (the meet over batches — an aggregate over untrusted data is born untrusted; no algebra step can raise trust). PCC `DataspaceSchemaSoundness` re-derives T928/T930 from the stored IR, refuting a hand-edited artifact that queries a ghost column. Without the engine port the verbs FAIL CLOSED (`MissingDependency: dataspace_engine`) — the same posture as `mint`/`rotate`: an LLM fallthrough would HALLUCINATE data. A number an agent reports from a dataspace was COMPUTED, and its lineage is a fact."
+---
+
+# Analysis is algebra, not conversation
+
+Ask an agent framework "how many leads per region?" and watch what actually
+happens: the rows are pasted into a prompt (or worse, *described* to the
+model), and a language model **narrates** a number. The narration is
+unfalsifiable. Nobody scanned the rows; nobody can re-derive the figure; the
+"analysis" is a claim in prose. That is the assertion-laundering failure
+(§99/T916) wearing a spreadsheet costume.
+
+axon's data plane refuses the costume. **§108** makes the five data-plane
+verbs relational algebra over a deterministic columnar engine:
+
+## The store — `dataspace` (axon-T928)
+
+```
+dataspace Sales {
+    column region: Text
+    column amount: Float
+}
+```
+
+A dataspace IS its schema: the closed type catalog (`Text`, `Int`, `Float`,
+`Bool`, `Timestamp`, `Json`) maps 1:1 to physical buffer layouts (validity
+bitmaps — nulls are structural, never sentinels; fixed-width buffers; offset
+buffers for variable width). An empty schema, a duplicate column, or an
+unknown type is a compile-time refusal. At deploy, the declaration is
+INSTANTIATED in the engine. Batches are immutable and append-only — the
+analytical dual of `axonstore`'s transactional rows.
+
+## The load — `ingest` (axon-T929, §100, §98)
+
+```
+ingest raw_csv into Sales { format: csv, limits { max_bytes: 1048576, max_rows: 100000 } }
+```
+
+- **Bounds BEFORE parse** (§100): the byte bound is checked against the raw
+  stream before a single byte is interpreted.
+- **Refusal, not coercion** (D108.7): `"not_a_number"` in a `Float` column
+  refuses the WHOLE batch, naming row and column. A missing value is a
+  structural null — the only flexibility.
+- **Born Untrusted** (§98): every batch is stamped `source + sha256 +
+  ingested_at + Untrusted` at construction. No unstamped batch can exist.
+- **An ingest is a declared WRITE** (D108.4): a `method: QUERY` endpoint
+  whose flow ingests is refused (axon-T927) — a safe method cannot append
+  server state.
+
+## The algebra — `focus` / `aggregate` / `associate` / `explore` (axon-T930)
+
+```
+focus Sales     { where: "amount >= 100.0", select: [region], as: big }
+aggregate Sales { group_by: [region], compute: [count, sum(amount)], as: by_region }
+associate Sales Accounts using region
+explore Sales   { as: shape }
+```
+
+σ∘π, γ over the closed aggregate catalog, hash equi-join (NULL keys never
+join; a keyless join is a cartesian product and is refused), and a profile
+that describes **shape, never content** (Text zone boundaries are row
+content — an email, a name — so they are suppressed).
+
+The `where:` clause is the ONE data-plane filter grammar the product already
+ships for `retrieve`/`navigate` (§35): closed, whitelisted operators,
+`${name}` bindings resolved inside tokenized literals, injection-safe by
+construction. SQL semantics hold: `AND` binds tighter than `OR`; `= NULL` is
+is-null; an ordering against NULL matches nothing.
+
+## Why it is fast AND honest — the same property
+
+Each batch carries per-column zone maps (`[min, max]` + null count). A batch
+is skipped ONLY when the predicate is **provably** false over its zones —
+sound by construction (a skipped batch contains no matching row; a `maybe`
+batch is scanned). The pruning is *observable*: every result is a
+deterministic envelope
+
+```json
+{ "rows": […], "taint": "untrusted", "stats": { "batches_total": 8, "batches_pruned": 5, "rows_scanned": 1200, "rows_matched": 37 } }
+```
+
+and the `taint` is the epistemic meet over the store's batches — an
+aggregate over untrusted data is **born untrusted**; no operation in the
+algebra can raise trust (raising trust is §98/§102's governed territory).
+
+## The fail-closed floor
+
+Without the engine port, all five verbs refuse:
+`MissingDependency { name: "dataspace_engine" }` — the `mint`/`rotate`
+posture, verbatim: an LLM fallthrough would HALLUCINATE a bearer token, a
+rotation, or — here — your data. axon does not ask a language model to
+pretend it loaded your rows.
+
+## The proof at deploy
+
+The PCC class **`DataspaceSchemaSoundness`** re-derives axon-T928/axon-T930
+from the stored IR (recursing into `if`/`for`/`par`/`warden` — a nested
+violation is still a violation). A hand-edited artifact that queries a ghost
+column, smuggles an unknown column type, or aggregates outside the closed
+catalog is refuted BEFORE deploy.
+
+## See also
+
+- `a_safe_method_is_proven_safe` (§107) — why an `ingest` behind QUERY refuses.
+- `delivery_is_assertion_egress` (§105) — the egress dual: what leaves the lattice.
+- `effects_are_linear` / `dispatch_vs_cognition` — the effect discipline this plane rests on.

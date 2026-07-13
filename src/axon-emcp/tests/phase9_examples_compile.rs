@@ -55,6 +55,9 @@ const EXPECTED: &[(&str, ExampleTopic)] = &[
     ("secret_partition_multitenant", ExampleTopic::Data),
     // §Fase 105 — governed CRM delivery (acquire→enrich→deliver, provenance intact).
     ("governed_crm_delivery", ExampleTopic::Data),
+    // §Fase 108 — the deterministic data plane: ingest → σ → γ, every
+    // number COMPUTED (dataspace + the governed pipeline).
+    ("governed_data_pipeline", ExampleTopic::Data),
     // Agents (2)
     ("agent_react", ExampleTopic::Agents),
     ("reflex_to_immune", ExampleTopic::Agents),
