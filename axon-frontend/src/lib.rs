@@ -35,6 +35,9 @@ pub mod parser;
 pub mod smart_suggest;
 pub mod store_column_proof;
 pub mod store_introspect;
+/// §Fase 109.a — the symbolic differentiator + simplifier over the
+/// closed `Expr` (the proof-carrying derivative).
+pub mod expr_diff;
 pub mod store_schema;
 pub mod store_schema_manifest;
 pub mod tokens;

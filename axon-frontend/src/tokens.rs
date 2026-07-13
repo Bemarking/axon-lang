@@ -103,6 +103,8 @@ pub enum TokenType {
     Dataspace,
     Ingest,
     Focus,
+    /// §Fase 109 — `grad`: the proof-carrying derivative step.
+    Grad,
     Associate,
     Aggregate,
     Explore,
@@ -497,6 +499,7 @@ pub fn keyword_type(word: &str) -> TokenType {
         "dataspace" => TokenType::Dataspace,
         "ingest" => TokenType::Ingest,
         "focus" => TokenType::Focus,
+        "grad" => TokenType::Grad,
         "associate" => TokenType::Associate,
         "aggregate" => TokenType::Aggregate,
         "explore" => TokenType::Explore,

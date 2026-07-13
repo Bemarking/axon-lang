@@ -554,6 +554,7 @@ pub(crate) fn coerce_tool_arg_value(value: &str, declared_type: Option<&str>) ->
 fn extract_step_info(node: &IRFlowNode) -> (String, String, String) {
     match node {
         IRFlowNode::Step(s) => (s.name.clone(), "step".to_string(), s.ask.clone()),
+        IRFlowNode::Grad(s) => (s.output.clone(), "grad".to_string(), format!("Grad: d({})/d{:?}", s.target, s.wrt)),
         IRFlowNode::Probe(s) => (s.target.clone(), "probe".to_string(), format!("Probe: {}", s.target)),
         IRFlowNode::Reason(s) => (s.target.clone(), "reason".to_string(), format!("Reason about: {}", s.target)),
         IRFlowNode::Validate(s) => (s.target.clone(), "validate".to_string(), format!("Validate: {}", s.target)),
@@ -1414,6 +1415,11 @@ fn routes_through_dispatcher(node: &crate::ir_nodes::IRFlowNode) -> bool {
             | N::Associate(_)
             | N::Aggregate(_)
             | N::Explore(_)
+            // §Fase 109.b — `grad` is pure control-plane computation: the
+            // derivative was DERIVED at compile time; the handler only
+            // evaluates it. An LLM fallthrough would narrate a number that
+            // was never computed — same law as everything above.
+            | N::Grad(_)
     )
 }
 

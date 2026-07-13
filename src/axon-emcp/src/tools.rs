@@ -1075,8 +1075,8 @@ mod tests {
         // cors_named_origin_policy + §Fase 92 widget_ephemeral_credential +
         // §Fase 107 query_safe_search] + 1 memory + 2 validation +
         // §Fase 108 governed_data_pipeline [data]).
-        assert_eq!(payload["count"], 27);
-        assert_eq!(payload["examples"].as_array().unwrap().len(), 27);
+        assert_eq!(payload["count"], 28);
+        assert_eq!(payload["examples"].as_array().unwrap().len(), 28);
         // Listing path omits `source` — keeps the payload bounded.
         let first = &payload["examples"][0];
         assert!(first["name"].is_string());

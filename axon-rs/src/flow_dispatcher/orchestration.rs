@@ -129,6 +129,80 @@ pub async fn run_let(
 }
 
 // ────────────────────────────────────────────────────────────────────
+//  Grad — the proof-carrying derivative (§Fase 109.b)
+// ────────────────────────────────────────────────────────────────────
+
+/// Evaluate the COMPILE-TIME-DERIVED derivatives at the current
+/// bindings. The differentiation already happened (the symbolic
+/// differentiator, §109.a) and was re-proven at deploy (PCC
+/// `GradientSoundness`) — this handler only evaluates closed
+/// expressions with the same total evaluator `let` uses. No LLM, no
+/// I/O, 0 tokens. A stale artifact (missing `original` / mismatched
+/// `derivatives`) or an unresolvable binding FAILS CLOSED — a
+/// gradient is never narrated.
+pub async fn run_grad(
+    node: &axon_frontend::ir_nodes::IRGradStep,
+    ctx: &mut DispatchCtx,
+) -> Result<NodeOutcome, DispatchError> {
+    if ctx.cancel.is_cancelled() {
+        return Err(DispatchError::UpstreamCancelled);
+    }
+    let step_index = ctx.step_counter;
+    ctx.step_counter += 1;
+
+    if node.original.is_none()
+        || node.wrt.is_empty()
+        || node.derivatives.len() != node.wrt.len()
+    {
+        return Err(DispatchError::BackendError {
+            name: "grad".to_string(),
+            message: format!(
+                "grad '{}' carries no compile-time derivative — the axon-T931/T932 \
+                 checks did not run over this IR (stale or hand-edited artifact)",
+                node.output
+            ),
+        });
+    }
+
+    let mut obj = serde_json::Map::new();
+    for (var, d) in node.wrt.iter().zip(&node.derivatives) {
+        let v = match eval_expr(d, ctx) {
+            Some(EVal::Int(i)) => i as f64,
+            Some(EVal::Float(f)) => f,
+            Some(other) => {
+                return Err(DispatchError::BackendError {
+                    name: "grad".to_string(),
+                    message: format!(
+                        "grad '{}': derivative wrt `{var}` evaluated to a non-numeric \
+                         value ({other:?}) — refusing (a gradient is a number)",
+                        node.output
+                    ),
+                })
+            }
+            None => {
+                return Err(DispatchError::BackendError {
+                    name: "grad".to_string(),
+                    message: format!(
+                        "grad '{}': derivative wrt `{var}` could not be evaluated at the \
+                         current bindings (unbound variable or domain error, e.g. division \
+                         by zero) — refusing, never fabricating",
+                        node.output
+                    ),
+                })
+            }
+        };
+        obj.insert(var.clone(), serde_json::json!(v));
+    }
+    let output = serde_json::Value::Object(obj).to_string();
+    ctx.let_bindings.insert(node.output.clone(), output.clone());
+    Ok(NodeOutcome::Completed {
+        output,
+        tokens_emitted: 0,
+        step_index,
+    })
+}
+
+// ────────────────────────────────────────────────────────────────────
 //  Conditional
 // ────────────────────────────────────────────────────────────────────
 

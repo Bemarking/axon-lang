@@ -1408,6 +1408,10 @@ Body prose.
             // associate/explore made REAL; a narrated number is a
             // fabricated one).
             (ReferenceKind::Logic, "analysis_is_algebra_not_conversation"),
+            // §Fase 109 — the proof-carrying derivative: differentiation is
+            // a compile-time derivation over the closed Expr, re-proven at
+            // deploy, never a tape or a finite difference.
+            (ReferenceKind::Logic, "a_derivative_is_derived_not_sampled"),
             (ReferenceKind::Compliance, "hipaa"),
             (ReferenceKind::Compliance, "gdpr"),
             (ReferenceKind::Compliance, "pci_dss"),
@@ -1457,7 +1461,8 @@ Body prose.
             // §Fase 105: 17 → 18 with `delivery_is_assertion_egress`.
             // §Fase 107: 18 → 19 with `a_safe_method_is_proven_safe` (RFC 10008 QUERY).
             // §Fase 108: 19 → 20 with `analysis_is_algebra_not_conversation`.
-            20,
+            // §Fase 109: 20 → 21 with `a_derivative_is_derived_not_sampled`.
+            21,
             "logic family count drift"
         );
         assert_eq!(

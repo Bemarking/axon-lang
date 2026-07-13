@@ -383,6 +383,11 @@ pub enum PropertyClass {
     /// closed type catalog. A hand-edited IR that queries a ghost column
     /// or smuggles an unknown column type is refuted at deploy.
     DataspaceSchemaSoundness,
+    /// §Fase 109.b — the proof-carrying derivative (`axon-T931`/`T932`,
+    /// re-derived): every `grad` step's stored derivatives EQUAL the
+    /// re-differentiation of its original expression (post-simplification,
+    /// D109.4). A hand-edited gradient is refuted at deploy.
+    GradientSoundness,
     /// §100.e — for a program declaring any ingesting tool (`ingest:*`), re-
     /// derives the §100.d ingestion invariants: no tool producing
     /// `ingest:inferred` also declares `epistemic:know` (T1001, the Inferred
@@ -458,6 +463,7 @@ impl PropertyClass {
             PropertyClass::DeliveryProvenanceSoundness => "delivery_provenance_soundness",
             PropertyClass::QuerySafetySoundness => "query_safety_soundness",
             PropertyClass::DataspaceSchemaSoundness => "dataspace_schema_soundness",
+            PropertyClass::GradientSoundness => "gradient_soundness",
             PropertyClass::DocumentIngestionSoundness => "document_ingestion_soundness",
             PropertyClass::InferredCeilingSoundness => "inferred_ceiling_soundness",
         }
@@ -1296,6 +1302,20 @@ pub struct QuerySafetySoundnessWitness {
     pub egress_declarations: Vec<String>,
 }
 
+/// §109.b — witness for [`PropertyClass::GradientSoundness`], one per
+/// program. The checker RE-DIFFERENTIATES every grad step's `original`
+/// (symbolic rules + the SAME deterministic simplifier, D109.4) and
+/// compares the canonical JSON of the stored derivatives. A verifying
+/// proof has the violation list empty.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GradientSoundnessWitness {
+    /// `(flow, target_let, wrt-joined, derivative_json_sha256-lite)` per
+    /// grad step, source order.
+    pub grads: Vec<(String, String, String, String)>,
+    /// One entry per violation, re-derived. Empty for a verifying proof.
+    pub violations: Vec<String>,
+}
+
 /// §108.d — witness for [`PropertyClass::DataspaceSchemaSoundness`], one per
 /// program. The checker RE-DERIVES every field from `ir.dataspace_specs` +
 /// `ir.flows` and rejects on disagreement. A verifying proof has the
@@ -1387,6 +1407,8 @@ pub enum Witness {
     QuerySafetySoundness(QuerySafetySoundnessWitness),
     /// §Fase 108.d.
     DataspaceSchemaSoundness(DataspaceSchemaSoundnessWitness),
+    /// §Fase 109.b.
+    GradientSoundness(GradientSoundnessWitness),
     DocumentIngestionSoundness(DocumentIngestionSoundnessWitness),
     InferredCeilingSoundness(InferredCeilingSoundnessWitness),
 }
@@ -1440,6 +1462,7 @@ impl Witness {
             Witness::DeliveryProvenanceSoundness(_) => "<program>",
             Witness::QuerySafetySoundness(_) => "<program>",
             Witness::DataspaceSchemaSoundness(_) => "<program>",
+            Witness::GradientSoundness(_) => "<program>",
             Witness::DocumentIngestionSoundness(_) => "<program>",
             // §101.b — program-wide property, no single named subject.
             Witness::InferredCeilingSoundness(_) => "<program>",

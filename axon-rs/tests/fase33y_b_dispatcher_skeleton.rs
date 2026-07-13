@@ -70,6 +70,21 @@ fn step_node() -> IRFlowNode {
     })
 }
 
+fn grad_node() -> IRFlowNode {
+    // §Fase 109 — synthetic shape: NO compile-time derivative (a stale
+    // artifact's shape). The handler must fail CLOSED on it.
+    IRFlowNode::Grad(IRGradStep {
+        node_type: "grad",
+        source_line: 0,
+        source_column: 0,
+        target: "e".into(),
+        wrt: vec!["x".into()],
+        output: "g".into(),
+        original: None,
+        derivatives: Vec::new(),
+    })
+}
+
 fn probe_node() -> IRFlowNode {
     IRFlowNode::Probe(IRProbe {
         node_type: "probe",
@@ -614,6 +629,7 @@ fn all_48_pairs() -> Vec<(IRFlowNode, &'static str)> {
         (deliberate_node(), "deliberate"),
         (consensus_node(), "consensus"),
         (forge_node(), "forge"),
+        (grad_node(), "grad"),
         (focus_node(), "focus"),
         (associate_node(), "associate"),
         (aggregate_node(), "aggregate"),
@@ -668,10 +684,11 @@ fn fresh_ctx() -> (DispatchCtx, mpsc::UnboundedReceiver<axon::flow_execution_eve
 
 #[test]
 fn cartesian_product_has_exactly_48_entries() {
+    // (§Fase 109 grew the catalog to 49 — the fn name is historical.)
     assert_eq!(
         all_48_pairs().len(),
-        48,
-        "33.y.b drift gate: the IRFlowNode catalog must cover all 48 \
+        49,
+        "33.y.b drift gate: the IRFlowNode catalog must cover all 49 \
          variants (§Fase 51.a `quant` + §Fase 51.d.2 `yield`). Adding a 48th \
          IRFlowNode variant fails the dispatch_node compile (forcing a new arm) \
          AND requires updating this drift gate factory + pair list."
@@ -713,6 +730,8 @@ const GRADUATED_VARIANTS: &[&str] = &[
     "lambda_data_apply", "use_tool",
     // §Fase 51.a — the `quant` cognitive block (46th).
     "quant",
+    // §Fase 109 — `grad`, the proof-carrying derivative (49th).
+    "grad",
     // §Fase 51.d.2 — the `yield` measurement point (47th).
     "yield",
     // §Fase 88.a — the `warden` adversarial-analysis block (48th).
@@ -765,6 +784,12 @@ const COGNITIVE_FRAMING_GRADUATED: &[&str] = &["navigate", "corroborate"];
 /// in §108.c (ingest) / §108.d (the query verbs).
 const DATA_PLANE_GRADUATED: &[&str] =
     &["focus", "associate", "aggregate", "explore", "ingest"];
+
+/// §Fase 109 — `grad` evaluates a COMPILE-TIME derivative. The synthetic
+/// factory carries none (a stale artifact's shape), so the handler must
+/// fail CLOSED with the structured `grad` error — the refusal IS the
+/// routing proof (the mint/rotate/§108.a posture).
+const GRAD_GRADUATED: &[&str] = &["grad"];
 
 /// Algebraic-effect handler graduated variants (33.y.g) — apply
 /// capability + invoke / listen / daemon. All emit wire shape +
@@ -863,6 +888,19 @@ async fn every_ir_flow_node_routes_to_its_labeled_handler() {
                 Err(axon::flow_dispatcher::DispatchError::BackendError { name, .. })
                     if name == "forge" => {}
                 other => panic!("forge routed to an unexpected outcome: {other:?}"),
+            }
+            continue;
+        }
+
+        // §Fase 109 — grad with no compile-time derivative (the synthetic
+        // stale shape) fails CLOSED with the structured `grad` error.
+        if GRAD_GRADUATED.contains(&expected_kind) {
+            match outcome {
+                Err(axon::flow_dispatcher::DispatchError::BackendError { ref name, .. })
+                    if name == "grad" => {}
+                other => panic!(
+                    "grad must fail CLOSED on a stale shape (BackendError name=grad),                      got {other:?}",
+                ),
             }
             continue;
         }
@@ -977,14 +1015,14 @@ async fn every_ir_flow_node_routes_to_its_labeled_handler() {
 fn graduated_variants_set_size_pinned_48_of_48() {
     assert_eq!(
         GRADUATED_VARIANTS.len(),
-        48,
+        49,
         "48 / 48 graduated. All IRFlowNode variants have a NAMED \
          async handler in dispatch_node; `legacy_shim` retired in \
          33.y.l. Composition: 6 pure-shape (33.y.c) + 6 orchestration \
          (33.y.d) + 2 parallel/algebraic (33.y.e) + 10 cognitive \
          (33.y.f) + 6 algebraic handlers (33.y.g) + 10 wire \
          integrations (33.y.h) + 3 PIX (33.y.i) + 2 Lambda+UseTool \
-         (33.y.j) + 3 quant+yield+warden (§51.a/§51.d.2/§88.a) = 48 variants total."
+         (33.y.j) + 3 quant+yield+warden (§51.a/§51.d.2/§88.a) + 1 grad (§109) = 49 variants total."
     );
     assert_eq!(PURE_SHAPE_GRADUATED.len(), 6);
     assert_eq!(ORCHESTRATION_GRADUATED.len(), 6);
@@ -994,6 +1032,7 @@ fn graduated_variants_set_size_pinned_48_of_48() {
     // (pure-shape/LLM) bucket for the fail-closed DATA_PLANE bucket.
     assert_eq!(COGNITIVE_FRAMING_GRADUATED.len(), 2);
     assert_eq!(DATA_PLANE_GRADUATED.len(), 5);
+    assert_eq!(GRAD_GRADUATED.len(), 1);
     assert_eq!(ALGEBRAIC_HANDLERS_GRADUATED.len(), 6);
     assert_eq!(WIRE_INTEGRATIONS_GRADUATED.len(), 10);
     assert_eq!(PIX_GRADUATED.len(), 3);
@@ -1012,10 +1051,11 @@ fn graduated_variants_set_size_pinned_48_of_48() {
         + WIRE_INTEGRATIONS_GRADUATED.len()
         + PIX_GRADUATED.len()
         + LAMBDA_TOOLS_GRADUATED.len()
-        + QUANT_GRADUATED.len();
+        + QUANT_GRADUATED.len()
+        + GRAD_GRADUATED.len();
     assert_eq!(
-        total, 48,
-        "partition sum check: all 11 sub-catalogs must cover exactly 48 variants"
+        total, 49,
+        "partition sum check: all 12 sub-catalogs must cover exactly 49 variants"
     );
 }
 
@@ -1074,7 +1114,7 @@ fn flow_plan_kind_returns_non_empty_slug_for_all_45_variants() {
              be 1-to-1 with IRFlowNode variants",
         );
     }
-    assert_eq!(seen.len(), 48, "slugs cover all 48 variants exactly once");
+    assert_eq!(seen.len(), 49, "slugs cover all 49 variants exactly once");
 }
 
 // ────────────────────────────────────────────────────────────────────

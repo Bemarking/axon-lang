@@ -76,8 +76,10 @@ pub use generate::{
     // §Fase 105 — the CRM-delivery provenance obligation (T920 egress barrier).
     derive_delivery_provenance_soundness_witness, generate_delivery_provenance_soundness_proofs,
     // §Fase 107 — the QUERY-safety obligation (T927; RFC 10008 §2 made a proof).
-    derive_dataspace_schema_soundness_witness, derive_query_safety_soundness_witness,
-    generate_dataspace_schema_soundness_proofs, generate_query_safety_soundness_proofs,
+    derive_dataspace_schema_soundness_witness, derive_gradient_soundness_witness,
+    derive_query_safety_soundness_witness,
+    generate_dataspace_schema_soundness_proofs, generate_gradient_soundness_proofs,
+    generate_query_safety_soundness_proofs,
     derive_document_ingestion_soundness_witness, generate_document_ingestion_soundness_proofs,
     derive_inferred_ceiling_soundness_witness, generate_inferred_ceiling_soundness_proofs,
 };
@@ -94,7 +96,7 @@ pub use proof_term::{
     ScrapeProvenanceSoundnessWitness,
     DocumentProvenanceSoundnessWitness,
     DeliveryProvenanceSoundnessWitness,
-    DataspaceSchemaSoundnessWitness, QuerySafetySoundnessWitness,
+    DataspaceSchemaSoundnessWitness, GradientSoundnessWitness, QuerySafetySoundnessWitness,
     DocumentIngestionSoundnessWitness,
     InferredCeilingSoundnessWitness,
     SecretCustodySoundnessWitness,
@@ -3307,6 +3309,65 @@ mod tests {
             CheckOutcome::Refuted { reason } => assert!(reason.contains("T920"), "{reason}"),
             other => panic!("expected Refuted (provenance-stripping barrier), got {other:?}"),
         }
+    }
+
+    // ── §Fase 109.b — GradientSoundness (the proof-carrying derivative) ──
+
+    const GRAD_PROGRAM: &str = concat!(
+        "flow Score(x: Float, y: Float) -> Text {\n",
+        "  let total = 3.0 * x + y * y\n",
+        "  grad total wrt [x, y] as g\n",
+        "  return g\n",
+        "}\n",
+    );
+
+    #[test]
+    fn gradient_round_trips_and_verifies() {
+        let ir = ir_from_source(GRAD_PROGRAM);
+        let proofs = super::generate::generate_gradient_soundness_proofs(&ir, "test");
+        assert_eq!(proofs.len(), 1, "one whole-program gradient proof");
+        assert_eq!(proofs[0].property, PropertyClass::GradientSoundness);
+        if let Witness::GradientSoundness(ref w) = proofs[0].witness {
+            assert_eq!(w.grads.len(), 1);
+            assert_eq!(w.grads[0].1, "total");
+            assert_eq!(w.grads[0].2, "x,y");
+            assert!(w.violations.is_empty(), "{:?}", w.violations);
+        } else {
+            panic!("expected a GradientSoundness witness");
+        }
+        assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
+    }
+
+    #[test]
+    fn gradient_refutes_a_hand_edited_derivative() {
+        // Forge: swap a stored derivative for a flattering constant. The
+        // checker re-differentiates the original and refutes.
+        let mut ir = ir_from_source(GRAD_PROGRAM);
+        for flow in &mut ir.flows {
+            for step in &mut flow.steps {
+                if let crate::ir_nodes::IRFlowNode::Grad(g) = step {
+                    g.derivatives[0] = crate::ir_nodes::IRExpr::Lit {
+                        lit: crate::ir_nodes::IRExprLit::Float { value: 999.0 },
+                    };
+                }
+            }
+        }
+        let proofs = super::generate::generate_gradient_soundness_proofs(&ir, "test");
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("derivative-mismatch"), "{reason}")
+            }
+            other => panic!("expected Refuted (forged gradient), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn grad_less_program_carries_no_gradient_proof() {
+        let ir = ir_from_source("flow Chat() -> Unit { step S { ask: \"hi\" } }\n");
+        assert!(
+            super::generate::generate_gradient_soundness_proofs(&ir, "test").is_empty(),
+            "no grad step → no proof"
+        );
     }
 
     // ── §Fase 108.d — DataspaceSchemaSoundness (T928/T930, made a proof) ──

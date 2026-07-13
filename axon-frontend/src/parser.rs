@@ -3028,6 +3028,7 @@ impl Parser {
             TokenType::Consensus => self.parse_block_step("consensus").map(|l| FlowStep::Consensus(ConsensusBlock { loc: l })),
             TokenType::Forge => self.parse_forge_step().map(FlowStep::Forge),
             TokenType::Focus => self.parse_focus_step(),
+            TokenType::Grad => self.parse_grad_step(),
             TokenType::Associate => self.parse_associate_step(),
             TokenType::Aggregate => self.parse_aggregate_step(),
             TokenType::Explore => self.parse_explore_step(),
@@ -4584,6 +4585,39 @@ impl Parser {
     /// — σ_φ ∘ π_v over a declared dataspace. The `where:` string is the
     /// §35 data-plane filter grammar (D108.9, shared with retrieve /
     /// navigate). Pre-108.d the optional body was silently discarded.
+    /// §Fase 109.a — `grad <letName> wrt <x> [as <name>]` /
+    /// `grad <letName> wrt [a, b] as <name>`. The differentiation itself
+    /// happens at CHECK/IR time (T931/T932 + the symbolic differentiator);
+    /// the parser only captures the surface.
+    fn parse_grad_step(&mut self) -> Result<FlowStep, ParseError> {
+        let tok = self.current().clone();
+        self.advance();
+        let target = self.consume_any_ident_or_kw()?.value.clone();
+        let mut wrt: Vec<String> = Vec::new();
+        let mut output = String::new();
+        if !self.at_declaration_start() && self.current().value == "wrt" {
+            self.advance();
+            if self.check(TokenType::LBracket) {
+                wrt = self.parse_bracketed_identifiers()?;
+            } else {
+                wrt.push(self.consume_any_ident_or_kw()?.value.clone());
+            }
+        }
+        if !self.at_declaration_start() && self.current().value == "as" {
+            self.advance();
+            output = self.consume_any_ident_or_kw()?.value.clone();
+        }
+        Ok(FlowStep::Grad(GradStep {
+            target,
+            wrt,
+            output,
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+        }))
+    }
+
     fn parse_focus_step(&mut self) -> Result<FlowStep, ParseError> {
         let tok = self.current().clone();
         self.advance();

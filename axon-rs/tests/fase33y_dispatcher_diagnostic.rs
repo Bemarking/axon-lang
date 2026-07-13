@@ -434,6 +434,8 @@ fn ir_flow_node_catalog_pin_45_variants() {
         // fails to compile — forcing the dispatcher (and this anchor
         // count) to be updated in lockstep.
         match node {
+            // §Fase 109 — the proof-carrying derivative (49th variant).
+            IRFlowNode::Grad(_) => "grad",
             IRFlowNode::Step(_) => "step",
             IRFlowNode::Probe(_) => "probe",
             IRFlowNode::Reason(_) => "reason",

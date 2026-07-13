@@ -165,6 +165,9 @@ pub fn check_proof(proof: &ProofTerm, ir: &IRProgram) -> CheckOutcome {
         (PropertyClass::DataspaceSchemaSoundness, Witness::DataspaceSchemaSoundness(w)) => {
             check_dataspace_schema_soundness(w, ir)
         }
+        (PropertyClass::GradientSoundness, Witness::GradientSoundness(w)) => {
+            check_gradient_soundness(w, ir)
+        }
         (PropertyClass::QuerySafetySoundness, Witness::QuerySafetySoundness(w)) => {
             check_query_safety_soundness(w, ir)
         }
@@ -1809,6 +1812,40 @@ fn check_delivery_provenance_soundness(
                 "axon-T920 provenance-stripping barrier: `provenance: cleared` delivery(ies) \
                  laundering an unshielded flow value into a CRM: {:?}",
                 actual.laundered_deliveries
+            ),
+        };
+    }
+    CheckOutcome::Verified
+}
+
+/// §109.b — verify a [`GradientSoundnessWitness`]: re-differentiate every
+/// grad's original expression + simplify + compare; refute disagreement
+/// or any surviving violation. A hand-edited gradient cannot deploy.
+fn check_gradient_soundness(
+    claimed: &super::proof_term::GradientSoundnessWitness,
+    ir: &IRProgram,
+) -> CheckOutcome {
+    let actual = match super::generate::derive_gradient_soundness_witness(ir) {
+        Some(w) => w,
+        None => {
+            return CheckOutcome::Refuted {
+                reason: "no grad step exists in this artifact — forged or stale proof"
+                    .to_string(),
+            }
+        }
+    };
+    if actual != *claimed {
+        return CheckOutcome::Refuted {
+            reason: "witness disagrees with artifact re-derivation (forged or stale proof)"
+                .to_string(),
+        };
+    }
+    if !actual.violations.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axon-T931/axon-T932 gradient law violated (a stored derivative does not \
+                 match its re-derivation — hand-edited or stale artifact): {:?}",
+                actual.violations
             ),
         };
     }

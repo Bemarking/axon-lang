@@ -9204,6 +9204,10 @@ impl<'a> TypeChecker<'a> {
     // ── Flow-level reference checks ─────────────────────────────────
 
     fn check_flow_steps(&mut self, steps: &[FlowStep], flow_name: &str) {
+        // §Fase 109.a — rich `let` expressions seen SO FAR (the T932
+        // "prior" discipline: grad differentiates what is already bound).
+        let mut rich_lets_seen: std::collections::HashMap<String, crate::ast::Expr> =
+            std::collections::HashMap::new();
         for step in steps {
             match step {
                 FlowStep::ShieldApply(n) => {
@@ -9297,6 +9301,11 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
                 FlowStep::Let(n) => {
+                    // §Fase 109.a — record the rich expression for the T932
+                    // "prior let" discipline (grad differentiates it).
+                    if let Some(e) = &n.value_ast {
+                        rich_lets_seen.insert(n.identifier.clone(), e.clone());
+                    }
                     // Fase 17.d — type-checker hardening for `let` bindings.
                     // Mirror of axon/compiler/type_checker.py::_check_let.
                     if n.identifier.is_empty() {
@@ -9424,6 +9433,43 @@ impl<'a> TypeChecker<'a> {
                                 .to_string(),
                             &n.loc,
                         );
+                    }
+                }
+                FlowStep::Grad(n) => {
+                    // §Fase 109.a — the two laws of the proof-carrying
+                    // derivative. T932: the target must be a PRIOR rich `let`
+                    // in this flow + at least one `wrt`. T931: the expression
+                    // must live inside the differentiable fragment — a
+                    // non-differentiable construct is refused NAMING the
+                    // construct and its position, never a silent zero.
+                    if n.wrt.is_empty() {
+                        self.emit(
+                            format!("axon-T932 grad of `{}` names no `wrt` variable — the form is `grad <let> wrt <x>` or `grad <let> wrt [a, b]`.", n.target),
+                            &n.loc,
+                        );
+                    }
+                    match rich_lets_seen.get(&n.target) {
+                        None => {
+                            self.emit(
+                                format!("axon-T932 grad targets `{0}`, which is not a PRIOR rich `let` in this flow. Bind the expression first: `let {0} = <arithmetic expression>` — grad differentiates the declared EXPRESSION, not a runtime value (a numeric derivative of a value is the approximation axon refuses to ship).", n.target),
+                                &n.loc,
+                            );
+                        }
+                        Some(expr) => {
+                            for var in &n.wrt {
+                                if let Err(e) = crate::expr_diff::differentiate(expr, var) {
+                                    let position = if e.path.is_empty() {
+                                        String::new()
+                                    } else {
+                                        format!(" (position: {})", e.path)
+                                    };
+                                    self.emit(
+                                        format!("axon-T931 grad of `{}` wrt `{var}`: the expression contains a non-differentiable construct — {}{position}. A gradient over it does not exist; axon does not fabricate one (no silent zeros, no finite-difference approximations). The differentiable fragment is arithmetic (+, -, *, /, negation) over Int/Float and `as_float`.", n.target, e.construct),
+                                        &n.loc,
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
                 FlowStep::Focus(n) => {

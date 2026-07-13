@@ -53,6 +53,11 @@ fn lower_column(c: &StoreColumn) -> IRStoreColumn {
 }
 
 pub struct IRGenerator {
+    /// §Fase 109.a — per-flow context for `grad`: every rich `let`'s
+    /// expression in the CURRENT flow (populated at `visit_flow` entry,
+    /// read by the Grad arm of `visit_flow_step`). RefCell because the
+    /// visitor is `&self` across 8 recursive call sites.
+    grad_lets: std::cell::RefCell<HashMap<String, crate::ast::Expr>>,
     personas: HashMap<String, IRPersona>,
     contexts: HashMap<String, IRContext>,
     anchors: HashMap<String, IRAnchor>,
@@ -80,6 +85,7 @@ pub struct IRGenerator {
 impl IRGenerator {
     pub fn new() -> Self {
         IRGenerator {
+            grad_lets: std::cell::RefCell::new(HashMap::new()),
             personas: HashMap::new(),
             contexts: HashMap::new(),
             anchors: HashMap::new(),
@@ -585,6 +591,38 @@ impl IRGenerator {
         };
 
         // Collect all flow body nodes as typed IR
+        // §Fase 109.a — collect the flow's rich `let` expressions so the
+        // Grad arm can differentiate them (recursing into nested bodies;
+        // T932 enforces the "prior, same flow" discipline at check time).
+        {
+            fn collect_rich_lets(
+                steps: &[FlowStep],
+                out: &mut HashMap<String, crate::ast::Expr>,
+            ) {
+                for st in steps {
+                    match st {
+                        FlowStep::Let(l) => {
+                            if let Some(e) = &l.value_ast {
+                                out.insert(l.identifier.clone(), e.clone());
+                            }
+                        }
+                        FlowStep::If(c) => {
+                            collect_rich_lets(&c.then_body, out);
+                            collect_rich_lets(&c.else_body, out);
+                        }
+                        FlowStep::ForIn(f) => collect_rich_lets(&f.body, out),
+                        FlowStep::Par(pb) => {
+                            pb.branches.iter().for_each(|b| collect_rich_lets(b, out))
+                        }
+                        FlowStep::Warden(w) => collect_rich_lets(&w.body, out),
+                        _ => {}
+                    }
+                }
+            }
+            let mut map = HashMap::new();
+            collect_rich_lets(&n.body, &mut map);
+            *self.grad_lets.borrow_mut() = map;
+        }
         let steps: Vec<IRFlowNode> = n.body.iter().map(|fs| self.visit_flow_step(fs)).collect();
 
         // Compute data edges from Step nodes: if step B's given references "A.output", create edge A → B
@@ -919,6 +957,50 @@ impl IRGenerator {
                 branches: s.branches,
                 constraints_ref: s.constraints_ref.clone(),
             }),
+            FlowStep::Grad(s) => {
+                // §Fase 109.a — differentiate AT COMPILE TIME: the artifact
+                // the IR carries IS the (simplified) derivative. A miss or a
+                // non-differentiable construct on this path means a stale
+                // artifact (T931/T932 refused it at check time on the happy
+                // path) — emit the empty shape; the runtime fails CLOSED on
+                // it and PCC `GradientSoundness` refutes it.
+                let lets = self.grad_lets.borrow();
+                let (original, derivatives) = match lets.get(&s.target) {
+                    Some(expr) => {
+                        let mut ds = Vec::with_capacity(s.wrt.len());
+                        let mut ok = true;
+                        for var in &s.wrt {
+                            match crate::expr_diff::grad(expr, var) {
+                                Ok(d) => ds.push(Self::lower_expr(&d)),
+                                Err(_) => {
+                                    ok = false;
+                                    break;
+                                }
+                            }
+                        }
+                        if ok && !s.wrt.is_empty() {
+                            (Some(Self::lower_expr(expr)), ds)
+                        } else {
+                            (None, Vec::new())
+                        }
+                    }
+                    None => (None, Vec::new()),
+                };
+                IRFlowNode::Grad(IRGradStep {
+                    node_type: "grad",
+                    source_line: s.loc.line,
+                    source_column: s.loc.column,
+                    target: s.target.clone(),
+                    wrt: s.wrt.clone(),
+                    output: if s.output.is_empty() {
+                        format!("d_{}", s.target)
+                    } else {
+                        s.output.clone()
+                    },
+                    original,
+                    derivatives,
+                })
+            }
             FlowStep::Focus(s) => IRFlowNode::Focus(IRFocusStep {
                 node_type: "focus",
                 source_line: s.loc.line,

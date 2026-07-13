@@ -1045,6 +1045,8 @@ pub enum IRFlowNode {
     Deliberate(IRDeliberateBlock),
     Consensus(IRConsensusBlock),
     Forge(IRForgeBlock),
+    /// §Fase 109 — the proof-carrying derivative step.
+    Grad(IRGradStep),
     Focus(IRFocusStep),
     Associate(IRAssociateStep),
     Aggregate(IRAggregateStep),
@@ -1358,6 +1360,26 @@ fn is_default_novelty(v: &f64) -> bool {
 }
 fn is_one_i64(v: &i64) -> bool {
     *v == 1
+}
+
+/// §Fase 109.a — the proof-carrying derivative. `original` is the
+/// differentiated `let`'s expression; `derivatives[i]` = ∂original/∂wrt[i],
+/// SIMPLIFIED (D109.4) — computed at compile time by the symbolic
+/// differentiator and re-derived at deploy by PCC `GradientSoundness`.
+/// `original: None` / empty `derivatives` only in a stale artifact — the
+/// runtime fails CLOSED on it and the PCC refutes it.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRGradStep {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    /// The prior rich `let` differentiated.
+    pub target: String,
+    pub wrt: Vec<String>,
+    /// Result binding (empty ⇒ `d_<target>`).
+    pub output: String,
+    pub original: Option<IRExpr>,
+    pub derivatives: Vec<IRExpr>,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -31,6 +31,8 @@ const EXPECTED: &[(&str, ExampleTopic)] = &[
     // §Fase 58.h — the structured `use <Tool>(k = v, …)` dispatch form.
     ("tool_structured_args", ExampleTopic::Composition),
     ("weave_braid", ExampleTopic::Composition),
+    // §Fase 109 — the proof-carrying derivative (grad over the closed Expr).
+    ("grad_proof_carrying", ExampleTopic::Composition),
     // §Fase 51 (v2.19.0) — the quant cognitive primitive feature map.
     ("quant_feature_map", ExampleTopic::Composition),
     // §Fase 91 — declared cognitive time (`now:` on step + context frame).

@@ -123,6 +123,10 @@ fn default_estimate(kind: StepKind) -> StepEstimate {
 fn classify_node(node: &IRFlowNode) -> StepKind {
     match node {
         IRFlowNode::Step(_) => StepKind::Ask,
+        // §Fase 109 — a compile-time-derived derivative evaluates with the
+        // pure expression evaluator: no LLM, no store, no cost — the same
+        // Control class as `let`/`return`.
+        IRFlowNode::Grad(_) => StepKind::Control,
         IRFlowNode::UseTool(_) => StepKind::ToolCall,
         IRFlowNode::Reason(_) => StepKind::Reason,
         IRFlowNode::Probe(_) => StepKind::Probe,

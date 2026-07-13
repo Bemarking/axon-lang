@@ -1147,6 +1147,9 @@ pub async fn dispatch_node(
         // §Fase 33.y.f — Forge payload-free wire shape.
         IRFlowNode::Forge(node) => cognitive::run_forge(node, ctx).await,
         // §Fase 33.y.f — cognitive framing handlers reuse pure_shape.
+        // §Fase 109.b — the proof-carrying derivative: evaluate the
+        // compile-time-derived expressions at the current bindings.
+        IRFlowNode::Grad(node) => orchestration::run_grad(node, ctx).await,
         IRFlowNode::Focus(node) => cognitive::run_focus(node, ctx).await,
         IRFlowNode::Associate(node) => cognitive::run_associate(node, ctx).await,
         IRFlowNode::Aggregate(node) => cognitive::run_aggregate(node, ctx).await,

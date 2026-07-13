@@ -2358,6 +2358,8 @@ pub enum FlowStep {
     Consensus(ConsensusBlock),
     Forge(ForgeBlock),
     Focus(FocusStep),
+    /// §Fase 109 — the proof-carrying derivative step.
+    Grad(GradStep),
     Associate(AssociateStep),
     Aggregate(AggregateStep),
     ExploreStep(ExploreStepNode),
@@ -2960,6 +2962,21 @@ pub struct FocusStep {
     pub output: String,
     pub loc: Loc,
 }
+/// §Fase 109.a — `grad <letName> wrt <x> [as <name>]`: differentiate the
+/// EXPRESSION a prior rich `let` bound (its AST rides the IR), at compile
+/// time, symbolically. The derivative is checked (T931/T932), simplified,
+/// and stored in the IR — a proof-carrying artifact, re-derived at deploy.
+#[derive(Debug)]
+pub struct GradStep {
+    /// The prior rich `let` whose expression is differentiated.
+    pub target: String,
+    /// The variables to differentiate against (`wrt x` / `wrt [x, y]`).
+    pub wrt: Vec<String>,
+    /// Result binding (`as:`). Empty ⇒ `d_<target>`.
+    pub output: String,
+    pub loc: Loc,
+}
+
 #[derive(Debug)]
 pub struct AssociateStep {
     pub left: String,

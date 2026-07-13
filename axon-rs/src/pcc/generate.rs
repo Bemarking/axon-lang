@@ -24,7 +24,8 @@ use super::proof_term::{
     ParkedResidualSoundnessWitness, ProofTerm, PropertyClass,
     CacheSoundnessWitness, ForgeSoundnessWitness, ResourceBoundsWitness, SavantSoundnessWitness,
     DocumentIngestionSoundnessWitness, DocumentProvenanceSoundnessWitness,
-    DataspaceSchemaSoundnessWitness, DeliveryProvenanceSoundnessWitness, QuerySafetySoundnessWitness,
+    DataspaceSchemaSoundnessWitness, DeliveryProvenanceSoundnessWitness,
+    GradientSoundnessWitness, QuerySafetySoundnessWitness,
     InferredCeilingSoundnessWitness,
     ScrapeProvenanceSoundnessWitness, WardenSoundnessWitness,
     ShieldHaltGuaranteeWitness, TechnicianCommandSafetyWitness, ToolCallSoundnessWitness,
@@ -557,6 +558,8 @@ fn collect_store_accesses(steps: &[crate::ir_nodes::IRFlowNode], out: &mut Vec<S
     use crate::ir_nodes::IRFlowNode as N;
     for step in steps {
         match step {
+            // §Fase 109 — a grad touches no store.
+            N::Grad(_) => {}
             // ── store ops — the only axonstore-touching nodes ──
             N::Retrieve(s) => out.push(s.store_name.clone()),
             N::Persist(s) => out.push(s.store_name.clone()),
@@ -778,6 +781,8 @@ fn collect_named_use_tool_calls<'a>(
     use crate::ir_nodes::IRFlowNode as N;
     for step in steps {
         match step {
+            // §Fase 109 — a grad dispatches no tool.
+            N::Grad(_) => {}
             // ── target — a structured (keyword-arg) tool dispatch ──
             N::UseTool(u) => {
                 if !u.named_args.is_empty() {
@@ -2926,6 +2931,237 @@ pub fn generate_query_safety_soundness_proofs(
     }
 }
 
+// ── §Fase 109.b — GradientSoundness ──────────────────────────────────────────
+
+/// §109.b — canonical fingerprint of a derivative list: the serde JSON of
+/// the IRExpr vector (deterministic — field order is struct order).
+fn derivative_fingerprint(derivatives: &[crate::ir_nodes::IRExpr]) -> String {
+    serde_json::to_string(derivatives).unwrap_or_default()
+}
+
+/// §109.b — the IR-level re-differentiation. The frontend differentiates
+/// `ast::Expr`; at deploy the artifact carries `IRExpr`, so the verifier
+/// re-differentiates the IR form directly (the same §5.2 rules + §5.3
+/// simplifier, ported over `IRExpr` — one closed grammar, two carriers).
+fn ir_diff(e: &crate::ir_nodes::IRExpr, wrt: &str) -> Result<crate::ir_nodes::IRExpr, String> {
+    use crate::ir_nodes::{IRExpr as E, IRExprLit as L};
+    let zero = || E::Lit { lit: L::Float { value: 0.0 } };
+    let one = || E::Lit { lit: L::Float { value: 1.0 } };
+    match e {
+        E::Lit { lit: L::Int { .. } } | E::Lit { lit: L::Float { .. } } => Ok(zero()),
+        E::Lit { .. } => Err("non-numeric literal".to_string()),
+        E::Ref { path } => Ok(if path == wrt { one() } else { zero() }),
+        E::Unary { op, operand } if op == "neg" => Ok(E::Unary {
+            op: "neg".to_string(),
+            operand: Box::new(ir_diff(operand, wrt)?),
+        }),
+        E::Unary { .. } => Err("logical not".to_string()),
+        E::Binary { op, lhs, rhs } => match op.as_str() {
+            "add" | "sub" => Ok(E::Binary {
+                op: op.clone(),
+                lhs: Box::new(ir_diff(lhs, wrt)?),
+                rhs: Box::new(ir_diff(rhs, wrt)?),
+            }),
+            "mul" => Ok(E::Binary {
+                op: "add".to_string(),
+                lhs: Box::new(E::Binary {
+                    op: "mul".to_string(),
+                    lhs: Box::new(ir_diff(lhs, wrt)?),
+                    rhs: rhs.clone(),
+                }),
+                rhs: Box::new(E::Binary {
+                    op: "mul".to_string(),
+                    lhs: lhs.clone(),
+                    rhs: Box::new(ir_diff(rhs, wrt)?),
+                }),
+            }),
+            "div" => Ok(E::Binary {
+                op: "div".to_string(),
+                lhs: Box::new(E::Binary {
+                    op: "sub".to_string(),
+                    lhs: Box::new(E::Binary {
+                        op: "mul".to_string(),
+                        lhs: Box::new(ir_diff(lhs, wrt)?),
+                        rhs: rhs.clone(),
+                    }),
+                    rhs: Box::new(E::Binary {
+                        op: "mul".to_string(),
+                        lhs: lhs.clone(),
+                        rhs: Box::new(ir_diff(rhs, wrt)?),
+                    }),
+                }),
+                rhs: Box::new(E::Binary {
+                    op: "mul".to_string(),
+                    lhs: rhs.clone(),
+                    rhs: rhs.clone(),
+                }),
+            }),
+            other => Err(format!("operator {other}")),
+        },
+        E::Call { builtin, args } if builtin == "as_float" && args.len() == 1 => {
+            ir_diff(&args[0], wrt)
+        }
+        E::Call { builtin, .. } => Err(format!("builtin {builtin}")),
+        E::Field { .. } => Err("field access".to_string()),
+        E::Index { .. } => Err("index access".to_string()),
+    }
+}
+
+fn ir_num(e: &crate::ir_nodes::IRExpr) -> Option<f64> {
+    use crate::ir_nodes::{IRExpr as E, IRExprLit as L};
+    match e {
+        E::Lit { lit: L::Float { value } } => Some(*value),
+        E::Lit { lit: L::Int { value } } => Some(*value as f64),
+        _ => None,
+    }
+}
+
+fn ir_lit_f(v: f64) -> crate::ir_nodes::IRExpr {
+    crate::ir_nodes::IRExpr::Lit {
+        lit: crate::ir_nodes::IRExprLit::Float { value: v },
+    }
+}
+
+/// §109.b — the §5.3 simplifier over `IRExpr` (the SAME rules the
+/// frontend runs — D109.4: prover and verifier agree post-simplification).
+fn ir_simplify(e: crate::ir_nodes::IRExpr) -> crate::ir_nodes::IRExpr {
+    use crate::ir_nodes::IRExpr as E;
+    match e {
+        E::Unary { op, operand } if op == "neg" => {
+            let inner = ir_simplify(*operand);
+            match ir_num(&inner) {
+                Some(v) => ir_lit_f(-v),
+                None => E::Unary { op, operand: Box::new(inner) },
+            }
+        }
+        E::Binary { op, lhs, rhs } => {
+            let l = ir_simplify(*lhs);
+            let r = ir_simplify(*rhs);
+            if let (Some(a), Some(b)) = (ir_num(&l), ir_num(&r)) {
+                let folded = match op.as_str() {
+                    "add" => Some(a + b),
+                    "sub" => Some(a - b),
+                    "mul" => Some(a * b),
+                    "div" if b != 0.0 => Some(a / b),
+                    _ => None,
+                };
+                if let Some(v) = folded {
+                    return ir_lit_f(v);
+                }
+            }
+            let is0 = |x: &E| ir_num(x) == Some(0.0);
+            let is1 = |x: &E| ir_num(x) == Some(1.0);
+            match op.as_str() {
+                "add" if is0(&l) => r,
+                "add" if is0(&r) => l,
+                "sub" if is0(&r) => l,
+                "mul" if is0(&l) || is0(&r) => ir_lit_f(0.0),
+                "mul" if is1(&l) => r,
+                "mul" if is1(&r) => l,
+                "div" if is0(&l) => ir_lit_f(0.0),
+                "div" if is1(&r) => l,
+                _ => E::Binary { op, lhs: Box::new(l), rhs: Box::new(r) },
+            }
+        }
+        E::Call { builtin, args } => E::Call {
+            builtin,
+            args: args.into_iter().map(ir_simplify).collect(),
+        },
+        other => other,
+    }
+}
+
+fn grad_violations_in(
+    flow: &str,
+    steps: &[crate::ir_nodes::IRFlowNode],
+    grads: &mut Vec<(String, String, String, String)>,
+    violations: &mut Vec<String>,
+) {
+    use crate::ir_nodes::IRFlowNode as N;
+    for s in steps {
+        match s {
+            N::Grad(g) => {
+                let fp = derivative_fingerprint(&g.derivatives);
+                grads.push((
+                    flow.to_string(),
+                    g.target.clone(),
+                    g.wrt.join(","),
+                    fp,
+                ));
+                let Some(original) = &g.original else {
+                    violations.push(format!("{flow}:{}:missing-original", g.target));
+                    continue;
+                };
+                if g.derivatives.len() != g.wrt.len() || g.wrt.is_empty() {
+                    violations.push(format!("{flow}:{}:arity", g.target));
+                    continue;
+                }
+                for (var, stored) in g.wrt.iter().zip(&g.derivatives) {
+                    match ir_diff(original, var).map(ir_simplify) {
+                        Ok(expected) => {
+                            if serde_json::to_string(&expected).unwrap_or_default()
+                                != serde_json::to_string(stored).unwrap_or_default()
+                            {
+                                violations.push(format!(
+                                    "{flow}:{}:wrt-{var}:derivative-mismatch",
+                                    g.target
+                                ));
+                            }
+                        }
+                        Err(construct) => violations.push(format!(
+                            "{flow}:{}:wrt-{var}:non-differentiable:{construct}",
+                            g.target
+                        )),
+                    }
+                }
+            }
+            N::Conditional(c) => {
+                grad_violations_in(flow, &c.then_body, grads, violations);
+                grad_violations_in(flow, &c.else_body, grads, violations);
+            }
+            N::ForIn(f) => grad_violations_in(flow, &f.body, grads, violations),
+            N::Par(p) => p
+                .branches
+                .iter()
+                .for_each(|b| grad_violations_in(flow, b, grads, violations)),
+            N::Warden(w) => grad_violations_in(flow, &w.body, grads, violations),
+            _ => {}
+        }
+    }
+}
+
+/// §109.b — re-derive the whole-program gradient witness. "No contract →
+/// no proof": a program with no grad step yields `None`.
+pub fn derive_gradient_soundness_witness(
+    ir: &IRProgram,
+) -> Option<GradientSoundnessWitness> {
+    let mut grads = Vec::new();
+    let mut violations = Vec::new();
+    for flow in &ir.flows {
+        grad_violations_in(&flow.name, &flow.steps, &mut grads, &mut violations);
+    }
+    if grads.is_empty() {
+        return None;
+    }
+    Some(GradientSoundnessWitness { grads, violations })
+}
+
+/// §109.b — generate the (at most one) GradientSoundness proof.
+pub fn generate_gradient_soundness_proofs(
+    ir: &IRProgram,
+    axon_version: &str,
+) -> Vec<ProofTerm> {
+    match derive_gradient_soundness_witness(ir) {
+        Some(witness) => vec![ProofTerm {
+            property: PropertyClass::GradientSoundness,
+            artifact_digest: artifact_digest(ir),
+            witness: Witness::GradientSoundness(witness),
+            axon_version: axon_version.to_string(),
+        }],
+        None => Vec::new(),
+    }
+}
+
 // ── §Fase 108.d — DataspaceSchemaSoundness ───────────────────────────────────
 
 /// §108.d — walk a flow body (recursing into every nested block) and
@@ -3562,6 +3798,7 @@ pub fn generate_all_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm>
     proofs.extend(generate_delivery_provenance_soundness_proofs(ir, axon_version));
     proofs.extend(generate_query_safety_soundness_proofs(ir, axon_version));
     proofs.extend(generate_dataspace_schema_soundness_proofs(ir, axon_version));
+    proofs.extend(generate_gradient_soundness_proofs(ir, axon_version));
     proofs.extend(generate_document_ingestion_soundness_proofs(ir, axon_version));
     proofs.extend(generate_inferred_ceiling_soundness_proofs(ir, axon_version));
     proofs.extend(generate_forge_soundness_proofs(ir, axon_version));
