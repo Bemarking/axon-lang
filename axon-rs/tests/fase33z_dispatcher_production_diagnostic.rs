@@ -925,6 +925,9 @@ fn d1_catalog_totality_pin_45_variants() {
             source_line: 0,
             source_column: 0,
             expression: String::new(),
+            where_expr: String::new(),
+            select: Vec::new(),
+            output: String::new(),
         }),
         IRFlowNode::Associate(IRAssociateStep {
             node_type: "associate",
@@ -933,6 +936,7 @@ fn d1_catalog_totality_pin_45_variants() {
             left: String::new(),
             right: String::new(),
             using_field: String::new(),
+            output: String::new(),
         }),
         IRFlowNode::Aggregate(IRAggregateStep {
             node_type: "aggregate",
@@ -941,6 +945,8 @@ fn d1_catalog_totality_pin_45_variants() {
             target: String::new(),
             group_by: Vec::new(),
             alias: String::new(),
+            compute: Vec::new(),
+            where_expr: String::new(),
         }),
         IRFlowNode::Explore(IRExploreStep {
             node_type: "explore",
@@ -948,6 +954,7 @@ fn d1_catalog_totality_pin_45_variants() {
             source_column: 0,
             target: String::new(),
             limit: None,
+            output: String::new(),
         }),
         IRFlowNode::Ingest(IRIngestStep {
             node_type: "ingest",

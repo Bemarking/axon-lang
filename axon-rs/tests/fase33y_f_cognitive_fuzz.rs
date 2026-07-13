@@ -212,6 +212,9 @@ async fn fuzz_focus_never_panics_random_input() {
             source_line: 0,
             source_column: 0,
             expression,
+            where_expr: String::new(),
+            select: Vec::new(),
+            output: String::new(),
         });
         let outcome = dispatch_node(&node, &mut ctx).await;
         assert_no_panic(&format!("focus iter={iter}"), &outcome);
@@ -233,6 +236,7 @@ async fn fuzz_associate_never_panics_random_input() {
             left,
             right,
             using_field,
+            output: String::new(),
         });
         let outcome = dispatch_node(&node, &mut ctx).await;
         assert_no_panic(&format!("associate iter={iter}"), &outcome);
@@ -257,6 +261,8 @@ async fn fuzz_aggregate_never_panics_random_input() {
             target,
             group_by,
             alias,
+            compute: Vec::new(),
+            where_expr: String::new(),
         });
         let outcome = dispatch_node(&node, &mut ctx).await;
         assert_no_panic(&format!("aggregate iter={iter}"), &outcome);
@@ -280,6 +286,7 @@ async fn fuzz_explore_never_panics_random_input() {
             source_column: 0,
             target,
             limit,
+            output: String::new(),
         });
         let outcome = dispatch_node(&node, &mut ctx).await;
         assert_no_panic(&format!("explore iter={iter}"), &outcome);
@@ -444,6 +451,9 @@ async fn fuzz_cognitive_nested_in_orchestration_never_panics() {
                 source_line: 0,
                 source_column: 0,
                 expression: "k".into(),
+                where_expr: String::new(),
+                select: Vec::new(),
+                output: String::new(),
             }),
             4 => IRFlowNode::Associate(IRAssociateStep {
                 node_type: "associate",
@@ -452,6 +462,7 @@ async fn fuzz_cognitive_nested_in_orchestration_never_panics() {
                 left: "a".into(),
                 right: "b".into(),
                 using_field: "id".into(),
+                output: String::new(),
             }),
             5 => IRFlowNode::Aggregate(IRAggregateStep {
                 node_type: "aggregate",
@@ -460,6 +471,8 @@ async fn fuzz_cognitive_nested_in_orchestration_never_panics() {
                 target: "t".into(),
                 group_by: Vec::new(),
                 alias: "".into(),
+                compute: Vec::new(),
+                where_expr: String::new(),
             }),
             6 => IRFlowNode::Explore(IRExploreStep {
                 node_type: "explore",
@@ -467,6 +480,7 @@ async fn fuzz_cognitive_nested_in_orchestration_never_panics() {
                 source_column: 0,
                 target: "h".into(),
                 limit: None,
+                output: String::new(),
             }),
             7 => IRFlowNode::Ingest(IRIngestStep {
                 node_type: "ingest",

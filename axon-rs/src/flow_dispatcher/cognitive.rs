@@ -472,6 +472,63 @@ pub async fn run_forge(
 
 /// Focus handler — narrow attention to an expression. Reuses the
 /// pure-shape async core with the focus framing addendum.
+/// §Fase 108.d — shared plumbing for the four query verbs: resolve the
+/// engine port (fail CLOSED — the §108.a floor), run the CPU-bound
+/// query under `spawn_blocking` (Brief #63), bind the result envelope
+/// under the step's output name, and emit the completion event.
+/// The envelope is DETERMINISTIC: `{rows, taint, stats}` — pruning is
+/// observable, taint is explicit, and a downstream step reasons over
+/// computed data, never a narration.
+async fn run_dataspace_query<F>(
+    ctx: &mut DispatchCtx,
+    step_name: &str,
+    step_type: &str,
+    step_index: usize,
+    query: F,
+) -> Result<NodeOutcome, DispatchError>
+where
+    F: FnOnce(
+            &crate::dataspace_engine::DataspaceEngine,
+        ) -> Result<crate::dataspace_engine::QueryOutput, String>
+        + Send
+        + 'static,
+{
+    let engine = ctx
+        .dataspace_engine
+        .clone()
+        .ok_or(DispatchError::MissingDependency {
+            name: "dataspace_engine",
+        })?;
+    let step_type_owned = step_type.to_string();
+    let out = tokio::task::spawn_blocking(move || {
+        let guard = engine.read().expect("dataspace engine lock poisoned");
+        query(&guard)
+    })
+    .await
+    .map_err(|e| DispatchError::BackendError {
+        name: "dataspace_engine".to_string(),
+        message: format!("{step_type_owned} worker task failed: {e}"),
+    })?
+    .map_err(|e| DispatchError::BackendError {
+        name: "dataspace_engine".to_string(),
+        message: format!("{step_type} refused: {e}"),
+    })?;
+    let envelope = serde_json::json!({
+        "rows": out.rows,
+        "taint": crate::dataspace_engine::taint_str(out.taint),
+        "stats": out.stats,
+    })
+    .to_string();
+    ctx.let_bindings
+        .insert(step_name.to_string(), envelope.clone());
+    emit_step_complete(ctx, step_name, step_index, &envelope, 0)?;
+    Ok(NodeOutcome::Completed {
+        output: envelope,
+        tokens_emitted: 0,
+        step_index,
+    })
+}
+
 /// §Fase 108.a — the honesty floor. `focus` is a DATA-PLANE verb:
 /// σ_φ ∘ π_v over a declared `dataspace` (§108.d). The previous
 /// behaviour prompted the model to "narrow scope … surface what
@@ -488,15 +545,31 @@ pub async fn run_focus(
     }
     let step_index = ctx.step_counter;
     ctx.step_counter += 1;
-    let name = if node.expression.is_empty() {
-        "Focus"
+    let name = if node.output.is_empty() {
+        if node.expression.is_empty() {
+            "Focus".to_string()
+        } else {
+            node.expression.clone()
+        }
     } else {
-        node.expression.as_str()
+        node.output.clone()
     };
-    emit_step_start(ctx, name, step_index, "focus")?;
-    Err(DispatchError::MissingDependency {
-        name: "dataspace_engine",
+    emit_step_start(ctx, &name, step_index, "focus")?;
+    let target = node.expression.clone();
+    let where_expr = node.where_expr.clone();
+    let select = node.select.clone();
+    let bindings = ctx.let_bindings.clone();
+    run_dataspace_query(ctx, &name, "focus", step_index, move |engine| {
+        let store = engine.store(&target).ok_or_else(|| {
+            format!(
+                "'{target}' is not an instantiated dataspace — the compile-time \
+                 axon-T930 check did not run over this IR (stale or hand-edited \
+                 artifact)"
+            )
+        })?;
+        crate::dataspace_engine::focus_query(store, &where_expr, &select, &bindings)
     })
+    .await
 }
 
 /// §Fase 108.a — the honesty floor. `associate` is a DATA-PLANE verb:
@@ -514,15 +587,34 @@ pub async fn run_associate(
     }
     let step_index = ctx.step_counter;
     ctx.step_counter += 1;
-    let name = if node.left.is_empty() {
+    let name = if !node.output.is_empty() {
+        node.output.clone()
+    } else if node.left.is_empty() {
         "Associate".to_string()
     } else {
-        format!("{}↔{}", node.left, node.right)
+        format!("{}_{}", node.left, node.right)
     };
     emit_step_start(ctx, &name, step_index, "associate")?;
-    Err(DispatchError::MissingDependency {
-        name: "dataspace_engine",
+    let left = node.left.clone();
+    let right = node.right.clone();
+    let using = node.using_field.clone();
+    run_dataspace_query(ctx, &name, "associate", step_index, move |engine| {
+        let l = engine.store(&left).ok_or_else(|| {
+            format!("'{left}' is not an instantiated dataspace (stale IR — axon-T930)")
+        })?;
+        let r = engine.store(&right).ok_or_else(|| {
+            format!("'{right}' is not an instantiated dataspace (stale IR — axon-T930)")
+        })?;
+        if using.is_empty() {
+            return Err(
+                "associate declares no `using <column>` — a keyless join is a \
+                 cartesian product, which is refused (stale IR — axon-T930)"
+                    .to_string(),
+            );
+        }
+        crate::dataspace_engine::associate_query(l, r, &using)
     })
+    .await
 }
 
 /// §Fase 108.a — the honesty floor. `aggregate` is a DATA-PLANE verb:
@@ -540,15 +632,42 @@ pub async fn run_aggregate(
     }
     let step_index = ctx.step_counter;
     ctx.step_counter += 1;
-    let name = if node.target.is_empty() {
-        "Aggregate"
+    let name = if !node.alias.is_empty() {
+        node.alias.clone()
+    } else if node.target.is_empty() {
+        "Aggregate".to_string()
     } else {
-        node.target.as_str()
+        node.target.clone()
     };
-    emit_step_start(ctx, name, step_index, "aggregate")?;
-    Err(DispatchError::MissingDependency {
-        name: "dataspace_engine",
+    emit_step_start(ctx, &name, step_index, "aggregate")?;
+    let target = node.target.clone();
+    let where_expr = node.where_expr.clone();
+    let group_by = node.group_by.clone();
+    let compute_raw = node.compute.clone();
+    let bindings = ctx.let_bindings.clone();
+    run_dataspace_query(ctx, &name, "aggregate", step_index, move |engine| {
+        let store = engine.store(&target).ok_or_else(|| {
+            format!("'{target}' is not an instantiated dataspace (stale IR — axon-T930)")
+        })?;
+        // An aggregate with no computes counts rows — the smallest
+        // honest default (`count` is total for any schema).
+        let computes: Vec<crate::dataspace_engine::AggregateSpec> = if compute_raw.is_empty() {
+            vec![crate::dataspace_engine::AggregateSpec::parse("count")?]
+        } else {
+            compute_raw
+                .iter()
+                .map(|c| crate::dataspace_engine::AggregateSpec::parse(c))
+                .collect::<Result<_, _>>()?
+        };
+        crate::dataspace_engine::aggregate_query(
+            store,
+            &where_expr,
+            &group_by,
+            &computes,
+            &bindings,
+        )
     })
+    .await
 }
 
 /// §Fase 108.a — the honesty floor. `explore` is a DATA-PLANE verb: a
@@ -566,15 +685,22 @@ pub async fn run_explore(
     }
     let step_index = ctx.step_counter;
     ctx.step_counter += 1;
-    let name = if node.target.is_empty() {
-        "Explore"
+    let name = if !node.output.is_empty() {
+        node.output.clone()
+    } else if node.target.is_empty() {
+        "Explore".to_string()
     } else {
-        node.target.as_str()
+        node.target.clone()
     };
-    emit_step_start(ctx, name, step_index, "explore")?;
-    Err(DispatchError::MissingDependency {
-        name: "dataspace_engine",
+    emit_step_start(ctx, &name, step_index, "explore")?;
+    let target = node.target.clone();
+    run_dataspace_query(ctx, &name, "explore", step_index, move |engine| {
+        let store = engine.store(&target).ok_or_else(|| {
+            format!("'{target}' is not an instantiated dataspace (stale IR — axon-T930)")
+        })?;
+        Ok(crate::dataspace_engine::explore_profile(store))
     })
+    .await
 }
 
 /// §Fase 108.c — governed ingest, REAL. Loads source bytes (resolved
@@ -1410,6 +1536,9 @@ mod tests {
             source_line: 0,
             source_column: 0,
             expression: "key_insight".into(),
+            where_expr: String::new(),
+            select: Vec::new(),
+            output: String::new(),
         };
         let err = run_focus(&node, &mut ctx).await.unwrap_err();
         assert!(
@@ -1435,6 +1564,7 @@ mod tests {
             left: "A".into(),
             right: "B".into(),
             using_field: "id".into(),
+            output: String::new(),
         };
         let err = run_associate(&node, &mut ctx).await.unwrap_err();
         assert!(
@@ -1444,7 +1574,9 @@ mod tests {
         match rx.try_recv().unwrap() {
             FlowExecutionEvent::StepStart { step_type, step_name, .. } => {
                 assert_eq!(step_type, "associate");
-                assert_eq!(step_name, "A↔B");
+                // §108.d — the default output binding is `<L>_<R>` (a
+                // BINDABLE identifier, unlike the old display arrow).
+                assert_eq!(step_name, "A_B");
             }
             e => panic!("expected StepStart, got {e:?}"),
         }
@@ -1462,6 +1594,8 @@ mod tests {
             target: "events".into(),
             group_by: vec!["region".into()],
             alias: "by_region".into(),
+            compute: Vec::new(),
+            where_expr: String::new(),
         };
         let err = run_aggregate(&node, &mut ctx).await.unwrap_err();
         assert!(
@@ -1486,6 +1620,7 @@ mod tests {
             source_column: 0,
             target: "hypothesis_space".into(),
             limit: Some(5),
+            output: String::new(),
         };
         let err = run_explore(&node, &mut ctx).await.unwrap_err();
         assert!(
@@ -1970,6 +2105,9 @@ mod tests {
                     source_line: 0,
                     source_column: 0,
                     expression: "x".into(),
+                    where_expr: String::new(),
+                    select: Vec::new(),
+                    output: String::new(),
                 },
                 &mut ctx,
             )

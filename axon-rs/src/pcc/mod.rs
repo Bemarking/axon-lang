@@ -76,7 +76,8 @@ pub use generate::{
     // §Fase 105 — the CRM-delivery provenance obligation (T920 egress barrier).
     derive_delivery_provenance_soundness_witness, generate_delivery_provenance_soundness_proofs,
     // §Fase 107 — the QUERY-safety obligation (T927; RFC 10008 §2 made a proof).
-    derive_query_safety_soundness_witness, generate_query_safety_soundness_proofs,
+    derive_dataspace_schema_soundness_witness, derive_query_safety_soundness_witness,
+    generate_dataspace_schema_soundness_proofs, generate_query_safety_soundness_proofs,
     derive_document_ingestion_soundness_witness, generate_document_ingestion_soundness_proofs,
     derive_inferred_ceiling_soundness_witness, generate_inferred_ceiling_soundness_proofs,
 };
@@ -93,7 +94,7 @@ pub use proof_term::{
     ScrapeProvenanceSoundnessWitness,
     DocumentProvenanceSoundnessWitness,
     DeliveryProvenanceSoundnessWitness,
-    QuerySafetySoundnessWitness,
+    DataspaceSchemaSoundnessWitness, QuerySafetySoundnessWitness,
     DocumentIngestionSoundnessWitness,
     InferredCeilingSoundnessWitness,
     SecretCustodySoundnessWitness,
@@ -3306,6 +3307,71 @@ mod tests {
             CheckOutcome::Refuted { reason } => assert!(reason.contains("T920"), "{reason}"),
             other => panic!("expected Refuted (provenance-stripping barrier), got {other:?}"),
         }
+    }
+
+    // ── §Fase 108.d — DataspaceSchemaSoundness (T928/T930, made a proof) ──
+
+    const DATASPACE_PROGRAM: &str = concat!(
+        "dataspace Sales {\n",
+        "  column region: Text\n",
+        "  column amount: Float\n",
+        "}\n",
+        "flow Report(raw: Text) -> Text {\n",
+        "  ingest raw into Sales { format: csv }\n",
+        "  aggregate Sales { group_by: [region], compute: [count, sum(amount)], as: r }\n",
+        "  return r\n",
+        "}\n",
+    );
+
+    #[test]
+    fn dataspace_schema_round_trips_and_verifies() {
+        let ir = ir_from_source(DATASPACE_PROGRAM);
+        let proofs =
+            super::generate::generate_dataspace_schema_soundness_proofs(&ir, "test");
+        assert_eq!(proofs.len(), 1, "one whole-program dataspace-schema proof");
+        assert_eq!(proofs[0].property, PropertyClass::DataspaceSchemaSoundness);
+        if let Witness::DataspaceSchemaSoundness(ref w) = proofs[0].witness {
+            assert_eq!(w.dataspaces.len(), 1);
+            assert_eq!(w.dataspaces[0].0, "Sales");
+            assert!(w.violations.is_empty(), "{:?}", w.violations);
+        } else {
+            panic!("expected a DataspaceSchemaSoundness witness");
+        }
+        assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
+    }
+
+    #[test]
+    fn dataspace_schema_refutes_a_hand_edited_ghost_column() {
+        // A stale/hand-edited artifact whose aggregate reads a column the
+        // schema never declared MUST be refuted at deploy — the T930 law,
+        // re-derived. Forge it by mutating the compiled IR.
+        let mut ir = ir_from_source(DATASPACE_PROGRAM);
+        for flow in &mut ir.flows {
+            for step in &mut flow.steps {
+                if let crate::ir_nodes::IRFlowNode::Aggregate(a) = step {
+                    a.group_by = vec!["ghost_region".to_string()];
+                }
+            }
+        }
+        let proofs =
+            super::generate::generate_dataspace_schema_soundness_proofs(&ir, "test");
+        assert_eq!(proofs.len(), 1);
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("ghost-column"), "{reason}")
+            }
+            other => panic!("expected Refuted (ghost column), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dataspace_less_program_carries_no_schema_proof() {
+        let ir = ir_from_source("flow Chat() -> Unit { step S { ask: \"hi\" } }\n");
+        assert!(
+            super::generate::generate_dataspace_schema_soundness_proofs(&ir, "test")
+                .is_empty(),
+            "no dataspace surface → no proof"
+        );
     }
 
     // ── §Fase 107 — QuerySafetySoundness (RFC 10008 §2, made a proof) ────

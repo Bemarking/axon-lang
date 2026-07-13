@@ -4928,6 +4928,9 @@ mod fase65_navigate_bridge {
             source_line: 0,
             source_column: 0,
             expression: "x".into(),
+            where_expr: String::new(),
+            select: Vec::new(),
+            output: String::new(),
         });
         assert!(routes_through_dispatcher(&focus));
         let ingest = IRFlowNode::Ingest(IRIngestStep {

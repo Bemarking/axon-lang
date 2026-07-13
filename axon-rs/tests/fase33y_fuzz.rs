@@ -350,6 +350,9 @@ fn random_focus(lcg: &mut Lcg) -> IRFlowNode {
         source_line: 0,
         source_column: 0,
         expression: lcg.ascii_with_random_len(16),
+        where_expr: String::new(),
+        select: Vec::new(),
+        output: String::new(),
     })
 }
 
@@ -361,6 +364,7 @@ fn random_associate(lcg: &mut Lcg) -> IRFlowNode {
         left: lcg.ascii_with_random_len(8),
         right: lcg.ascii_with_random_len(8),
         using_field: lcg.ascii_with_random_len(8),
+        output: String::new(),
     })
 }
 
@@ -372,6 +376,8 @@ fn random_aggregate(lcg: &mut Lcg) -> IRFlowNode {
         target: lcg.ascii_with_random_len(12),
         group_by: vec![lcg.ascii_with_random_len(8)],
         alias: lcg.ascii_with_random_len(8),
+        compute: Vec::new(),
+        where_expr: String::new(),
     })
 }
 
@@ -382,6 +388,7 @@ fn random_explore(lcg: &mut Lcg) -> IRFlowNode {
         source_column: 0,
         target: lcg.ascii_with_random_len(12),
         limit: None,
+        output: String::new(),
     })
 }
 

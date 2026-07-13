@@ -710,7 +710,13 @@ axonstore Store { backend: "postgresql" isolation: "serializable" }
 
 #[test]
 fn ir_flow_step_types() {
+    // §Fase 108.d — `focus` is a data-plane verb: its target must be a
+    // DECLARED dataspace (axon-T930), so the fixture declares one.
     let ir = compile_json(r#"
+dataspace Attention {
+    column note: Text
+}
+
 flow Pipeline() {
     step Start { ask: "begin" }
     probe Target

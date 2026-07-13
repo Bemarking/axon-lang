@@ -73,6 +73,9 @@ fn focus(expression: &str) -> IRFlowNode {
         source_line: 0,
         source_column: 0,
         expression: expression.into(),
+        where_expr: String::new(),
+        select: Vec::new(),
+        output: String::new(),
     })
 }
 
@@ -84,6 +87,7 @@ fn associate(left: &str, right: &str, using_field: &str) -> IRFlowNode {
         left: left.into(),
         right: right.into(),
         using_field: using_field.into(),
+        output: String::new(),
     })
 }
 
@@ -95,6 +99,8 @@ fn aggregate(target: &str, group_by: Vec<&str>, alias: &str) -> IRFlowNode {
         target: target.into(),
         group_by: group_by.into_iter().map(String::from).collect(),
         alias: alias.into(),
+        compute: Vec::new(),
+        where_expr: String::new(),
     })
 }
 
@@ -105,6 +111,7 @@ fn explore(target: &str, limit: Option<i64>) -> IRFlowNode {
         source_column: 0,
         target: target.into(),
         limit,
+        output: String::new(),
     })
 }
 

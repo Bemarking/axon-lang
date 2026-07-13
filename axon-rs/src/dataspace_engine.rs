@@ -1113,6 +1113,901 @@ fn push_json_field(
 }
 
 // ─────────────────────────────────────────────────────────────────────
+//  The lazy relational query engine (§108.d)
+// ─────────────────────────────────────────────────────────────────────
+//
+// σ (focus) · γ (aggregate) · equi-⋈ (associate) · profile (explore),
+// with predicates drawn from the ONE data-plane `where:` grammar the
+// product already ships — `crate::store::filter` (§35.b: closed,
+// whitelisted operators, `${name}` bindings resolved inside tokenized
+// string literals, fuzzed §35.k). D108.9: `retrieve`, `navigate` and
+// the dataspace verbs share a single `where:` surface; the §70 `Expr`
+// engine stays the CONTROL-PLANE expression language (`if` / `let`).
+//
+// Evaluation is in-memory over the columnar batches, with SQL
+// precedence (AND binds tighter than OR) and SQL null semantics
+// (`= NULL` ⇒ is-null; ordering/LIKE against NULL ⇒ no match).
+// Batches are pruned through the zone-map abstraction (§5.3): a batch
+// is skipped ONLY when the predicate is PROVABLY false over its
+// per-column `[min, max]` — sound by construction, completeness not
+// claimed (a `maybe` batch is scanned).
+
+use crate::store::filter::{
+    Connector as FConnector, Filter, FilterCondition, Operator as FOp, Rhs, SqlValue,
+};
+
+/// One materialized cell surfaced by a scan.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CellValue {
+    Int(i64),
+    Float(f64),
+    Bool(bool),
+    Text(String),
+    /// Epoch microseconds (rendered as RFC 3339 UTC at the JSON edge).
+    Timestamp(i64),
+    Json(serde_json::Value),
+    Null,
+}
+
+fn cell_at(col: &ColumnArray, i: usize) -> CellValue {
+    if !col.is_valid(i) {
+        return CellValue::Null;
+    }
+    match col.column_type() {
+        ColumnType::Int => CellValue::Int(col.get_int(i).unwrap()),
+        ColumnType::Float => CellValue::Float(col.get_float(i).unwrap()),
+        ColumnType::Bool => CellValue::Bool(col.get_bool(i).unwrap()),
+        ColumnType::Timestamp => CellValue::Timestamp(col.get_int(i).unwrap()),
+        ColumnType::Text => CellValue::Text(col.get_text(i).unwrap_or_default().to_string()),
+        ColumnType::Json => CellValue::Json(
+            col.get_bytes(i)
+                .and_then(|b| serde_json::from_slice(b).ok())
+                .unwrap_or(serde_json::Value::Null),
+        ),
+    }
+}
+
+fn micros_to_rfc3339(us: i64) -> String {
+    chrono::DateTime::<chrono::Utc>::from_timestamp_micros(us)
+        .map(|dt| dt.to_rfc3339())
+        .unwrap_or_else(|| us.to_string())
+}
+
+fn cell_to_json(c: &CellValue) -> serde_json::Value {
+    match c {
+        CellValue::Int(v) => serde_json::json!(v),
+        CellValue::Float(v) => serde_json::json!(v),
+        CellValue::Bool(v) => serde_json::json!(v),
+        CellValue::Text(v) => serde_json::json!(v),
+        CellValue::Timestamp(us) => serde_json::json!(micros_to_rfc3339(*us)),
+        CellValue::Json(v) => v.clone(),
+        CellValue::Null => serde_json::Value::Null,
+    }
+}
+
+/// Minimal deterministic SQL `LIKE` (`%` any-run, `_` any-one), the
+/// §35.b surface. Case-sensitive (documented; ILIKE is deferred).
+fn like_match(text: &str, pattern: &str) -> bool {
+    fn rec(t: &[char], p: &[char]) -> bool {
+        match p.first() {
+            None => t.is_empty(),
+            Some('%') => (0..=t.len()).any(|k| rec(&t[k..], &p[1..])),
+            Some('_') => !t.is_empty() && rec(&t[1..], &p[1..]),
+            Some(c) => t.first() == Some(c) && rec(&t[1..], &p[1..]),
+        }
+    }
+    let t: Vec<char> = text.chars().collect();
+    let p: Vec<char> = pattern.chars().collect();
+    rec(&t, &p)
+}
+
+/// Evaluate one `column op value` against a cell. `Err` = a DECLARATION
+/// error (type mismatch between the condition and the column) — fail
+/// closed, never a silent `false`.
+fn eval_condition(cond: &FilterCondition, cell: &CellValue) -> Result<bool, String> {
+    let rhs = match &cond.value {
+        Rhs::Value(v) => v,
+        Rhs::Time(_) => {
+            return Err(format!(
+                "column `{}`: `now()` time values in a dataspace `where:` are deferred \
+                 §108.x surface — bind an RFC 3339 literal instead",
+                cond.column
+            ))
+        }
+    };
+    // SQL null semantics: `= NULL` is-null / `!= NULL` is-not-null;
+    // any other combination involving NULL matches nothing.
+    if matches!(rhs, SqlValue::Null) {
+        return match cond.op {
+            FOp::Eq => Ok(matches!(cell, CellValue::Null)),
+            FOp::Ne => Ok(!matches!(cell, CellValue::Null)),
+            _ => Ok(false),
+        };
+    }
+    if matches!(cell, CellValue::Null) {
+        return Ok(matches!(cond.op, FOp::Ne)); // NULL != <literal> is true; the rest match nothing
+    }
+    let ord: std::cmp::Ordering = match (cell, rhs) {
+        (CellValue::Int(a), SqlValue::Integer(b)) => a.cmp(b),
+        (CellValue::Int(a), SqlValue::Float(b)) => {
+            (*a as f64).partial_cmp(b).ok_or("NaN comparison")?
+        }
+        (CellValue::Float(a), SqlValue::Integer(b)) => {
+            a.partial_cmp(&(*b as f64)).ok_or("NaN comparison")?
+        }
+        (CellValue::Float(a), SqlValue::Float(b)) => a.partial_cmp(b).ok_or("NaN comparison")?,
+        (CellValue::Text(a), SqlValue::Text(b)) => {
+            if cond.op == FOp::Like {
+                return Ok(like_match(a, b));
+            }
+            a.as_str().cmp(b.as_str())
+        }
+        (CellValue::Bool(a), SqlValue::Boolean(b)) => {
+            return match cond.op {
+                FOp::Eq => Ok(a == b),
+                FOp::Ne => Ok(a != b),
+                other => Err(format!(
+                    "column `{}`: ordering operator {other} is not defined on Bool",
+                    cond.column
+                )),
+            };
+        }
+        (CellValue::Timestamp(a), SqlValue::Text(b)) => {
+            let rhs_us = chrono::DateTime::parse_from_rfc3339(b)
+                .map_err(|_| {
+                    format!(
+                        "column `{}`: a Timestamp compares against an RFC 3339 literal, \
+                         got `{b}`",
+                        cond.column
+                    )
+                })?
+                .timestamp_micros();
+            a.cmp(&rhs_us)
+        }
+        (CellValue::Timestamp(a), SqlValue::Integer(b)) => a.cmp(b),
+        (cell, rhs) => {
+            return Err(format!(
+                "column `{}`: type mismatch — a {} column against a {} literal \
+                 (refusal, not coercion)",
+                cond.column,
+                match cell {
+                    CellValue::Int(_) => "Int",
+                    CellValue::Float(_) => "Float",
+                    CellValue::Bool(_) => "Bool",
+                    CellValue::Text(_) => "Text",
+                    CellValue::Timestamp(_) => "Timestamp",
+                    CellValue::Json(_) => "Json",
+                    CellValue::Null => "Null",
+                },
+                rhs.type_name()
+            ))
+        }
+    };
+    Ok(match cond.op {
+        FOp::Eq => ord == std::cmp::Ordering::Equal,
+        FOp::Ne => ord != std::cmp::Ordering::Equal,
+        FOp::Gt => ord == std::cmp::Ordering::Greater,
+        FOp::Ge => ord != std::cmp::Ordering::Less,
+        FOp::Lt => ord == std::cmp::Ordering::Less,
+        FOp::Le => ord != std::cmp::Ordering::Greater,
+        FOp::Like => {
+            return Err(format!(
+                "column `{}`: LIKE is defined on Text only",
+                cond.column
+            ))
+        }
+    })
+}
+
+/// SQL precedence over the flat condition list: AND binds tighter than
+/// OR — the filter is an OR of AND-groups.
+fn eval_filter_on_row(
+    filter: &Filter,
+    row_cell: impl Fn(&str) -> Result<CellValue, String>,
+) -> Result<bool, String> {
+    if filter.conditions.is_empty() {
+        return Ok(true);
+    }
+    let mut any_group = false;
+    let mut group = true;
+    for (i, cond) in filter.conditions.iter().enumerate() {
+        if group {
+            let cell = row_cell(&cond.column)?;
+            group = eval_condition(cond, &cell)?;
+        }
+        match filter.connectors.get(i) {
+            Some(FConnector::And) => {}
+            Some(FConnector::Or) => {
+                any_group = any_group || group;
+                group = true;
+            }
+            None => {}
+        }
+    }
+    Ok(any_group || group)
+}
+
+/// §5.3 — the interval abstraction φ̂ for ONE condition over a batch's
+/// zone map. `true` = maybe (scan), `false` = PROVABLY no row in the
+/// batch satisfies it. Conservative by construction: anything without
+/// a precise abstraction answers `maybe`.
+fn condition_maybe(cond: &FilterCondition, zm: &ZoneMap, batch_len: usize) -> bool {
+    let rhs = match &cond.value {
+        Rhs::Value(v) => v,
+        Rhs::Time(_) => return true,
+    };
+    if matches!(rhs, SqlValue::Null) {
+        return match cond.op {
+            FOp::Eq => zm.null_count > 0,
+            FOp::Ne => zm.null_count < batch_len,
+            _ => true,
+        };
+    }
+    // A batch with nulls can always satisfy `!=` via NULL semantics.
+    let nulls_present = zm.null_count > 0;
+    let maybe = match (&zm.stats, rhs) {
+        (ZoneStats::Int { min, max }, SqlValue::Integer(v)) => range_maybe(cond.op, *min, *max, *v),
+        (ZoneStats::Int { min, max }, SqlValue::Float(v)) => {
+            range_maybe_f(cond.op, *min as f64, *max as f64, *v)
+        }
+        (ZoneStats::Float { min, max }, SqlValue::Float(v)) => range_maybe_f(cond.op, *min, *max, *v),
+        (ZoneStats::Float { min, max }, SqlValue::Integer(v)) => {
+            range_maybe_f(cond.op, *min, *max, *v as f64)
+        }
+        (ZoneStats::Text { min, max }, SqlValue::Text(v)) => {
+            if cond.op == FOp::Like {
+                true
+            } else {
+                range_maybe_ord(cond.op, min.as_str(), max.as_str(), v.as_str())
+            }
+        }
+        (ZoneStats::Bool { any_true, any_false }, SqlValue::Boolean(v)) => match cond.op {
+            FOp::Eq => {
+                if *v {
+                    *any_true
+                } else {
+                    *any_false
+                }
+            }
+            FOp::Ne => {
+                if *v {
+                    *any_false
+                } else {
+                    *any_true
+                }
+            }
+            _ => true,
+        },
+        // Timestamp zones live in ZoneStats::Int (epoch micros).
+        (ZoneStats::Int { min, max }, SqlValue::Text(v)) => {
+            match chrono::DateTime::parse_from_rfc3339(v) {
+                Ok(dt) => range_maybe(cond.op, *min, *max, dt.timestamp_micros()),
+                Err(_) => true, // the row eval will refuse loudly
+            }
+        }
+        _ => true,
+    };
+    maybe || (nulls_present && matches!(cond.op, FOp::Ne))
+}
+
+fn range_maybe(op: FOp, min: i64, max: i64, v: i64) -> bool {
+    match op {
+        FOp::Eq => min <= v && v <= max,
+        FOp::Ne => !(min == v && max == v),
+        FOp::Gt => max > v,
+        FOp::Ge => max >= v,
+        FOp::Lt => min < v,
+        FOp::Le => min <= v,
+        FOp::Like => true,
+    }
+}
+
+fn range_maybe_f(op: FOp, min: f64, max: f64, v: f64) -> bool {
+    match op {
+        FOp::Eq => min <= v && v <= max,
+        FOp::Ne => !(min == v && max == v),
+        FOp::Gt => max > v,
+        FOp::Ge => max >= v,
+        FOp::Lt => min < v,
+        FOp::Le => min <= v,
+        FOp::Like => true,
+    }
+}
+
+fn range_maybe_ord(op: FOp, min: &str, max: &str, v: &str) -> bool {
+    match op {
+        FOp::Eq => min <= v && v <= max,
+        FOp::Ne => !(min == v && max == v),
+        FOp::Gt => max > v,
+        FOp::Ge => max >= v,
+        FOp::Lt => min < v,
+        FOp::Le => min <= v,
+        FOp::Like => true,
+    }
+}
+
+/// φ̂ over a whole batch: with AND > OR, the batch is prunable iff EVERY
+/// OR-group contains at least one PROVABLY-false condition.
+fn batch_maybe(filter: &Filter, batch: &RecordBatch, schema: &[(String, ColumnType)]) -> bool {
+    if filter.conditions.is_empty() {
+        return true;
+    }
+    let mut group_maybe = true;
+    for (i, cond) in filter.conditions.iter().enumerate() {
+        let cond_ok = match schema.iter().position(|(n, _)| n == &cond.column) {
+            Some(idx) => match batch.zone_map(idx) {
+                Some(zm) => condition_maybe(cond, zm, batch.len()),
+                None => true,
+            },
+            None => true, // unknown column → the row eval refuses loudly
+        };
+        group_maybe = group_maybe && cond_ok;
+        match filter.connectors.get(i) {
+            Some(FConnector::Or) => {
+                if group_maybe {
+                    return true; // one live OR-group ⇒ scan
+                }
+                group_maybe = true;
+            }
+            _ => {}
+        }
+    }
+    group_maybe
+}
+
+/// Deterministic scan statistics — surfaced in every query summary so
+/// pruning is OBSERVABLE, never a silent claim.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct QueryStats {
+    pub batches_total: usize,
+    pub batches_pruned: usize,
+    pub rows_scanned: usize,
+    pub rows_matched: usize,
+}
+
+/// A query result: JSON rows + the epistemic meet + scan stats.
+#[derive(Debug, Clone)]
+pub struct QueryOutput {
+    pub rows: serde_json::Value,
+    pub taint: EpistemicTaint,
+    pub stats: QueryStats,
+}
+
+/// The §5.4 meet over a store — conservative: the result's status is
+/// the meet over ALL of the store's batches (a strictly-lower-or-equal
+/// bound vs. touched-only; the conservative direction is always sound).
+/// An empty store yields the floor (`Untrusted`).
+fn store_taint(store: &DataspaceStore) -> EpistemicTaint {
+    store
+        .batches()
+        .iter()
+        .map(|b| b.provenance().taint)
+        .fold(None, |acc: Option<EpistemicTaint>, t| {
+            Some(match acc {
+                None => t,
+                Some(a) => taint_meet(a, t),
+            })
+        })
+        .unwrap_or(EpistemicTaint::Untrusted)
+}
+
+fn parse_where(
+    store: &DataspaceStore,
+    where_str: &str,
+    bindings: &std::collections::HashMap<String, String>,
+) -> Result<Filter, String> {
+    if where_str.trim().is_empty() {
+        return Ok(Filter {
+            conditions: Vec::new(),
+            connectors: Vec::new(),
+        });
+    }
+    let filter = crate::store::filter::parse_filter(where_str, bindings)
+        .map_err(|e| format!("where clause: {e}"))?;
+    // Every referenced column must be declared — fail closed BEFORE the scan.
+    for cond in &filter.conditions {
+        if store.column_index(&cond.column).is_none() {
+            return Err(format!(
+                "where clause references `{}`, which is not a column of dataspace `{}` \
+                 (declared: {})",
+                cond.column,
+                store.name,
+                store
+                    .schema()
+                    .iter()
+                    .map(|(n, _)| n.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+    }
+    Ok(filter)
+}
+
+/// σ_φ ∘ π_v — `focus` (§108.d). Scans batches the zone maps cannot
+/// refute, evaluates φ per row, projects `select` (empty ⇒ all columns,
+/// in declaration order).
+pub fn focus_query(
+    store: &DataspaceStore,
+    where_str: &str,
+    select: &[String],
+    bindings: &std::collections::HashMap<String, String>,
+) -> Result<QueryOutput, String> {
+    let filter = parse_where(store, where_str, bindings)?;
+    let schema = store.schema();
+    let proj: Vec<usize> = if select.is_empty() {
+        (0..schema.len()).collect()
+    } else {
+        select
+            .iter()
+            .map(|name| {
+                store.column_index(name).ok_or_else(|| {
+                    format!(
+                        "select references `{name}`, which is not a column of dataspace `{}`",
+                        store.name
+                    )
+                })
+            })
+            .collect::<Result<_, _>>()?
+    };
+    let mut stats = QueryStats {
+        batches_total: store.batches().len(),
+        ..Default::default()
+    };
+    let mut out: Vec<serde_json::Value> = Vec::new();
+    for batch in store.batches() {
+        if !batch_maybe(&filter, batch, schema) {
+            stats.batches_pruned += 1;
+            continue;
+        }
+        for i in 0..batch.len() {
+            stats.rows_scanned += 1;
+            let hit = eval_filter_on_row(&filter, |col| {
+                let idx = store
+                    .column_index(col)
+                    .ok_or_else(|| format!("unknown column `{col}`"))?;
+                Ok(cell_at(batch.column(idx).unwrap(), i))
+            })?;
+            if hit {
+                stats.rows_matched += 1;
+                let mut obj = serde_json::Map::new();
+                for &c in &proj {
+                    obj.insert(
+                        schema[c].0.clone(),
+                        cell_to_json(&cell_at(batch.column(c).unwrap(), i)),
+                    );
+                }
+                out.push(serde_json::Value::Object(obj));
+            }
+        }
+    }
+    Ok(QueryOutput {
+        rows: serde_json::Value::Array(out),
+        taint: store_taint(store),
+        stats,
+    })
+}
+
+/// The closed aggregate catalog (§108.d).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AggFunc {
+    Count,
+    Sum,
+    Avg,
+    Min,
+    Max,
+}
+
+#[derive(Debug, Clone)]
+pub struct AggregateSpec {
+    pub func: AggFunc,
+    /// `None` only for `count` (row count).
+    pub column: Option<String>,
+}
+
+impl AggregateSpec {
+    /// Parse the declared form: `count` | `count(col)` | `sum(col)` |
+    /// `avg(col)` | `min(col)` | `max(col)`.
+    pub fn parse(s: &str) -> Result<AggregateSpec, String> {
+        let s = s.trim();
+        let (name, col) = match s.find('(') {
+            Some(p) if s.ends_with(')') => (
+                &s[..p],
+                Some(s[p + 1..s.len() - 1].trim().to_string()).filter(|c| !c.is_empty()),
+            ),
+            None => (s, None),
+            _ => return Err(format!("malformed aggregate `{s}`")),
+        };
+        let func = match name.trim() {
+            "count" => AggFunc::Count,
+            "sum" => AggFunc::Sum,
+            "avg" => AggFunc::Avg,
+            "min" => AggFunc::Min,
+            "max" => AggFunc::Max,
+            other => {
+                return Err(format!(
+                    "unknown aggregate `{other}` — the closed catalog is \
+                     {{count, sum, avg, min, max}}"
+                ))
+            }
+        };
+        if func != AggFunc::Count && col.is_none() {
+            return Err(format!("aggregate `{name}` requires a column: `{name}(<col>)`"));
+        }
+        Ok(AggregateSpec { func, column: col })
+    }
+
+    fn output_key(&self) -> String {
+        match (&self.func, &self.column) {
+            (AggFunc::Count, None) => "count".to_string(),
+            (f, Some(c)) => format!(
+                "{}_{c}",
+                match f {
+                    AggFunc::Count => "count",
+                    AggFunc::Sum => "sum",
+                    AggFunc::Avg => "avg",
+                    AggFunc::Min => "min",
+                    AggFunc::Max => "max",
+                }
+            ),
+            (_, None) => unreachable!("a non-count aggregate without a column is refused at parse"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct AggState {
+    count: u64,
+    sum: f64,
+    min_f: Option<f64>,
+    max_f: Option<f64>,
+    min_s: Option<String>,
+    max_s: Option<String>,
+}
+
+/// γ — `aggregate` (§108.d). Groups by `group_by` (empty ⇒ one global
+/// group) and computes the closed catalog. Nulls are skipped by every
+/// column-aggregate (`count` with no column counts ROWS). Output rows
+/// are sorted by group key — DETERMINISTIC output, always.
+pub fn aggregate_query(
+    store: &DataspaceStore,
+    where_str: &str,
+    group_by: &[String],
+    computes: &[AggregateSpec],
+    bindings: &std::collections::HashMap<String, String>,
+) -> Result<QueryOutput, String> {
+    let filter = parse_where(store, where_str, bindings)?;
+    let schema = store.schema();
+    // Validate the referenced columns + numeric discipline up front.
+    let group_idx: Vec<usize> = group_by
+        .iter()
+        .map(|g| {
+            store.column_index(g).ok_or_else(|| {
+                format!("group_by references `{g}`, not a column of `{}`", store.name)
+            })
+        })
+        .collect::<Result<_, _>>()?;
+    for spec in computes {
+        if let Some(col) = &spec.column {
+            let idx = store.column_index(col).ok_or_else(|| {
+                format!("aggregate references `{col}`, not a column of `{}`", store.name)
+            })?;
+            let ty = schema[idx].1;
+            match spec.func {
+                AggFunc::Sum | AggFunc::Avg => {
+                    if !matches!(ty, ColumnType::Int | ColumnType::Float) {
+                        return Err(format!(
+                            "`{}` is defined on Int/Float; column `{col}` is {} \
+                             (refusal, not coercion)",
+                            spec.output_key(),
+                            ty.canonical_name()
+                        ));
+                    }
+                }
+                AggFunc::Min | AggFunc::Max => {
+                    if matches!(ty, ColumnType::Json | ColumnType::Bool) {
+                        return Err(format!(
+                            "`{}` is not defined on {} columns",
+                            spec.output_key(),
+                            ty.canonical_name()
+                        ));
+                    }
+                }
+                AggFunc::Count => {}
+            }
+        }
+    }
+    let mut stats = QueryStats {
+        batches_total: store.batches().len(),
+        ..Default::default()
+    };
+    use std::collections::BTreeMap;
+    let mut groups: BTreeMap<String, (Vec<serde_json::Value>, Vec<AggState>)> = BTreeMap::new();
+    for batch in store.batches() {
+        if !batch_maybe(&filter, batch, schema) {
+            stats.batches_pruned += 1;
+            continue;
+        }
+        for i in 0..batch.len() {
+            stats.rows_scanned += 1;
+            let hit = eval_filter_on_row(&filter, |col| {
+                let idx = store
+                    .column_index(col)
+                    .ok_or_else(|| format!("unknown column `{col}`"))?;
+                Ok(cell_at(batch.column(idx).unwrap(), i))
+            })?;
+            if !hit {
+                continue;
+            }
+            stats.rows_matched += 1;
+            let key_cells: Vec<serde_json::Value> = group_idx
+                .iter()
+                .map(|&g| cell_to_json(&cell_at(batch.column(g).unwrap(), i)))
+                .collect();
+            let key = serde_json::Value::Array(key_cells.clone()).to_string();
+            let entry = groups
+                .entry(key)
+                .or_insert_with(|| (key_cells, vec![AggState::default(); computes.len()]));
+            for (s, spec) in computes.iter().enumerate() {
+                let st = &mut entry.1[s];
+                match &spec.column {
+                    None => st.count += 1, // count(*) — rows
+                    Some(col) => {
+                        let idx = store.column_index(col).unwrap();
+                        match cell_at(batch.column(idx).unwrap(), i) {
+                            CellValue::Null => {} // nulls are skipped
+                            CellValue::Int(v) => {
+                                st.count += 1;
+                                st.sum += v as f64;
+                                let f = v as f64;
+                                st.min_f = Some(st.min_f.map_or(f, |m| m.min(f)));
+                                st.max_f = Some(st.max_f.map_or(f, |m| m.max(f)));
+                            }
+                            CellValue::Float(v) => {
+                                st.count += 1;
+                                st.sum += v;
+                                st.min_f = Some(st.min_f.map_or(v, |m| m.min(v)));
+                                st.max_f = Some(st.max_f.map_or(v, |m| m.max(v)));
+                            }
+                            CellValue::Timestamp(v) => {
+                                st.count += 1;
+                                let f = v as f64;
+                                st.min_f = Some(st.min_f.map_or(f, |m| m.min(f)));
+                                st.max_f = Some(st.max_f.map_or(f, |m| m.max(f)));
+                            }
+                            CellValue::Text(t) => {
+                                st.count += 1;
+                                st.min_s = Some(match st.min_s.take() {
+                                    None => t.clone(),
+                                    Some(m) => m.min(t.clone()),
+                                });
+                                st.max_s = Some(match st.max_s.take() {
+                                    None => t.clone(),
+                                    Some(m) => m.max(t),
+                                });
+                            }
+                            CellValue::Bool(_) | CellValue::Json(_) => {
+                                st.count += 1; // count admits any type; sum/min/max were gated
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut out: Vec<serde_json::Value> = Vec::new();
+    for (_key, (key_cells, states)) in groups {
+        let mut obj = serde_json::Map::new();
+        for (g, name) in group_by.iter().enumerate() {
+            obj.insert(name.clone(), key_cells[g].clone());
+        }
+        for (s, spec) in computes.iter().enumerate() {
+            let st = &states[s];
+            let v = match spec.func {
+                AggFunc::Count => serde_json::json!(st.count),
+                AggFunc::Sum => serde_json::json!(st.sum),
+                AggFunc::Avg => {
+                    if st.count == 0 {
+                        serde_json::Value::Null
+                    } else {
+                        serde_json::json!(st.sum / st.count as f64)
+                    }
+                }
+                AggFunc::Min => st
+                    .min_s
+                    .as_ref()
+                    .map(|s| serde_json::json!(s))
+                    .or(st.min_f.map(|f| serde_json::json!(f)))
+                    .unwrap_or(serde_json::Value::Null),
+                AggFunc::Max => st
+                    .max_s
+                    .as_ref()
+                    .map(|s| serde_json::json!(s))
+                    .or(st.max_f.map(|f| serde_json::json!(f)))
+                    .unwrap_or(serde_json::Value::Null),
+            };
+            obj.insert(spec.output_key(), v);
+        }
+        out.push(serde_json::Value::Object(obj));
+    }
+    Ok(QueryOutput {
+        rows: serde_json::Value::Array(out),
+        taint: store_taint(store),
+        stats,
+    })
+}
+
+/// Equi-⋈ — `associate` (§108.d, D108.5). Hash join on ONE shared
+/// column (`using`), equality keys only. Output rows are flat: left
+/// columns by name; right columns by name, prefixed `<right>_` on
+/// collision (the join key appears once, from the left). NULL keys
+/// never join (SQL semantics).
+pub fn associate_query(
+    left: &DataspaceStore,
+    right: &DataspaceStore,
+    using: &str,
+) -> Result<QueryOutput, String> {
+    let li = left.column_index(using).ok_or_else(|| {
+        format!("`using {using}` — not a column of the left dataspace `{}`", left.name)
+    })?;
+    let ri = right.column_index(using).ok_or_else(|| {
+        format!("`using {using}` — not a column of the right dataspace `{}`", right.name)
+    })?;
+    if left.schema()[li].1 != right.schema()[ri].1 {
+        return Err(format!(
+            "`using {using}` joins a {} column against a {} column (refusal, not coercion)",
+            left.schema()[li].1.canonical_name(),
+            right.schema()[ri].1.canonical_name()
+        ));
+    }
+    let mut stats = QueryStats {
+        batches_total: left.batches().len() + right.batches().len(),
+        ..Default::default()
+    };
+    // Build side: hash the RIGHT store by canonical key string.
+    use std::collections::HashMap as Map;
+    let mut build: Map<String, Vec<(usize, usize)>> = Map::new(); // key → (batch, row)
+    for (b, batch) in right.batches().iter().enumerate() {
+        for i in 0..batch.len() {
+            stats.rows_scanned += 1;
+            let cell = cell_at(batch.column(ri).unwrap(), i);
+            if matches!(cell, CellValue::Null) {
+                continue;
+            }
+            build
+                .entry(cell_to_json(&cell).to_string())
+                .or_default()
+                .push((b, i));
+        }
+    }
+    let left_names: Vec<&str> = left.schema().iter().map(|(n, _)| n.as_str()).collect();
+    let mut out: Vec<serde_json::Value> = Vec::new();
+    for lbatch in left.batches() {
+        for i in 0..lbatch.len() {
+            stats.rows_scanned += 1;
+            let key_cell = cell_at(lbatch.column(li).unwrap(), i);
+            if matches!(key_cell, CellValue::Null) {
+                continue;
+            }
+            let Some(matches) = build.get(&cell_to_json(&key_cell).to_string()) else {
+                continue;
+            };
+            for &(rb, rr) in matches {
+                stats.rows_matched += 1;
+                let mut obj = serde_json::Map::new();
+                for (c, (name, _)) in left.schema().iter().enumerate() {
+                    obj.insert(
+                        name.clone(),
+                        cell_to_json(&cell_at(lbatch.column(c).unwrap(), i)),
+                    );
+                }
+                let rbatch = &right.batches()[rb];
+                for (c, (name, _)) in right.schema().iter().enumerate() {
+                    if c == ri {
+                        continue; // the join key appears once, from the left
+                    }
+                    let out_name = if left_names.contains(&name.as_str()) {
+                        format!("{}_{name}", right.name)
+                    } else {
+                        name.clone()
+                    };
+                    obj.insert(
+                        out_name,
+                        cell_to_json(&cell_at(rbatch.column(c).unwrap(), rr)),
+                    );
+                }
+                out.push(serde_json::Value::Object(obj));
+            }
+        }
+    }
+    Ok(QueryOutput {
+        rows: serde_json::Value::Array(out),
+        taint: taint_meet(store_taint(left), store_taint(right)),
+        stats,
+    })
+}
+
+/// Deterministic profile — `explore` (§108.d). Schema + row/null counts
+/// + per-column zone ranges. NO row data: a profile describes shape,
+/// it never samples content.
+pub fn explore_profile(store: &DataspaceStore) -> QueryOutput {
+    let schema = store.schema();
+    let mut columns: Vec<serde_json::Value> = Vec::new();
+    for (c, (name, ty)) in schema.iter().enumerate() {
+        let mut nulls = 0usize;
+        let mut mins: Vec<serde_json::Value> = Vec::new();
+        let mut maxs: Vec<serde_json::Value> = Vec::new();
+        for batch in store.batches() {
+            if let Some(zm) = batch.zone_map(c) {
+                nulls += zm.null_count;
+                match &zm.stats {
+                    ZoneStats::Int { min, max } => {
+                        if *ty == ColumnType::Timestamp {
+                            mins.push(serde_json::json!(micros_to_rfc3339(*min)));
+                            maxs.push(serde_json::json!(micros_to_rfc3339(*max)));
+                        } else {
+                            mins.push(serde_json::json!(min));
+                            maxs.push(serde_json::json!(max));
+                        }
+                    }
+                    ZoneStats::Float { min, max } => {
+                        mins.push(serde_json::json!(min));
+                        maxs.push(serde_json::json!(max));
+                    }
+                    // A Text zone boundary IS row content (an email, a
+                    // name — §104's no-PII discipline): a profile
+                    // describes shape, so Text ranges are SUPPRESSED.
+                    ZoneStats::Text { .. } => {}
+                    ZoneStats::Bool { .. } | ZoneStats::None => {}
+                }
+            }
+        }
+        columns.push(serde_json::json!({
+            "name": name,
+            "type": ty.canonical_name(),
+            "nulls": nulls,
+            "min": mins.iter().min_by(cmp_json).cloned().unwrap_or(serde_json::Value::Null),
+            "max": maxs.iter().max_by(cmp_json).cloned().unwrap_or(serde_json::Value::Null),
+        }));
+    }
+    let taint = store_taint(store);
+    QueryOutput {
+        rows: serde_json::json!({
+            "dataspace": store.name,
+            "rows": store.row_count(),
+            "batches": store.batches().len(),
+            "resident_bytes": store.resident_bytes(),
+            "taint": taint_str(taint),
+            "columns": columns,
+        }),
+        taint,
+        stats: QueryStats {
+            batches_total: store.batches().len(),
+            ..Default::default()
+        },
+    }
+}
+
+fn cmp_json(a: &&serde_json::Value, b: &&serde_json::Value) -> std::cmp::Ordering {
+    match (a, b) {
+        (serde_json::Value::Number(x), serde_json::Value::Number(y)) => x
+            .as_f64()
+            .partial_cmp(&y.as_f64())
+            .unwrap_or(std::cmp::Ordering::Equal),
+        (serde_json::Value::String(x), serde_json::Value::String(y)) => x.cmp(y),
+        _ => std::cmp::Ordering::Equal,
+    }
+}
+
+pub fn taint_str(t: EpistemicTaint) -> &'static str {
+    match t {
+        EpistemicTaint::Untrusted => "untrusted",
+        EpistemicTaint::SchemaValidated => "schema_validated",
+        EpistemicTaint::Elevated => "elevated",
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
 //  Unit tests
 // ─────────────────────────────────────────────────────────────────────
 
@@ -1558,6 +2453,231 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("ARRAY"), "{err}");
+    }
+
+    // ── §108.d — the lazy relational query engine ────────────────────
+
+    fn populated_store() -> DataspaceStore {
+        let mut engine = DataspaceEngine::from_ir(&[ir_spec(
+            "Leads",
+            &[("email", "Text"), ("score", "Float"), ("visits", "Int"), ("region", "Text")],
+        )])
+        .unwrap();
+        {
+            let store = engine.store_mut("Leads").unwrap();
+            let schema = store.schema().to_vec();
+            // Batch 1: scores 0.1..0.4 (low), region south.
+            let csv1 = "email,score,visits,region\na@x.com,0.1,1,south\nb@x.com,0.4,2,south\n";
+            let b1 = ingest_bytes(&schema, IngestFormat::Csv, csv1.as_bytes(), &IngestLimits::default(), provenance()).unwrap();
+            store.append(b1).unwrap();
+            // Batch 2: scores 0.7..0.9 (high), region north; one null score.
+            let csv2 = "email,score,visits,region\nc@x.com,0.9,7,north\nd@x.com,0.7,3,north\ne@x.com,,5,north\n";
+            let b2 = ingest_bytes(&schema, IngestFormat::Csv, csv2.as_bytes(), &IngestLimits::default(), provenance()).unwrap();
+            store.append(b2).unwrap();
+        }
+        engine.stores.remove("Leads").unwrap()
+    }
+
+    #[test]
+    fn focus_selects_and_projects_with_pruning() {
+        let store = populated_store();
+        let out = focus_query(
+            &store,
+            "score >= 0.6",
+            &["email".to_string()],
+            &std::collections::HashMap::new(),
+        )
+        .unwrap();
+        let rows = out.rows.as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["email"], "c@x.com");
+        assert!(rows[0].get("score").is_none(), "projection drops unselected");
+        // Batch 1's zone is [0.1, 0.4] — provably below 0.6 => pruned.
+        assert_eq!(out.stats.batches_pruned, 1, "zone maps prune the low batch");
+        assert_eq!(out.stats.rows_scanned, 3, "only batch 2 was scanned");
+        assert_eq!(out.taint, EpistemicTaint::Untrusted, "the meet survives sigma/pi");
+    }
+
+    #[test]
+    fn focus_sql_precedence_and_binds_tighter_than_or() {
+        let store = populated_store();
+        // (region = north AND score >= 0.8) OR visits = 1 -> c@x.com + a@x.com.
+        let out = focus_query(
+            &store,
+            "region = 'north' AND score >= 0.8 OR visits = 1",
+            &["email".to_string()],
+            &std::collections::HashMap::new(),
+        )
+        .unwrap();
+        let emails: Vec<&str> = out
+            .rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["email"].as_str().unwrap())
+            .collect();
+        assert_eq!(emails, vec!["a@x.com", "c@x.com"]);
+    }
+
+    #[test]
+    fn focus_unknown_where_column_fails_closed() {
+        let store = populated_store();
+        let err = focus_query(&store, "ghost = 1", &[], &std::collections::HashMap::new())
+            .unwrap_err();
+        assert!(err.contains("`ghost`"), "{err}");
+        assert!(err.contains("declared:"), "actionable: {err}");
+    }
+
+    #[test]
+    fn zone_pruning_is_sound_at_the_boundaries() {
+        // Plan 5.3 adversarial gate: for every operator, a batch whose
+        // zone boundary EQUALS the literal must never be pruned when a
+        // matching row exists. Soundness = zero false prunes.
+        let store = populated_store();
+        // Batch 1 zone for score = [0.1, 0.4]; batch 2 = [0.7, 0.9].
+        for (clause, expect) in [
+            ("score = 0.4", 1),
+            ("score >= 0.9", 1),
+            ("score <= 0.1", 1),
+            ("score > 0.9", 0),
+            ("score < 0.1", 0),
+        ] {
+            let out = focus_query(&store, clause, &[], &std::collections::HashMap::new()).unwrap();
+            assert_eq!(
+                out.rows.as_array().unwrap().len(),
+                expect,
+                "`{clause}` — a skipped batch must PROVABLY contain no match"
+            );
+        }
+    }
+
+    #[test]
+    fn null_semantics_match_sql() {
+        let store = populated_store();
+        // `score = NULL` -> is-null (e@x.com).
+        let out = focus_query(&store, "score = NULL", &["email".to_string()], &Default::default()).unwrap();
+        assert_eq!(out.rows.as_array().unwrap().len(), 1);
+        assert_eq!(out.rows[0]["email"], "e@x.com");
+        // Ordering against a literal never matches a NULL cell.
+        let out = focus_query(&store, "score >= 0.0", &[], &Default::default()).unwrap();
+        assert_eq!(out.rows.as_array().unwrap().len(), 4, "the null row matches nothing ordered");
+    }
+
+    #[test]
+    fn aggregate_groups_and_computes_deterministically() {
+        let store = populated_store();
+        let computes = vec![
+            AggregateSpec::parse("count").unwrap(),
+            AggregateSpec::parse("avg(score)").unwrap(),
+            AggregateSpec::parse("sum(visits)").unwrap(),
+        ];
+        let out = aggregate_query(&store, "", &["region".to_string()], &computes, &Default::default()).unwrap();
+        let rows = out.rows.as_array().unwrap();
+        assert_eq!(rows.len(), 2, "two regions");
+        // BTreeMap ordering => deterministic: north before south.
+        assert_eq!(rows[0]["region"], "north");
+        assert_eq!(rows[0]["count"], 3);
+        assert_eq!(rows[0]["sum_visits"], 15.0);
+        // avg(score) over north skips the NULL: (0.9 + 0.7) / 2 = 0.8.
+        assert!((rows[0]["avg_score"].as_f64().unwrap() - 0.8).abs() < 1e-9, "nulls are SKIPPED, not zero-counted");
+        assert_eq!(rows[1]["region"], "south");
+        assert_eq!(rows[1]["count"], 2);
+    }
+
+    #[test]
+    fn aggregate_type_discipline_refuses_sum_over_text() {
+        let store = populated_store();
+        let err = aggregate_query(
+            &store,
+            "",
+            &[],
+            &[AggregateSpec::parse("sum(email)").unwrap()],
+            &Default::default(),
+        )
+        .unwrap_err();
+        assert!(err.contains("Int/Float"), "{err}");
+    }
+
+    #[test]
+    fn aggregate_parse_catalog_is_closed() {
+        assert!(AggregateSpec::parse("median(x)").unwrap_err().contains("closed catalog"));
+        assert!(AggregateSpec::parse("sum").unwrap_err().contains("requires a column"));
+    }
+
+    #[test]
+    fn associate_hash_joins_on_the_shared_key() {
+        let mut engine = DataspaceEngine::from_ir(&[
+            ir_spec("People", &[("id", "Int"), ("name", "Text")]),
+            ir_spec("Orders", &[("id", "Int"), ("total", "Float"), ("name", "Text")]),
+        ])
+        .unwrap();
+        {
+            let people = engine.store_mut("People").unwrap();
+            let schema = people.schema().to_vec();
+            let b = ingest_bytes(&schema, IngestFormat::Json,
+                br#"[{"id":1,"name":"ana"},{"id":2,"name":"leo"},{"id":null,"name":"ghost"}]"#,
+                &IngestLimits::default(), provenance()).unwrap();
+            people.append(b).unwrap();
+        }
+        {
+            let orders = engine.store_mut("Orders").unwrap();
+            let schema = orders.schema().to_vec();
+            let b = ingest_bytes(&schema, IngestFormat::Json,
+                br#"[{"id":1,"total":9.5,"name":"o-1"},{"id":1,"total":3.0,"name":"o-2"},{"id":3,"total":1.0,"name":"o-x"}]"#,
+                &IngestLimits::default(), provenance()).unwrap();
+            orders.append(b).unwrap();
+        }
+        let out = associate_query(
+            engine.store("People").unwrap(),
+            engine.store("Orders").unwrap(),
+            "id",
+        )
+        .unwrap();
+        let rows = out.rows.as_array().unwrap();
+        assert_eq!(rows.len(), 2, "ana x2 orders; leo x0; NULL key never joins; id=3 unmatched");
+        assert_eq!(rows[0]["name"], "ana", "left column by name");
+        assert_eq!(rows[0]["Orders_name"], "o-1", "right collision prefixed");
+        assert_eq!(rows[0]["total"], 9.5, "non-colliding right column by name");
+        assert_eq!(out.taint, EpistemicTaint::Untrusted, "the meet spans BOTH stores");
+    }
+
+    #[test]
+    fn associate_refuses_key_type_mismatch() {
+        let engine = DataspaceEngine::from_ir(&[
+            ir_spec("A", &[("k", "Int")]),
+            ir_spec("B", &[("k", "Text")]),
+        ])
+        .unwrap();
+        let err = associate_query(engine.store("A").unwrap(), engine.store("B").unwrap(), "k")
+            .unwrap_err();
+        assert!(err.contains("refusal, not coercion"), "{err}");
+    }
+
+    #[test]
+    fn explore_profiles_shape_never_content() {
+        let store = populated_store();
+        let out = explore_profile(&store);
+        let p = &out.rows;
+        assert_eq!(p["rows"], 5);
+        assert_eq!(p["batches"], 2);
+        assert_eq!(p["taint"], "untrusted");
+        let cols = p["columns"].as_array().unwrap();
+        assert_eq!(cols.len(), 4);
+        let score = cols.iter().find(|c| c["name"] == "score").unwrap();
+        assert_eq!(score["nulls"], 1);
+        assert_eq!(score["min"], 0.1);
+        assert_eq!(score["max"], 0.9);
+        // No row content anywhere in the profile.
+        assert!(!out.rows.to_string().contains("a@x.com"), "shape, never content");
+    }
+
+    #[test]
+    fn like_matcher_is_sql_like() {
+        assert!(like_match("hello world", "hello%"));
+        assert!(like_match("hello", "h_llo"));
+        assert!(!like_match("hello", "h_"));
+        assert!(like_match("a@x.com", "%@x.com"));
+        assert!(!like_match("a@y.com", "%@x.com"));
     }
 
     #[test]

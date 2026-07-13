@@ -377,6 +377,12 @@ pub enum PropertyClass {
     /// behind a safe method is REFUTED BEFORE DEPLOY. Program-wide, 0-or-1 proof;
     /// no QUERY endpoint → no proof.
     QuerySafetySoundness,
+    /// §Fase 108.d — the dataspace schema law (`axon-T928`/`axon-T930`),
+    /// re-derived: every query verb targets a DECLARED dataspace and
+    /// references only DECLARED columns; every dataspace schema uses the
+    /// closed type catalog. A hand-edited IR that queries a ghost column
+    /// or smuggles an unknown column type is refuted at deploy.
+    DataspaceSchemaSoundness,
     /// §100.e — for a program declaring any ingesting tool (`ingest:*`), re-
     /// derives the §100.d ingestion invariants: no tool producing
     /// `ingest:inferred` also declares `epistemic:know` (T1001, the Inferred
@@ -451,6 +457,7 @@ impl PropertyClass {
             PropertyClass::DocumentProvenanceSoundness => "document_provenance_soundness",
             PropertyClass::DeliveryProvenanceSoundness => "delivery_provenance_soundness",
             PropertyClass::QuerySafetySoundness => "query_safety_soundness",
+            PropertyClass::DataspaceSchemaSoundness => "dataspace_schema_soundness",
             PropertyClass::DocumentIngestionSoundness => "document_ingestion_soundness",
             PropertyClass::InferredCeilingSoundness => "inferred_ceiling_soundness",
         }
@@ -1289,6 +1296,22 @@ pub struct QuerySafetySoundnessWitness {
     pub egress_declarations: Vec<String>,
 }
 
+/// §108.d — witness for [`PropertyClass::DataspaceSchemaSoundness`], one per
+/// program. The checker RE-DERIVES every field from `ir.dataspace_specs` +
+/// `ir.flows` and rejects on disagreement. A verifying proof has the
+/// violation list empty.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DataspaceSchemaSoundnessWitness {
+    /// `(dataspace, "col:Type,col:Type,…")` for every declared dataspace,
+    /// source order — the schema surface the proof binds.
+    pub dataspaces: Vec<(String, String)>,
+    /// One entry per violation, re-derived (`axon-T928`/`axon-T930`
+    /// re-checked over the IR): unknown canonical column type, a query
+    /// verb targeting a non-dataspace, a referenced ghost column, an
+    /// aggregate outside the closed catalog. Empty for a verifying proof.
+    pub violations: Vec<String>,
+}
+
 /// §100.e — witness for [`PropertyClass::DocumentIngestionSoundness`], one per
 /// program. The checker RE-DERIVES every field from `ir.tools` + `ir.flows` and
 /// rejects on disagreement. A verifying proof has every violation list empty.
@@ -1362,6 +1385,8 @@ pub enum Witness {
     DocumentProvenanceSoundness(DocumentProvenanceSoundnessWitness),
     DeliveryProvenanceSoundness(DeliveryProvenanceSoundnessWitness),
     QuerySafetySoundness(QuerySafetySoundnessWitness),
+    /// §Fase 108.d.
+    DataspaceSchemaSoundness(DataspaceSchemaSoundnessWitness),
     DocumentIngestionSoundness(DocumentIngestionSoundnessWitness),
     InferredCeilingSoundness(InferredCeilingSoundnessWitness),
 }
@@ -1414,6 +1439,7 @@ impl Witness {
             Witness::DocumentProvenanceSoundness(_) => "<program>",
             Witness::DeliveryProvenanceSoundness(_) => "<program>",
             Witness::QuerySafetySoundness(_) => "<program>",
+            Witness::DataspaceSchemaSoundness(_) => "<program>",
             Witness::DocumentIngestionSoundness(_) => "<program>",
             // §101.b — program-wide property, no single named subject.
             Witness::InferredCeilingSoundness(_) => "<program>",

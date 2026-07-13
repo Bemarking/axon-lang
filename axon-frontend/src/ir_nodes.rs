@@ -1366,6 +1366,12 @@ pub struct IRFocusStep {
     pub source_line: u32,
     pub source_column: u32,
     pub expression: String,
+    /// §Fase 108.d — the data-plane `where:` (D108.9; empty ⇒ no filter).
+    pub where_expr: String,
+    /// §Fase 108.d — π: projected columns (empty ⇒ all).
+    pub select: Vec<String>,
+    /// §Fase 108.d — result binding (`as:`; empty ⇒ the dataspace name).
+    pub output: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1376,6 +1382,8 @@ pub struct IRAssociateStep {
     pub left: String,
     pub right: String,
     pub using_field: String,
+    /// §Fase 108.d — result binding (`as:`; empty ⇒ `<L>_<R>`).
+    pub output: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1386,6 +1394,11 @@ pub struct IRAggregateStep {
     pub target: String,
     pub group_by: Vec<String>,
     pub alias: String,
+    /// §Fase 108.d — the closed aggregate catalog entries, raw
+    /// (`count`, `sum(score)`, …) — canonical spelling, T930-validated.
+    pub compute: Vec<String>,
+    /// §Fase 108.d — the data-plane `where:` (D108.9).
+    pub where_expr: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1395,6 +1408,8 @@ pub struct IRExploreStep {
     pub source_column: u32,
     pub target: String,
     pub limit: Option<i64>,
+    /// §Fase 108.d — result binding (`as:`; empty ⇒ the target).
+    pub output: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

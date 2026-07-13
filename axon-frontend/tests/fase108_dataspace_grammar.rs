@@ -289,6 +289,92 @@ fn ir_ingest_carries_format_and_limits() {
     assert!(json.contains("\"max_rows\":10"), "{json}");
 }
 
+// ── 6. axon-T930 — the query-verb law (§108.d) ───────────────────────────────
+
+#[test]
+fn t930_governed_query_verbs_check_clean() {
+    let src = format!(
+        "{DS}dataspace Accounts {{ column email: Text\n column plan: Text }}\n\
+         flow Q() -> Text {{\n\
+             focus Leads {{ where: \"score >= 0.5\", select: [email], as: hot }}\n\
+             aggregate Leads {{ group_by: [email], compute: [count, avg(score)], as: by_email }}\n\
+             associate Leads Accounts using email\n\
+             explore Leads {{ as: shape }}\n\
+         }}\n"
+    );
+    let errs = check_errors(&src);
+    assert!(
+        !errs.iter().any(|e| e.contains("axon-T930")),
+        "the governed forms must check clean: {errs:?}"
+    );
+}
+
+#[test]
+fn t930_refuses_a_query_verb_on_a_non_dataspace() {
+    let src = "flow Q() -> Text {\n    focus Nothing\n    explore Ghost\n}\n";
+    let errs: Vec<String> = check_errors(src)
+        .into_iter()
+        .filter(|e| e.contains("axon-T930"))
+        .collect();
+    assert!(errs.len() >= 2, "both verbs refused: {errs:?}");
+    assert!(errs[0].contains("not declared"), "{errs:?}");
+}
+
+#[test]
+fn t930_refuses_ghost_columns_and_unknown_aggregates() {
+    let src = format!(
+        "{DS}flow Q() -> Text {{\n\
+             focus Leads {{ select: [ghost] }}\n\
+             aggregate Leads {{ group_by: [nope], compute: [median(score)] }}\n\
+         }}\n"
+    );
+    let errs: Vec<String> = check_errors(&src)
+        .into_iter()
+        .filter(|e| e.contains("axon-T930"))
+        .collect();
+    assert!(errs.iter().any(|e| e.contains("`ghost`")), "{errs:?}");
+    assert!(errs.iter().any(|e| e.contains("`nope`")), "{errs:?}");
+    assert!(errs.iter().any(|e| e.contains("median")), "{errs:?}");
+}
+
+#[test]
+fn t930_refuses_sum_over_text_and_key_type_mismatch() {
+    let src = format!(
+        "{DS}dataspace Other {{ column email: Int }}\n\
+         flow Q() -> Text {{\n\
+             aggregate Leads {{ compute: [sum(email)] }}\n\
+             associate Leads Other using email\n\
+         }}\n"
+    );
+    let errs: Vec<String> = check_errors(&src)
+        .into_iter()
+        .filter(|e| e.contains("axon-T930"))
+        .collect();
+    assert!(
+        errs.iter().any(|e| e.contains("Int/Float")),
+        "sum(Text) refused: {errs:?}"
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("refusal, not coercion")),
+        "Text↔Int join key refused: {errs:?}"
+    );
+}
+
+#[test]
+fn ir_focus_and_aggregate_carry_the_query_surface() {
+    let src = format!(
+        "{DS}flow Q() -> Text {{\n\
+             focus Leads {{ where: \"score >= 0.5\", select: [email], as: hot }}\n\
+             aggregate Leads {{ group_by: [email], compute: [count], where: \"score > 0\", as: agg }}\n\
+         }}\n"
+    );
+    let json = ir_json(&src);
+    assert!(json.contains("\"where_expr\":\"score >= 0.5\""), "{json}");
+    assert!(json.contains("\"select\":[\"email\"]"), "{json}");
+    assert!(json.contains("\"output\":\"hot\""), "{json}");
+    assert!(json.contains("\"compute\":[\"count\"]"), "{json}");
+}
+
 #[test]
 fn ir_canonicalizes_aliases() {
     let src = r#"

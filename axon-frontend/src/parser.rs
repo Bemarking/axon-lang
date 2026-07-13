@@ -3027,7 +3027,7 @@ impl Parser {
             TokenType::Deliberate => self.parse_block_step("deliberate").map(|l| FlowStep::Deliberate(DeliberateBlock { loc: l })),
             TokenType::Consensus => self.parse_block_step("consensus").map(|l| FlowStep::Consensus(ConsensusBlock { loc: l })),
             TokenType::Forge => self.parse_forge_step().map(FlowStep::Forge),
-            TokenType::Focus => self.parse_flow_step_simple("focus").map(|l| FlowStep::Focus(FocusStep { expression: l.1, loc: l.0 })),
+            TokenType::Focus => self.parse_focus_step(),
             TokenType::Associate => self.parse_associate_step(),
             TokenType::Aggregate => self.parse_aggregate_step(),
             TokenType::Explore => self.parse_explore_step(),
@@ -4580,6 +4580,63 @@ impl Parser {
         }))
     }
 
+    /// §Fase 108.d — `focus <Dataspace> { where: "<filter>", select: [cols], as: <name> }`
+    /// — σ_φ ∘ π_v over a declared dataspace. The `where:` string is the
+    /// §35 data-plane filter grammar (D108.9, shared with retrieve /
+    /// navigate). Pre-108.d the optional body was silently discarded.
+    fn parse_focus_step(&mut self) -> Result<FlowStep, ParseError> {
+        let tok = self.current().clone();
+        self.advance();
+        let expression = if self.at_declaration_start()
+            || self.check(TokenType::RBrace)
+            || self.check(TokenType::Eof)
+        {
+            String::new()
+        } else {
+            self.consume_any_ident_or_kw()?.value.clone()
+        };
+        let mut where_expr = String::new();
+        let mut select: Vec<String> = Vec::new();
+        let mut output = String::new();
+        if self.check(TokenType::LBrace) {
+            self.advance();
+            while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+                if self.check(TokenType::Comma) {
+                    self.advance();
+                    continue;
+                }
+                let f = self.current().value.clone();
+                self.advance();
+                if self.check(TokenType::Colon) {
+                    self.advance();
+                    match f.as_str() {
+                        "where" => {
+                            where_expr = self.consume(TokenType::StringLit)?.value.clone()
+                        }
+                        "select" => select = self.parse_bracketed_identifiers()?,
+                        "as" | "alias" => {
+                            output = self.consume_any_ident_or_kw()?.value.clone()
+                        }
+                        _ => self.skip_value(),
+                    }
+                }
+            }
+            if self.check(TokenType::RBrace) {
+                self.advance();
+            }
+        }
+        Ok(FlowStep::Focus(FocusStep {
+            expression,
+            where_expr,
+            select,
+            output,
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+        }))
+    }
+
     fn parse_associate_step(&mut self) -> Result<FlowStep, ParseError> {
         let tok = self.current().clone();
         self.advance();
@@ -4596,10 +4653,29 @@ impl Parser {
                 using = self.consume_any_ident_or_kw()?.value.clone();
             }
         }
+        let mut output = String::new();
+        if self.check(TokenType::LBrace) {
+            self.advance();
+            while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+                let f = self.current().value.clone();
+                self.advance();
+                if self.check(TokenType::Colon) {
+                    self.advance();
+                    match f.as_str() {
+                        "as" | "alias" => output = self.consume_any_ident_or_kw()?.value.clone(),
+                        _ => self.skip_value(),
+                    }
+                }
+            }
+            if self.check(TokenType::RBrace) {
+                self.advance();
+            }
+        }
         Ok(FlowStep::Associate(AssociateStep {
             left,
             right,
             using_field: using,
+            output,
             loc: Loc {
                 line: tok.line,
                 column: tok.column,
@@ -4613,6 +4689,8 @@ impl Parser {
         let target = self.consume_any_ident_or_kw()?.value.clone();
         let mut group_by = Vec::new();
         let mut alias = String::new();
+        let mut compute: Vec<String> = Vec::new();
+        let mut where_expr = String::new();
         if self.check(TokenType::LBrace) {
             self.advance();
             while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
@@ -4623,6 +4701,11 @@ impl Parser {
                     match f.as_str() {
                         "group_by" => group_by = self.parse_bracketed_identifiers()?,
                         "alias" | "as" => alias = self.consume_any_ident_or_kw()?.value.clone(),
+                        // §Fase 108.d — the closed aggregate catalog, kept
+                        // RAW (`count`, `sum(score)`, …); T930 validates.
+                        "compute" => compute = self.parse_bracketed_aggregates()?,
+                        // §Fase 108.d — the data-plane where (D108.9).
+                        "where" => where_expr = self.consume(TokenType::StringLit)?.value.clone(),
                         _ => self.skip_value(),
                     }
                 }
@@ -4635,6 +4718,8 @@ impl Parser {
             target,
             group_by,
             alias,
+            compute,
+            where_expr,
             loc: Loc {
                 line: tok.line,
                 column: tok.column,
@@ -4653,14 +4738,56 @@ impl Parser {
                 self.advance();
             }
         }
+        let mut output = String::new();
+        if self.check(TokenType::LBrace) {
+            self.advance();
+            while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+                let f = self.current().value.clone();
+                self.advance();
+                if self.check(TokenType::Colon) {
+                    self.advance();
+                    match f.as_str() {
+                        "as" | "alias" => output = self.consume_any_ident_or_kw()?.value.clone(),
+                        _ => self.skip_value(),
+                    }
+                }
+            }
+            if self.check(TokenType::RBrace) {
+                self.advance();
+            }
+        }
         Ok(FlowStep::ExploreStep(ExploreStepNode {
             target,
             limit,
+            output,
             loc: Loc {
                 line: tok.line,
                 column: tok.column,
             },
         }))
+    }
+
+    /// §Fase 108.d — parse `[count, sum(score), avg(x)]`: bracketed
+    /// aggregate entries, each `ident` or `ident(ident)`, kept raw.
+    fn parse_bracketed_aggregates(&mut self) -> Result<Vec<String>, ParseError> {
+        let mut out = Vec::new();
+        self.consume(TokenType::LBracket)?;
+        while !self.check(TokenType::RBracket) && !self.check(TokenType::Eof) {
+            let name = self.consume_any_ident_or_kw()?.value.clone();
+            if self.check(TokenType::LParen) {
+                self.advance();
+                let col = self.consume_any_ident_or_kw()?.value.clone();
+                self.consume(TokenType::RParen)?;
+                out.push(format!("{name}({col})"));
+            } else {
+                out.push(name);
+            }
+            if self.check(TokenType::Comma) {
+                self.advance();
+            }
+        }
+        self.consume(TokenType::RBracket)?;
+        Ok(out)
     }
 
     /// §Fase 108.c — the governed ingest step:

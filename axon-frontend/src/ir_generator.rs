@@ -924,6 +924,9 @@ impl IRGenerator {
                 source_line: s.loc.line,
                 source_column: s.loc.column,
                 expression: s.expression.clone(),
+                where_expr: s.where_expr.clone(),
+                select: s.select.clone(),
+                output: s.output.clone(),
             }),
             FlowStep::Associate(s) => IRFlowNode::Associate(IRAssociateStep {
                 node_type: "associate",
@@ -932,6 +935,7 @@ impl IRGenerator {
                 left: s.left.clone(),
                 right: s.right.clone(),
                 using_field: s.using_field.clone(),
+                output: s.output.clone(),
             }),
             FlowStep::Aggregate(s) => IRFlowNode::Aggregate(IRAggregateStep {
                 node_type: "aggregate",
@@ -940,6 +944,8 @@ impl IRGenerator {
                 target: s.target.clone(),
                 group_by: s.group_by.clone(),
                 alias: s.alias.clone(),
+                compute: s.compute.clone(),
+                where_expr: s.where_expr.clone(),
             }),
             FlowStep::ExploreStep(s) => IRFlowNode::Explore(IRExploreStep {
                 node_type: "explore",
@@ -947,6 +953,7 @@ impl IRGenerator {
                 source_column: s.loc.column,
                 target: s.target.clone(),
                 limit: s.limit,
+                output: s.output.clone(),
             }),
             FlowStep::Ingest(s) => IRFlowNode::Ingest(IRIngestStep {
                 node_type: "ingest",

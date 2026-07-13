@@ -162,6 +162,9 @@ pub fn check_proof(proof: &ProofTerm, ir: &IRProgram) -> CheckOutcome {
         (PropertyClass::DeliveryProvenanceSoundness, Witness::DeliveryProvenanceSoundness(w)) => {
             check_delivery_provenance_soundness(w, ir)
         }
+        (PropertyClass::DataspaceSchemaSoundness, Witness::DataspaceSchemaSoundness(w)) => {
+            check_dataspace_schema_soundness(w, ir)
+        }
         (PropertyClass::QuerySafetySoundness, Witness::QuerySafetySoundness(w)) => {
             check_query_safety_soundness(w, ir)
         }
@@ -1806,6 +1809,40 @@ fn check_delivery_provenance_soundness(
                 "axon-T920 provenance-stripping barrier: `provenance: cleared` delivery(ies) \
                  laundering an unshielded flow value into a CRM: {:?}",
                 actual.laundered_deliveries
+            ),
+        };
+    }
+    CheckOutcome::Verified
+}
+
+/// §108.d — verify a [`DataspaceSchemaSoundnessWitness`]: re-derive the
+/// schema surface + the T928/T930 laws from the artifact; refute on any
+/// disagreement or surviving violation.
+fn check_dataspace_schema_soundness(
+    claimed: &super::proof_term::DataspaceSchemaSoundnessWitness,
+    ir: &IRProgram,
+) -> CheckOutcome {
+    let actual = match super::generate::derive_dataspace_schema_soundness_witness(ir) {
+        Some(w) => w,
+        None => {
+            return CheckOutcome::Refuted {
+                reason: "no dataspace surface exists in this artifact — forged or stale proof"
+                    .to_string(),
+            }
+        }
+    };
+    if actual != *claimed {
+        return CheckOutcome::Refuted {
+            reason: "witness disagrees with artifact re-derivation (forged or stale proof)"
+                .to_string(),
+        };
+    }
+    if !actual.violations.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axon-T928/axon-T930 dataspace-schema law violated (the compile-time check \
+                 did not run over this IR — stale or hand-edited artifact): {:?}",
+                actual.violations
             ),
         };
     }

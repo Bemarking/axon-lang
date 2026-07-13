@@ -4694,6 +4694,51 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// §Fase 108.d — a declared dataspace's columns as OWNED
+    /// `(name, declared_type)` pairs (for the T930 column checks).
+    /// `None` ⇒ not declared as a dataspace.
+    fn dataspace_columns(&self, name: &str) -> Option<Vec<(String, String)>> {
+        self.program.declarations.iter().find_map(|d| match d {
+            Declaration::Dataspace(n) if n.name == name => Some(
+                n.columns
+                    .iter()
+                    .map(|c| (c.name.clone(), c.declared_type.clone()))
+                    .collect(),
+            ),
+            _ => None,
+        })
+    }
+
+    /// §Fase 108.d (`axon-T930`, shared law) — the four query verbs read
+    /// a DECLARED dataspace. Returns the violation message when the
+    /// target does not resolve (owned — no borrow survives).
+    fn dataspace_target_error(&self, verb: &str, target: &str) -> Option<String> {
+        if target.is_empty() {
+            return Some(format!(
+                "axon-T930 `{verb}` names no dataspace — the data-plane form is \
+                 `{verb} <Dataspace> …` (§108.d; these verbs are relational \
+                 operations, not prompts)."
+            ));
+        }
+        if self.dataspace_columns(target).is_some() {
+            return None;
+        }
+        let kind = self
+            .symbols
+            .lookup(target)
+            .map(|s| s.kind.clone())
+            .unwrap_or_else(|| "undeclared".to_string());
+        Some(format!(
+            "axon-T930 `{verb}` targets `{target}`, which is {} — a query verb \
+             reads a declared `dataspace`.",
+            if kind == "undeclared" {
+                "not declared".to_string()
+            } else {
+                format!("a {kind}")
+            }
+        ))
+    }
+
     /// §Fase 108.b — validate a `dataspace` declaration: the schema law
     /// (`axon-T928`). A dataspace IS its schema — the deterministic engine
     /// materializes one physical columnar buffer per declared column, so a
@@ -9379,6 +9424,168 @@ impl<'a> TypeChecker<'a> {
                                 .to_string(),
                             &n.loc,
                         );
+                    }
+                }
+                FlowStep::Focus(n) => {
+                    // §Fase 108.d (axon-T930) — σ∘π over a declared dataspace.
+                    if let Some(msg) = self.dataspace_target_error("focus", &n.expression) {
+                        self.emit(msg, &n.loc);
+                    }
+                    if let Some(cols) = self.dataspace_columns(&n.expression) {
+                        for col in &n.select {
+                            if !cols.iter().any(|(c, _)| c == col) {
+                                self.emit(
+                                    format!(
+                                        "axon-T930 focus `select` references `{col}`, not a \
+                                         column of dataspace `{}`.",
+                                        n.expression
+                                    ),
+                                    &n.loc,
+                                );
+                            }
+                        }
+                    }
+                }
+                FlowStep::Aggregate(n) => {
+                    // §Fase 108.d (axon-T930) — γ over a declared dataspace.
+                    if let Some(msg) = self.dataspace_target_error("aggregate", &n.target) {
+                        self.emit(msg, &n.loc);
+                    }
+                    if let Some(cols) = self.dataspace_columns(&n.target) {
+                        for col in &n.group_by {
+                            if !cols.iter().any(|(c, _)| c == col) {
+                                self.emit(
+                                    format!(
+                                        "axon-T930 aggregate `group_by` references `{col}`, not \
+                                         a column of dataspace `{}`.",
+                                        n.target
+                                    ),
+                                    &n.loc,
+                                );
+                            }
+                        }
+                        for spec in &n.compute {
+                            // Mirror of the runtime catalog: count | count(c) |
+                            // sum(c) | avg(c) | min(c) | max(c).
+                            let (fname, col) = match spec.find('(') {
+                                Some(p) if spec.ends_with(')') => {
+                                    (&spec[..p], Some(spec[p + 1..spec.len() - 1].trim()))
+                                }
+                                None => (spec.as_str(), None),
+                                _ => {
+                                    self.emit(
+                                        format!("axon-T930 malformed aggregate `{spec}`."),
+                                        &n.loc,
+                                    );
+                                    continue;
+                                }
+                            };
+                            if !matches!(fname, "count" | "sum" | "avg" | "min" | "max") {
+                                self.emit(
+                                    format!(
+                                        "axon-T930 unknown aggregate `{fname}` — the closed \
+                                         catalog is {{count, sum, avg, min, max}}."
+                                    ),
+                                    &n.loc,
+                                );
+                                continue;
+                            }
+                            if fname != "count" && col.is_none() {
+                                self.emit(
+                                    format!(
+                                        "axon-T930 aggregate `{fname}` requires a column: \
+                                         `{fname}(<col>)`."
+                                    ),
+                                    &n.loc,
+                                );
+                            }
+                            if let Some(col) = col {
+                                match cols.iter().find(|(c, _)| c == col) {
+                                    None => self.emit(
+                                        format!(
+                                            "axon-T930 aggregate `{spec}` references `{col}`, \
+                                             not a column of dataspace `{}`.",
+                                            n.target
+                                        ),
+                                        &n.loc,
+                                    ),
+                                    Some((_, declared_type)) if matches!(fname, "sum" | "avg") => {
+                                        let ty = crate::ast::DataspaceColumnType::from_token(
+                                            declared_type,
+                                        );
+                                        if !matches!(
+                                            ty,
+                                            Some(crate::ast::DataspaceColumnType::Int)
+                                                | Some(crate::ast::DataspaceColumnType::Float)
+                                        ) {
+                                            let dt = declared_type.clone();
+                                            self.emit(
+                                                format!(
+                                                    "axon-T930 `{spec}` is defined on Int/Float; \
+                                                     column `{col}` is {dt} (refusal, not \
+                                                     coercion)."
+                                                ),
+                                                &n.loc,
+                                            );
+                                        }
+                                    }
+                                    Some(_) => {}
+                                }
+                            }
+                        }
+                    }
+                }
+                FlowStep::Associate(n) => {
+                    // §Fase 108.d (axon-T930) — equi-⋈ across two declared
+                    // dataspaces on one shared column.
+                    if let Some(msg) = self.dataspace_target_error("associate", &n.left) {
+                        self.emit(msg, &n.loc);
+                    }
+                    if let Some(msg) = self.dataspace_target_error("associate", &n.right) {
+                        self.emit(msg, &n.loc);
+                    }
+                    let ldef = self.dataspace_columns(&n.left);
+                    let rdef = self.dataspace_columns(&n.right);
+                    if n.using_field.is_empty() {
+                        self.emit(
+                            "axon-T930 associate declares no `using <column>` — an equi-join \
+                             without a key is a cartesian product, which is refused."
+                                .to_string(),
+                            &n.loc,
+                        );
+                    } else if let (Some(l), Some(r)) = (ldef, rdef) {
+                        let lc = l.iter().find(|(c, _)| c == &n.using_field).cloned();
+                        let rc = r.iter().find(|(c, _)| c == &n.using_field).cloned();
+                        match (lc, rc) {
+                            (Some((_, lt_raw)), Some((_, rt_raw))) => {
+                                let lt = crate::ast::DataspaceColumnType::from_token(&lt_raw);
+                                let rt = crate::ast::DataspaceColumnType::from_token(&rt_raw);
+                                if lt.is_some() && rt.is_some() && lt != rt {
+                                    self.emit(
+                                        format!(
+                                            "axon-T930 associate `using {}` joins a {} column \
+                                             against a {} column (refusal, not coercion).",
+                                            n.using_field, lt_raw, rt_raw
+                                        ),
+                                        &n.loc,
+                                    );
+                                }
+                            }
+                            _ => self.emit(
+                                format!(
+                                    "axon-T930 associate `using {}` — the column must exist in \
+                                     BOTH dataspaces (`{}`, `{}`).",
+                                    n.using_field, n.left, n.right
+                                ),
+                                &n.loc,
+                            ),
+                        }
+                    }
+                }
+                FlowStep::ExploreStep(n) => {
+                    // §Fase 108.d (axon-T930) — a profile of a declared dataspace.
+                    if let Some(msg) = self.dataspace_target_error("explore", &n.target) {
+                        self.emit(msg, &n.loc);
                     }
                 }
                 FlowStep::Drill(n) => {

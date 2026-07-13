@@ -2945,7 +2945,19 @@ pub struct ForgeBlock {
 }
 #[derive(Debug)]
 pub struct FocusStep {
+    /// §Fase 108.d — the declared dataspace this σ∘π reads (the field
+    /// keeps its historical name; T930 requires it to resolve to a
+    /// `dataspace` symbol).
     pub expression: String,
+    /// §Fase 108.d — the data-plane `where:` clause (the §35 closed
+    /// filter grammar, shared with retrieve/navigate — D108.9). Empty
+    /// ⇒ no filter. Validated fail-closed at dispatch, like retrieve.
+    pub where_expr: String,
+    /// §Fase 108.d — π: the projected columns (empty ⇒ all).
+    pub select: Vec<String>,
+    /// §Fase 108.d — the binding name for the result (`as:`). Empty ⇒
+    /// the dataspace name.
+    pub output: String,
     pub loc: Loc,
 }
 #[derive(Debug)]
@@ -2953,6 +2965,8 @@ pub struct AssociateStep {
     pub left: String,
     pub right: String,
     pub using_field: String,
+    /// §Fase 108.d — result binding name (`as:`). Empty ⇒ `<L>_<R>`.
+    pub output: String,
     pub loc: Loc,
 }
 #[derive(Debug)]
@@ -2960,12 +2974,20 @@ pub struct AggregateStep {
     pub target: String,
     pub group_by: Vec<String>,
     pub alias: String,
+    /// §Fase 108.d — the closed aggregate catalog entries
+    /// (`count` | `count(col)` | `sum(col)` | `avg(col)` | `min(col)` |
+    /// `max(col)`), kept RAW here; T930 validates shape + columns.
+    pub compute: Vec<String>,
+    /// §Fase 108.d — data-plane `where:` (D108.9). Empty ⇒ no filter.
+    pub where_expr: String,
     pub loc: Loc,
 }
 #[derive(Debug)]
 pub struct ExploreStepNode {
     pub target: String,
     pub limit: Option<i64>,
+    /// §Fase 108.d — result binding name (`as:`). Empty ⇒ the target.
+    pub output: String,
     pub loc: Loc,
 }
 #[derive(Debug)]

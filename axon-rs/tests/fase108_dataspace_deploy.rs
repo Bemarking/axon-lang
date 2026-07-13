@@ -170,6 +170,69 @@ flow LoadLeads() -> Text {
     assert_eq!(batch.column(1).unwrap().get_float(0), Some(0.9));
 }
 
+/// §108.d — THE aggregate E2E: ingest then γ in one deployed flow,
+/// through the real HTTP path. The number in the result was COMPUTED
+/// over the columnar batches — pre-§108 this exact `aggregate` step
+/// prompted a model to "group + summarize" and returned prose.
+#[tokio::test]
+async fn deployed_flow_aggregates_real_numbers_end_to_end() {
+    let (app, state) = axon::axon_server::build_router_with_state(server_cfg());
+    let src = r#"
+dataspace Sales {
+    column region: Text
+    column amount: Float
+}
+
+flow Report() -> Text {
+    let raw = "region,amount
+north,10.0
+north,30.0
+south,5.0
+"
+    ingest raw into Sales { format: csv }
+    aggregate Sales { group_by: [region], compute: [count, sum(amount)], as: by_region }
+    return by_region
+}
+"#;
+    let json = deploy(app.clone(), src).await;
+    assert_eq!(json.get("success").and_then(|v| v.as_bool()), Some(true), "{json}");
+
+    let body = serde_json::json!({ "flow": "Report", "backend": "stub" });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/execute")
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let out: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
+    // The server surfaces the deterministic envelope as parsed JSON
+    // (an object), string-wrapped only on older paths — accept both.
+    let envelope: serde_json::Value = match &out["result"] {
+        serde_json::Value::String(sv) => serde_json::from_str(sv)
+            .unwrap_or_else(|_| panic!("result is the deterministic envelope, got: {out}")),
+        v => v.clone(),
+    };
+    let rows = envelope["rows"].as_array().expect("rows array");
+    assert_eq!(rows.len(), 2, "two regions: {envelope}");
+    assert_eq!(rows[0]["region"], "north");
+    assert_eq!(rows[0]["count"], 2);
+    assert_eq!(rows[0]["sum_amount"], 40.0, "COMPUTED, not narrated");
+    assert_eq!(rows[1]["region"], "south");
+    assert_eq!(
+        envelope["taint"], "untrusted",
+        "an aggregate over untrusted batches is born untrusted (plan 5.4)"
+    );
+    // The engine held the real rows behind the number.
+    let engine = {
+        let s = state.lock().unwrap();
+        s.dataspace_engine.clone()
+    };
+    assert_eq!(engine.read().unwrap().store("Sales").unwrap().row_count(), 3);
+}
+
 #[tokio::test]
 async fn a_t928_violation_refuses_the_deploy() {
     // The compile gate runs inside deploy: an empty-schema dataspace is

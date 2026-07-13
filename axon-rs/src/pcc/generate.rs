@@ -24,7 +24,7 @@ use super::proof_term::{
     ParkedResidualSoundnessWitness, ProofTerm, PropertyClass,
     CacheSoundnessWitness, ForgeSoundnessWitness, ResourceBoundsWitness, SavantSoundnessWitness,
     DocumentIngestionSoundnessWitness, DocumentProvenanceSoundnessWitness,
-    DeliveryProvenanceSoundnessWitness, QuerySafetySoundnessWitness,
+    DataspaceSchemaSoundnessWitness, DeliveryProvenanceSoundnessWitness, QuerySafetySoundnessWitness,
     InferredCeilingSoundnessWitness,
     ScrapeProvenanceSoundnessWitness, WardenSoundnessWitness,
     ShieldHaltGuaranteeWitness, TechnicianCommandSafetyWitness, ToolCallSoundnessWitness,
@@ -2926,6 +2926,188 @@ pub fn generate_query_safety_soundness_proofs(
     }
 }
 
+// ── §Fase 108.d — DataspaceSchemaSoundness ───────────────────────────────────
+
+/// §108.d — walk a flow body (recursing into every nested block) and
+/// re-derive the T930 laws over the IR: query verbs target declared
+/// dataspaces; referenced columns exist; aggregates stay in the closed
+/// catalog. Mirrors the frontend checker — prover and verifier agree.
+fn dataspace_violations_in(
+    steps: &[crate::ir_nodes::IRFlowNode],
+    specs: &std::collections::HashMap<&str, Vec<&str>>,
+    out: &mut Vec<String>,
+) {
+    use crate::ir_nodes::IRFlowNode as N;
+    let has_col = |ds: &str, col: &str| specs.get(ds).map(|c| c.iter().any(|x| *x == col));
+    for s in steps {
+        match s {
+            N::Focus(n) => {
+                match specs.get(n.expression.as_str()) {
+                    None => out.push(format!("focus:{}:not-a-dataspace", n.expression)),
+                    Some(_) => {
+                        for col in &n.select {
+                            if has_col(&n.expression, col) == Some(false) {
+                                out.push(format!("focus:{}:ghost-column:{col}", n.expression));
+                            }
+                        }
+                    }
+                }
+            }
+            N::Aggregate(n) => {
+                if !specs.contains_key(n.target.as_str()) {
+                    out.push(format!("aggregate:{}:not-a-dataspace", n.target));
+                } else {
+                    for col in &n.group_by {
+                        if has_col(&n.target, col) == Some(false) {
+                            out.push(format!("aggregate:{}:ghost-column:{col}", n.target));
+                        }
+                    }
+                    for spec in &n.compute {
+                        let (fname, col) = match spec.find('(') {
+                            Some(p) if spec.ends_with(')') => {
+                                (&spec[..p], Some(spec[p + 1..spec.len() - 1].trim()))
+                            }
+                            None => (spec.as_str(), None),
+                            _ => {
+                                out.push(format!("aggregate:{}:malformed:{spec}", n.target));
+                                continue;
+                            }
+                        };
+                        if !matches!(fname, "count" | "sum" | "avg" | "min" | "max") {
+                            out.push(format!("aggregate:{}:unknown-fn:{fname}", n.target));
+                        }
+                        if let Some(col) = col {
+                            if has_col(&n.target, col) == Some(false) {
+                                out.push(format!("aggregate:{}:ghost-column:{col}", n.target));
+                            }
+                        }
+                    }
+                }
+            }
+            N::Associate(n) => {
+                for side in [&n.left, &n.right] {
+                    if !specs.contains_key(side.as_str()) {
+                        out.push(format!("associate:{side}:not-a-dataspace"));
+                    } else if !n.using_field.is_empty()
+                        && has_col(side, &n.using_field) == Some(false)
+                    {
+                        out.push(format!("associate:{side}:ghost-column:{}", n.using_field));
+                    }
+                }
+                if n.using_field.is_empty() {
+                    out.push(format!("associate:{}:{}:no-key", n.left, n.right));
+                }
+            }
+            N::Explore(n) => {
+                if !specs.contains_key(n.target.as_str()) {
+                    out.push(format!("explore:{}:not-a-dataspace", n.target));
+                }
+            }
+            N::Ingest(n) => {
+                if !specs.contains_key(n.target.as_str()) {
+                    out.push(format!("ingest:{}:not-a-dataspace", n.target));
+                }
+            }
+            // Recurse — a nested violation is still a violation.
+            N::Conditional(c) => {
+                dataspace_violations_in(&c.then_body, specs, out);
+                dataspace_violations_in(&c.else_body, specs, out);
+            }
+            N::ForIn(f) => dataspace_violations_in(&f.body, specs, out),
+            N::Par(p) => p
+                .branches
+                .iter()
+                .for_each(|b| dataspace_violations_in(b, specs, out)),
+            N::Warden(w) => dataspace_violations_in(&w.body, specs, out),
+            _ => {}
+        }
+    }
+}
+
+/// §108.d — re-derive the whole-program dataspace-schema witness. "No
+/// contract → no proof": a program with no dataspace AND no data-plane
+/// verb yields `None`.
+pub fn derive_dataspace_schema_soundness_witness(
+    ir: &IRProgram,
+) -> Option<DataspaceSchemaSoundnessWitness> {
+    let mut violations: Vec<String> = Vec::new();
+    let mut specs: std::collections::HashMap<&str, Vec<&str>> =
+        std::collections::HashMap::new();
+    for spec in &ir.dataspace_specs {
+        for col in &spec.columns {
+            // The closed catalog (D108.1) — an unknown canonical type in
+            // a stored artifact is a forged/stale IR.
+            if !matches!(
+                col.column_type.as_str(),
+                "Text" | "Int" | "Float" | "Bool" | "Timestamp" | "Json"
+            ) {
+                violations.push(format!(
+                    "dataspace:{}:unknown-type:{}:{}",
+                    spec.name, col.name, col.column_type
+                ));
+            }
+        }
+        specs.insert(
+            spec.name.as_str(),
+            spec.columns.iter().map(|c| c.name.as_str()).collect(),
+        );
+    }
+    let mut touches_plane = !ir.dataspace_specs.is_empty();
+    for flow in &ir.flows {
+        let before = violations.len();
+        dataspace_violations_in(&flow.steps, &specs, &mut violations);
+        if violations.len() > before {
+            touches_plane = true;
+        }
+        // A flow may use the verbs correctly too — detect via a cheap walk.
+        if !touches_plane {
+            let mut probe: Vec<String> = Vec::new();
+            let empty: std::collections::HashMap<&str, Vec<&str>> = Default::default();
+            dataspace_violations_in(&flow.steps, &empty, &mut probe);
+            if !probe.is_empty() {
+                touches_plane = true; // verbs exist (they all violate vs. empty specs)
+            }
+        }
+    }
+    if !touches_plane {
+        return None;
+    }
+    let dataspaces = ir
+        .dataspace_specs
+        .iter()
+        .map(|d| {
+            (
+                d.name.clone(),
+                d.columns
+                    .iter()
+                    .map(|c| format!("{}:{}", c.name, c.column_type))
+                    .collect::<Vec<_>>()
+                    .join(","),
+            )
+        })
+        .collect();
+    Some(DataspaceSchemaSoundnessWitness {
+        dataspaces,
+        violations,
+    })
+}
+
+/// §108.d — generate the (at most one) DataspaceSchemaSoundness proof.
+pub fn generate_dataspace_schema_soundness_proofs(
+    ir: &IRProgram,
+    axon_version: &str,
+) -> Vec<ProofTerm> {
+    match derive_dataspace_schema_soundness_witness(ir) {
+        Some(witness) => vec![ProofTerm {
+            property: PropertyClass::DataspaceSchemaSoundness,
+            artifact_digest: artifact_digest(ir),
+            witness: Witness::DataspaceSchemaSoundness(witness),
+            axon_version: axon_version.to_string(),
+        }],
+        None => Vec::new(),
+    }
+}
+
 // ── §Fase 100.e — DocumentIngestionSoundness ─────────────────────────────────
 
 /// §100.e — re-derive the whole-program document-ingestion witness from
@@ -3379,6 +3561,7 @@ pub fn generate_all_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm>
     proofs.extend(generate_document_provenance_soundness_proofs(ir, axon_version));
     proofs.extend(generate_delivery_provenance_soundness_proofs(ir, axon_version));
     proofs.extend(generate_query_safety_soundness_proofs(ir, axon_version));
+    proofs.extend(generate_dataspace_schema_soundness_proofs(ir, axon_version));
     proofs.extend(generate_document_ingestion_soundness_proofs(ir, axon_version));
     proofs.extend(generate_inferred_ceiling_soundness_proofs(ir, axon_version));
     proofs.extend(generate_forge_soundness_proofs(ir, axon_version));

@@ -228,6 +228,9 @@ async fn cognitive_framing_variants_unchanged_no_tool_call() {
             source_line: 0,
             source_column: 0,
             expression: "x".into(),
+            where_expr: String::new(),
+            select: Vec::new(),
+            output: String::new(),
         }),
         IRFlowNode::Associate(IRAssociateStep {
             node_type: "associate",
@@ -236,6 +239,7 @@ async fn cognitive_framing_variants_unchanged_no_tool_call() {
             left: "a".into(),
             right: "b".into(),
             using_field: "".into(),
+            output: String::new(),
         }),
         IRFlowNode::Aggregate(IRAggregateStep {
             node_type: "aggregate",
@@ -244,6 +248,8 @@ async fn cognitive_framing_variants_unchanged_no_tool_call() {
             target: "t".into(),
             group_by: Vec::new(),
             alias: "".into(),
+            compute: Vec::new(),
+            where_expr: String::new(),
         }),
         IRFlowNode::Explore(IRExploreStep {
             node_type: "explore",
@@ -251,6 +257,7 @@ async fn cognitive_framing_variants_unchanged_no_tool_call() {
             source_column: 0,
             target: "h".into(),
             limit: None,
+            output: String::new(),
         }),
         IRFlowNode::Ingest(IRIngestStep {
             node_type: "ingest",
