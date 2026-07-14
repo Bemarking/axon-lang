@@ -50,6 +50,12 @@ const fn token_to_trivia_kind(tt: &TokenType) -> Option<TriviaKind> {
 /// variant is in a single place.
 fn attach_trivia_to_decl(decl: &mut Declaration, leading: Vec<Trivia>, trailing: Vec<Trivia>) {
     match decl {
+        // §Fase 114.a — a top-level `budget` carries its comments like any other
+        // declaration.
+        Declaration::Budget(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
         Declaration::Import(n) => {
             n.leading_trivia = leading;
             n.trailing_trivia = trailing;
@@ -2046,6 +2052,17 @@ impl Parser {
 
     fn parse_declaration(&mut self) -> Result<Declaration, ParseError> {
         let tok = self.current().clone();
+
+        // §Fase 114.a — a TOP-LEVEL `budget <Name> { … }`.
+        //
+        // `budget` lexes as `TokenType::Budget` (the daemon-field keyword). At top
+        // level it is only a declaration when a NAME follows — `budget Foo { … }`.
+        // The lookahead is what keeps the daemon-attached form (`daemon D { budget
+        // { … } }`, where `{` follows immediately) untouched: there the next token
+        // is `{`, not an identifier, so this branch does not fire.
+        if tok.ttype == TokenType::Budget && self.peek_is_identifier() {
+            return self.parse_top_level_budget().map(Declaration::Budget);
+        }
 
         match tok.ttype {
             TokenType::Import => self.parse_import().map(Declaration::Import),
@@ -6512,6 +6529,22 @@ impl Parser {
         Ok(node)
     }
 
+    /// §Fase 114.a — a TOP-LEVEL `budget <Name> { … }`.
+    ///
+    /// Same body as the daemon-attached block; what it gains is a **name** and a
+    /// **scope that is not a daemon**. Until §114, `budget` was a field of `daemon`
+    /// and of nothing else — so an adopter deploying an HTTP endpoint that calls a
+    /// vendor tool had **no way in the language to bound how often it did that.**
+    /// Not "the bound did not work": **the bound could not be written.** And the
+    /// HTTP endpoint is what people actually deploy.
+    fn parse_top_level_budget(&mut self) -> Result<BudgetBlock, ParseError> {
+        let kw = self.consume(TokenType::Budget)?; // `budget`
+        let name = self.consume(TokenType::Identifier)?.value;
+        let mut block = self.parse_budget_block(kw.line, kw.column)?;
+        block.name = name;
+        Ok(block)
+    }
+
     /// §Fase 72.a — `budget { <rate|max>: N per <period> on Tool(<X>) … [on_exhausted: <p>] }`.
     fn parse_budget_block(&mut self, line: u32, column: u32) -> Result<BudgetBlock, ParseError> {
         self.consume(TokenType::LBrace)?;
@@ -6533,9 +6566,12 @@ impl Parser {
         }
         self.consume(TokenType::RBrace)?;
         Ok(BudgetBlock {
+            name: String::new(),
             quotas,
             on_exhausted,
             loc: Loc { line, column },
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
         })
     }
 
@@ -8083,6 +8119,15 @@ impl Parser {
     }
 
     /// §Fase 110.a — one-token lookahead helper for the `secret(` form.
+    /// §Fase 114.a — is the NEXT token an identifier? (`budget <Name> { … }` vs
+    /// a bare `budget` used as an ordinary identifier.)
+    fn peek_is_identifier(&self) -> bool {
+        self.tokens
+            .get(self.pos + 1)
+            .map(|t| t.ttype == TokenType::Identifier)
+            .unwrap_or(false)
+    }
+
     fn peek_is_lparen(&self) -> bool {
         self.tokens
             .get(self.pos + 1)

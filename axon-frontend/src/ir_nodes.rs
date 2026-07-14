@@ -30,6 +30,11 @@ pub struct IRProgram {
     pub shields: Vec<IRShield>,
     /// §Fase 71.a — temporal execution-window guards.
     pub windows: Vec<IRWindow>,
+    /// §Fase 114.a — top-level `budget` declarations. A daemon's anonymous budget
+    /// stays on the daemon; these govern EVERY flow that calls the tools they
+    /// name, including the HTTP endpoints adopters actually deploy.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub budgets: Vec<IRBudget>,
     pub daemons: Vec<IRDaemon>,
     pub ots_specs: Vec<IROts>,
     pub pix_specs: Vec<IRPix>,
@@ -205,6 +210,7 @@ impl IRProgram {
             agents: Vec::new(),
             shields: Vec::new(),
             windows: Vec::new(),
+            budgets: Vec::new(),
             daemons: Vec::new(),
             ots_specs: Vec::new(),
             pix_specs: Vec::new(),
@@ -1816,6 +1822,11 @@ pub struct IRBudget {
     pub node_type: &'static str,
     pub source_line: u32,
     pub source_column: u32,
+    /// §Fase 114.a — the name of a **top-level** `budget`. Empty ⇒ the anonymous
+    /// daemon-attached form. Skip-if-empty ⇒ every pre-§114 program serializes
+    /// byte-identically (IR-SHA stability).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
     pub quotas: Vec<IRBudgetQuota>,
     /// `block` (fail-closed) | `defer` (reschedule via the §71 defer ledger) |
     /// `shed` (skip the call). An omitted policy lowers to `block` (the safe

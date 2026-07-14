@@ -334,21 +334,21 @@ async fn run_step_streaming_tool(
     // byte-identical to pre-§72. (`defer`/`shed` refine the deny path in §72.d;
     // until then a deny fail-closes for every policy — the budget is always
     // honoured, only the failure MODE is coarser.)
-    if let Some(budget) = &ctx.budget {
-        let now = chrono::Utc::now();
-        let decision = budget.lock().unwrap().gate(&entry.name, now);
-        if let crate::runtime::budget_kernel::GateDecision::Deny {
-            retry_at,
-            on_exhausted,
-        } = decision
-        {
-            let retry_at_ms = retry_at.timestamp_millis();
-            match on_exhausted.as_str() {
-                // §Fase 72.d — `shed`: best-effort. Skip the call, but CONTINUE
-                // the flow: the step completes with no tool output (a downstream
-                // `${Step}` reference resolves to empty). The step audit row marks
-                // the shed so it is observable, not silent.
-                "shed" => {
+    // §Fase 114.a — the gate now lives in ONE place (`budget_gate::charge`) and
+    // runs on EVERY tool path. It used to be inlined right here, and here ONLY —
+    // reachable solely by a streaming tool, inside a daemon, on the enterprise
+    // supervisor. The canonical `use Tool(…)` path had no budget at all.
+    match crate::flow_dispatcher::budget_gate::charge(ctx, &entry.name)? {
+        crate::flow_dispatcher::budget_gate::BudgetGrant::Granted => {}
+        // §Fase 72.d — `shed`: best-effort. Skip the call, but CONTINUE the flow:
+        // the step completes with no tool output (a downstream `${Step}` reference
+        // resolves to empty). The audit row marks the shed so it is OBSERVABLE,
+        // not silent — a skipped call that leaves no trace is indistinguishable
+        // from a call that returned nothing, and those are very different facts.
+        crate::flow_dispatcher::budget_gate::BudgetGrant::Shed { .. } => {
+            let now = chrono::Utc::now();
+            let _ = now;
+            {
                     ctx.tx
                         .send(FlowExecutionEvent::StepComplete {
                             step_name: step_name.clone(),
@@ -380,35 +380,20 @@ async fn run_step_streaming_tool(
                             anchor_breaches: Vec::new(),
                         });
                     }
-                    // Empty output bound under the step name (a downstream ref
-                    // gets ""), and the flow proceeds.
-                    ctx.let_bindings.insert(step_name.clone(), String::new());
-                    return Ok(NodeOutcome::Completed {
-                        output: String::new(),
-                        tokens_emitted: 0,
-                        step_index,
-                    });
-                }
-                // §Fase 72.d — `defer`: the tick should re-run when a token frees
-                // up. A DISTINCT error (vs block) so the supervisor reschedules.
-                "defer" => {
-                    return Err(DispatchError::EffectDeferred {
-                        effect: entry.name.clone(),
-                        retry_at_ms,
-                    });
-                }
-                // `block` (the default + any other) → fail-closed. The typed
-                // `EffectQuotaExhausted` propagates to the step + daemon audit.
-                _ => {
-                    return Err(DispatchError::EffectQuotaExhausted {
-                        effect: entry.name.clone(),
-                        retry_at_ms,
-                    });
-                }
             }
+            // Empty output bound under the step name (a downstream ref gets ""),
+            // and the flow proceeds.
+            ctx.let_bindings.insert(step_name.clone(), String::new());
+            return Ok(NodeOutcome::Completed {
+                output: String::new(),
+                tokens_emitted: 0,
+                step_index,
+            });
         }
-        // Granted — the token(s) were consumed; the emission proceeds.
     }
+    // `defer` and `block` no longer appear here: `charge` returns them as typed
+    // errors (`EffectDeferred` / `EffectQuotaExhausted`) and the `?` above
+    // propagates them. One law, one place.
 
     // 7. Invoke tool.stream() + route through the unified handler.
     //    The handler applies the declared policy at chunk

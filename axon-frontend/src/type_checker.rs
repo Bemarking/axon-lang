@@ -1480,6 +1480,15 @@ impl<'a> TypeChecker<'a> {
 
         for decl in decls {
             match decl {
+                // §Fase 114.a — a top-level budget is a named symbol.
+                Declaration::Budget(n) => {
+                    registrations.push((
+                        n.name.clone(),
+                        "budget".into(),
+                        n.loc.line,
+                        n.loc.clone(),
+                    ));
+                }
                 Declaration::Persona(n) => {
                     registrations.push((
                         n.name.clone(),
@@ -2100,6 +2109,13 @@ impl<'a> TypeChecker<'a> {
     fn check_declarations(&mut self, decls: &[Declaration]) {
         for decl in decls {
             match decl {
+                // §Fase 114.a — a top-level budget is checked by the SAME laws as a
+                // daemon's (T830–T834). Reused, not re-implemented: a second copy
+                // of a law is how the islands happened.
+                Declaration::Budget(n) => {
+                    let scope = format!("budget '{}'", n.name);
+                    self.check_budget(n, &scope);
+                }
                 Declaration::Persona(n) => self.check_persona(n),
                 Declaration::Context(n) => self.check_context(n),
                 Declaration::Anchor(n) => self.check_anchor(n),

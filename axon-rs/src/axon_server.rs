@@ -396,6 +396,27 @@ pub struct ServerState {
     /// the compiled IR — every kernel takes the declarations directly; nothing had
     /// ever handed them to one (§112.b).
     pub cognitive_io: Option<std::sync::Arc<std::sync::Mutex<crate::cognitive_io_supervisor::CognitiveIoSupervisor>>>,
+    /// §Fase 114.a — the **top-level `budget` gates, HELD ACROSS REQUESTS**, keyed
+    /// by scope.
+    ///
+    /// # Why they live here and not in the request
+    ///
+    /// This is the difference between §114.a being a wire and being a label. A
+    /// `BudgetGate` is a token bucket. **Build it per request and it starts full
+    /// every time — which bounds exactly nothing.** `rate: 100 per minute` would
+    /// permit 100 calls *per request*, forever, and every test of it would pass.
+    ///
+    /// So the gate is built ONCE at deploy and outlives the requests it governs.
+    ///
+    /// # Why keyed by scope, and not one global gate
+    ///
+    /// A single process-wide gate would let one tenant exhaust another's quota —
+    /// an isolation leak, not a rate limit. OSS is single-tenant, so the scope is
+    /// the deployment; the enterprise keys it by `tenant_id` through the same seam
+    /// (`BudgetGate::from_ir` has always taken a `scope`).
+    ///
+    /// `None` ⇒ the program declares no top-level `budget`, and this costs nothing.
+    pub budgets: Option<std::sync::Arc<std::sync::Mutex<crate::runtime::budget_kernel::BudgetGate>>>,
     /// §Fase 112.c — the last supervisor pass, for the ops surface. `refusals` is
     /// first-class here: a system we could not observe is NOT a system that is fine.
     pub cognitive_io_last_tick: Option<serde_json::Value>,
@@ -998,6 +1019,8 @@ impl ServerState {
             dynamic_types: HashMap::new(),
             // §Fase 112.c — built at deploy from the compiled Cognitive-I/O decls.
             cognitive_io: None,
+            // §Fase 114.a — top-level budget gates; built at deploy, held across requests.
+            budgets: None,
             cognitive_io_last_tick: None,
             // §Fase 111.i — populated at deploy from the compiled `socket` decls.
             socket_schemas: HashMap::new(),
@@ -1842,6 +1865,11 @@ async fn deploy_handler(
             let s = state.lock().unwrap();
             s.dataspace_engine.clone()
         };
+        // §Fase 114.a — the shared, cross-request budget gate.
+        let http_budget = {
+            let s = state.lock().unwrap();
+            s.budgets.clone()
+        };
         let merge_result = engine
             .write()
             .expect("dataspace engine lock poisoned")
@@ -2004,6 +2032,34 @@ async fn deploy_handler(
         // when route merge succeeded.
         for (name, schema) in &incoming_types {
             s.dynamic_types.insert(name.clone(), schema.clone());
+        }
+
+        // §Fase 114.a — build the top-level `budget` gates, ONCE, at deploy.
+        //
+        // They must outlive the requests they govern. A `BudgetGate` is a token
+        // bucket: rebuilt per request it starts full every time, and `rate: 100 per
+        // minute` would silently mean "100 per request, forever". That is the
+        // nominal link in its purest form — the declaration would be honoured by a
+        // gate that cannot deny anything, and every test of it would pass.
+        //
+        // Multiple top-level budgets merge into ONE gate: the quotas are keyed by
+        // the tool they name (`on Tool(X)`), so two budgets over different tools
+        // compose, and two over the SAME tool are all-or-none (the kernel's
+        // `try_acquire_all` — you cannot satisfy one quota by ignoring another).
+        if ir.budgets.is_empty() {
+            s.budgets = None;
+        } else {
+            let now = chrono::Utc::now();
+            let mut merged: Option<crate::runtime::budget_kernel::BudgetGate> = None;
+            for b in &ir.budgets {
+                let scope = if b.name.is_empty() { "program" } else { &b.name };
+                let gate = crate::runtime::budget_kernel::BudgetGate::from_ir(b, scope, now);
+                merged = Some(match merged {
+                    None => gate,
+                    Some(prev) => prev.merged_with(gate),
+                });
+            }
+            s.budgets = merged.map(|g| std::sync::Arc::new(std::sync::Mutex::new(g)));
         }
 
         // §Fase 112.c — instantiate the Cognitive-I/O graph.
@@ -2353,6 +2409,14 @@ fn server_execute(
     // populated by the deploy hook). `None` for callers with no server
     // state ⇒ the data-plane verbs fail CLOSED (§108.a).
     dataspace_engine: Option<crate::dataspace_engine::SharedDataspaceEngine>,
+    // §Fase 114.a — the program's top-level `budget` gate, HELD ON `ServerState`
+    // and therefore alive across requests. `None` ⇒ no budget declared, and tool
+    // dispatch is unconditional (byte-identical to pre-§114).
+    //
+    // It is passed IN rather than rebuilt here on purpose: a token bucket
+    // constructed per request starts full every time, so `rate: 100 per minute`
+    // would silently mean "100 per request, forever" — a gate that cannot deny.
+    http_budget: Option<std::sync::Arc<std::sync::Mutex<crate::runtime::budget_kernel::BudgetGate>>>,
 ) -> Result<ServerExecutionResult, String> {
     let start = Instant::now();
 
@@ -2399,9 +2463,22 @@ fn server_execute(
         // the enterprise executor's concern.
         None,
         None,
-        // §Fase 72.c — the HTTP path carries no daemon budget (effect budgets
-        // are a `daemon` surface). Tool dispatch is unconditional here.
-        None,
+        // §Fase 114.a — the HTTP path CARRIES ITS BUDGET.
+        //
+        // This argument used to be `None`, under the comment: *"the HTTP path
+        // carries no daemon budget (effect budgets are a `daemon` surface). Tool
+        // dispatch is unconditional here."*
+        //
+        // That was a gap written down until it read like a decision. Its real
+        // consequence: **an adopter deploying an HTTP endpoint that calls a vendor
+        // tool had no way in the language to bound how often it did so.** Not that
+        // the bound failed — the bound could not be WRITTEN. And the HTTP endpoint
+        // is what people actually deploy.
+        //
+        // The gate is held on `ServerState` and outlives the request (see
+        // `ServerState::budgets`): a token bucket rebuilt per request starts full
+        // every time and bounds nothing.
+        http_budget,
         // §Fase 74.f — the OSS HTTP path carries no durable event outbox (the
         // per-tenant Postgres outbox is the enterprise supervisor's concern);
         // `emit` keeps its in-process behavior here.
@@ -13600,6 +13677,23 @@ fn execute_with_fallback(
         let s = state.lock().unwrap();
         s.dataspace_engine.clone()
     };
+    // §Fase 114.a — the shared, cross-request budget gate.
+    let http_budget = {
+        let s = state.lock().unwrap();
+        s.budgets.clone()
+    };
+    // §Fase 114.a — the top-level `budget` gate, resolved from `ServerState` and
+    // therefore the SAME bucket every request. Cloned Arc, not rebuilt: a fresh
+    // gate per request starts full and bounds nothing.
+    //
+    // Note it is resolved ONCE and shared with the fallback attempt below. A
+    // fallback that got its own gate would let a failing primary backend DOUBLE
+    // the adopter's vendor spend — the retry would be free, which is precisely
+    // what a budget exists to prevent.
+    let http_budget = {
+        let s = state.lock().unwrap();
+        s.budgets.clone()
+    };
     // Try primary
     let result = server_execute(
         source,
@@ -13611,6 +13705,7 @@ fn execute_with_fallback(
         request_path,
         request_query,
         Some(ds_engine.clone()),
+        http_budget.clone(),
     );
     if result.is_ok() {
         return (result, primary_backend.to_string());
@@ -13645,6 +13740,10 @@ fn execute_with_fallback(
             request_path,
             request_query,
             Some(ds_engine.clone()),
+            // §Fase 114.a — the SAME gate the primary attempt used. A fallback with
+            // its own bucket would make the retry free, and a failing primary
+            // backend would silently DOUBLE the adopter's vendor spend.
+            http_budget.clone(),
         );
         if fb_result.is_ok() {
             return (fb_result, fallback_backend.clone());
@@ -15122,11 +15221,17 @@ async fn mcp_handler(
                 let s = state.lock().unwrap();
                 s.dataspace_engine.clone()
             };
+            // §Fase 114.a — the shared, cross-request budget gate.
+            let http_budget = {
+                let s = state.lock().unwrap();
+                s.budgets.clone()
+            };
             let result = server_execute(
                 &source, &source_file, flow_name, backend, resolved_key.as_deref(), None,
                 &empty_path,
                 &empty_query,
                 Some(ds_engine),
+                http_budget,
             );
 
             match result {
@@ -16212,9 +16317,14 @@ async fn mcp_stream_handler(
         let s = state.lock().unwrap();
         s.dataspace_engine.clone()
     };
+    // §Fase 114.a — the shared, cross-request budget gate.
+    let http_budget = {
+        let s = state.lock().unwrap();
+        s.budgets.clone()
+    };
     match server_execute(
         &source, &source_file, flow_name, backend, resolved_key.as_deref(), None,
-        &empty_path, &empty_query, Some(ds_engine),
+        &empty_path, &empty_query, Some(ds_engine), http_budget,
     ) {
         Ok(mut er) => {
             // Record trace
@@ -28218,9 +28328,16 @@ async fn execute_warm_handler(
             let s = state.lock().unwrap();
             s.dataspace_engine.clone()
         };
+        // §Fase 114.a — warmup runs the same dispatcher as production, so it must
+        // charge the same budget. A warmup that spent freely would silently eat an
+        // adopter's vendor quota before their first real request arrived.
+        let http_budget = {
+            let s = state.lock().unwrap();
+            s.budgets.clone()
+        };
         match server_execute(
             source, source_file, flow_name, "stub", None, None,
-            &empty_path, &empty_query, Some(ds_engine),
+            &empty_path, &empty_query, Some(ds_engine), http_budget,
         ) {
             Ok(er) => {
                 let mut entry = crate::trace_store::build_trace(&er.flow_name, &er.source_file, &er.backend, &client,

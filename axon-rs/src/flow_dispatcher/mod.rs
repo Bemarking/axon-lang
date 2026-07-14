@@ -72,6 +72,13 @@ use tokio::sync::{mpsc, Mutex};
 /// single LLM response from a prompt + cognitive framing"; the module
 /// houses the shared async core (`run_pure_shape`) + 6 thin
 /// per-variant entry points that build the variant's framing.
+/// §Fase 114.a — the budget gate, in ONE place, on EVERY tool path.
+///
+/// Until §114 it was inlined in `pure_shape` and reachable only by a streaming
+/// tool, inside a daemon, on the enterprise supervisor. The canonical
+/// `use Tool(…)` path — the one `advertised.rs` cites as PROOF that `tool` is
+/// Real — had no budget at all.
+pub mod budget_gate;
 pub mod pure_shape;
 
 /// §Fase 33.y.d — Orchestration variant handlers (Let / Conditional /

@@ -228,6 +228,9 @@ impl IRGenerator {
 
     fn visit_declaration(&mut self, decl: &Declaration, ir: &mut IRProgram) {
         match decl {
+            // §Fase 114.a — a TOP-LEVEL budget governs every flow that calls the
+            // tools its quotas name, not just a daemon's.
+            Declaration::Budget(n) => ir.budgets.push(Self::visit_budget(n)),
             Declaration::Import(n) => ir.imports.push(self.visit_import(n)),
             Declaration::Persona(n) => {
                 let node = self.visit_persona(n);
@@ -1380,6 +1383,8 @@ impl IRGenerator {
             node_type: "budget",
             source_line: n.loc.line,
             source_column: n.loc.column,
+            // §Fase 114.a — empty for the anonymous daemon-attached form.
+            name: n.name.clone(),
             quotas: n
                 .quotas
                 .iter()

@@ -465,6 +465,40 @@ impl BudgetGate {
         }
     }
 
+    /// §Fase 114.a — fold another gate into this one.
+    ///
+    /// A program may declare several top-level `budget`s. They compose into one
+    /// gate, and the composition **may only ever tighten**:
+    ///
+    /// - **Quotas accumulate.** Subject keys are namespaced by scope, so they
+    ///   cannot collide. Two budgets over the *same* tool means **both** must
+    ///   grant — `gate()` is all-or-none over an effect's quotas. You cannot
+    ///   satisfy one quota by ignoring another.
+    /// - **The STRICTEST `on_exhausted` wins** (`block` > `defer` > `shed`).
+    ///
+    /// That second rule is the load-bearing one. If a lax budget could soften a
+    /// strict one, then **adding a budget could widen what the program is allowed
+    /// to do** — and a quota whose presence increases your permissions is not a
+    /// quota. Merging must never be a way to buy leniency.
+    pub fn merged_with(mut self, other: BudgetGate) -> BudgetGate {
+        for (key, lease) in other.kernel.leases {
+            self.kernel.leases.insert(key, lease);
+        }
+        for (effect, keys) in other.by_effect {
+            self.by_effect.entry(effect).or_default().extend(keys);
+        }
+        // Strictest wins. `block` fails closed; `defer` reschedules; `shed` skips.
+        let strictness = |p: &str| match p {
+            "block" => 2,
+            "defer" => 1,
+            _ => 0, // `shed` — and any unknown policy, which must never be the winner
+        };
+        if strictness(&other.on_exhausted) > strictness(&self.on_exhausted) {
+            self.on_exhausted = other.on_exhausted;
+        }
+        self
+    }
+
     /// Gate one emission of `effect` (a tool name) at `now`. An effect with no
     /// quota is [`GateDecision::Allow`] (unbudgeted). Otherwise all of its quotas
     /// must grant (all-or-none); on exhaustion the daemon's `on_exhausted` policy
@@ -528,6 +562,7 @@ mod tests {
             node_type: "budget",
             source_line: 1,
             source_column: 1,
+            name: String::new(),
             quotas,
             on_exhausted: on_exhausted.into(),
         }

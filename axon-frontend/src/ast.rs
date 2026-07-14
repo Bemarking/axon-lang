@@ -87,6 +87,9 @@ pub enum Declaration {
     Shield(ShieldDefinition),
     /// §Fase 71.a — a temporal execution-window guard.
     Window(WindowDefinition),
+    /// §Fase 114.a — a TOP-LEVEL `budget <Name> { … }`. Governs every flow that
+    /// calls the tools its quotas name — not just a daemon's.
+    Budget(BudgetBlock),
     Pix(PixDefinition),
     Ledger(LedgerDefinition),
     Psyche(PsycheDefinition),
@@ -1799,12 +1802,30 @@ pub struct DaemonDefinition {
 /// made real for external effects).
 #[derive(Debug)]
 pub struct BudgetBlock {
+    /// §Fase 114.a — the budget's NAME when it is declared **top-level**.
+    ///
+    /// Empty ⇒ the daemon-attached form (`daemon D { budget { … } }`), which is
+    /// anonymous and scoped to that daemon's ticks.
+    ///
+    /// # Why top-level had to exist
+    ///
+    /// Until §114, `budget` was a **field of `daemon` and nothing else**. So an
+    /// adopter deploying an HTTP endpoint that calls a vendor tool had **no way in
+    /// the language to bound how often it does that.** Not "the bound did not
+    /// work" — **the bound could not be written.** And the HTTP endpoint is what
+    /// people actually deploy.
+    pub name: String,
     /// The per-effect quotas (`rate:`/`max:` lines). At least one.
     pub quotas: Vec<BudgetQuota>,
     /// What to do when a quota is exhausted: `block` (fail-closed, the default) |
     /// `defer` (reschedule via the §71 defer ledger) | `shed` (skip the call).
     pub on_exhausted: String,
     pub loc: Loc,
+    /// §Fase 114.a — comment trivia, so a top-level `budget` does not silently lose
+    /// its doc comments through the formatter (Fase 14.b). Empty for the
+    /// daemon-attached form.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 /// §Fase 72.a — one quota line of a [`BudgetBlock`]:

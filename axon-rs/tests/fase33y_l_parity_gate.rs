@@ -324,6 +324,10 @@ fn dispatcher_module_files_pinned_to_expected_set() {
 
     let expected: Vec<&str> = vec![
         "algebraic_handlers.rs",
+        // §Fase 114.a — the budget gate, extracted to ONE place so every tool path
+        // charges the same law (it was inlined in `pure_shape` and reachable only
+        // by a streaming tool inside a daemon).
+        "budget_gate.rs",
         "cognitive.rs",
         "effects_bridge.rs",
         "lambda_tools.rs",
@@ -347,11 +351,12 @@ fn dispatcher_module_files_pinned_to_expected_set() {
             .map(|s| s.to_string())
             .collect::<Vec<String>>(),
         "33.y.l parity gate: flow_dispatcher module file set drifted. \
-         Expected 11 files (10 per sub-fase 33.y.c–j plus mod.rs, \
+         Expected 12 files (10 per sub-fase 33.y.c–j plus mod.rs, \
          plus unified_stream.rs added by Fase 34.g for the \
-         4-disjunction convergence); got {:?}. Adding a new \
-         sub-module requires updating this expected list + adding \
-         the corresponding `pub mod` in mod.rs.",
+         4-disjunction convergence, plus budget_gate.rs added by \
+         Fase 114.a); got {:?}. Adding a new sub-module requires \
+         updating this expected list + adding the corresponding \
+         `pub mod` in mod.rs.",
         found
     );
 }

@@ -177,6 +177,42 @@ pub async fn run_use_tool(
     };
     emit_step_start(ctx, &step_name, step_index, "use_tool")?;
 
+    // ── §Fase 114.a — THE LIVE BUG, CLOSED ───────────────────────────────────
+    //
+    // This is the canonical tool-call path. It is the one `advertised.rs` cites
+    // as PROOF that `tool` is Real (`lambda_tools::dispatch_use_tool_real`).
+    //
+    // **It had no budget gate.** `grep -c budget` on this file returned 0.
+    //
+    // So `budget { rate: 100 per minute on Tool(Search) }` parsed, type-checked
+    // (T830–T834), built a real fail-closed token bucket — and then governed
+    // NOTHING in an ordinary flow. The gate existed, but only on the streaming
+    // path, only inside a daemon, only on the enterprise supervisor.
+    //
+    // An adopter declared a budget over their vendor and the compiler said yes.
+    //
+    // Charged BEFORE the dispatch, deliberately: a budget charged after the call
+    // bounds nothing — the vendor was already hit and the money already spent.
+    // Over-emission must be impossible by construction, not merely reported.
+    match crate::flow_dispatcher::budget_gate::charge(ctx, &node.tool_name)? {
+        crate::flow_dispatcher::budget_gate::BudgetGrant::Granted => {}
+        // `shed` — the call is NOT made and the flow continues with empty output.
+        // Marked in the audit trail: a skipped call that leaves no trace is
+        // indistinguishable from a call that returned nothing.
+        crate::flow_dispatcher::budget_gate::BudgetGrant::Shed { .. } => {
+            if !node.tool_name.is_empty() {
+                ctx.let_bindings
+                    .insert(format!("{}_result", node.tool_name), String::new());
+            }
+            emit_step_complete(ctx, &step_name, step_index, "", 0, true)?;
+            return Ok(NodeOutcome::Completed {
+                output: String::new(),
+                tokens_emitted: 0,
+                step_index,
+            });
+        }
+    }
+
     // §Fase 58.f.2 — attempt a real dispatch; honor cancel observed
     // while the (potentially blocking, network-bound) call ran.
     let (result, success) = match dispatch_use_tool_real(node, ctx).await {
