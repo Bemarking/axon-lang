@@ -117,7 +117,14 @@ fn pinning_enabled_for_mode(mode: &str) -> bool {
 }
 
 /// Upper bound on pooled connections per backend (D7 — bounded).
-const MAX_POOL_CONNECTIONS: u32 = 10;
+/// The legacy pool size — what EVERY `postgresql` axonstore got before §Fase 113,
+/// with no environment variable, no config and no source-level knob.
+///
+/// It survives as the default for a store that names no `resource:` (the soft
+/// migration: the live deployment runs on that form). `pub` since §113 so the
+/// registry uses THIS constant rather than a copy of the number — a second copy
+/// of a fact is how the islands happened.
+pub const MAX_POOL_CONNECTIONS: u32 = 10;
 /// How long to wait to acquire a pooled connection before failing.
 const ACQUIRE_TIMEOUT_SECS: u64 = 5;
 /// How long an idle pooled connection is kept before being reaped.
@@ -1353,6 +1360,29 @@ impl PostgresStoreBackend {
         store_name: &str,
         namespace: Option<&str>,
     ) -> Result<Self, StoreError> {
+        Self::connect_named_sized(connection, store_name, namespace, MAX_POOL_CONNECTIONS)
+    }
+
+    /// §Fase 113 — **the pool size finally comes from somewhere you can say.**
+    ///
+    /// Until §113 every `postgresql` axonstore in existence got exactly
+    /// [`MAX_POOL_CONNECTIONS`] connections: hardcoded, no environment variable,
+    /// no config, no source-level knob. The pool an adopter's flow depends on was
+    /// the *least* configurable of the three pools in the product.
+    ///
+    /// `resource.capacity` is that knob. It was declared, lowered into the IR,
+    /// and — as §113's census proved by exhaustive grep — **read by zero lines of
+    /// code in either repository**, while the README sold it as a pool cap.
+    ///
+    /// Threading it to `max_connections` here is what makes `resource` a WIRE and
+    /// not a LABEL. If this argument were ignored, §113 would be the nominal link
+    /// its own plan forbids.
+    pub fn connect_named_sized(
+        connection: &str,
+        store_name: &str,
+        namespace: Option<&str>,
+        max_connections: u32,
+    ) -> Result<Self, StoreError> {
         let dsn = resolve_dsn(connection)?;
         let opts = PgConnectOptions::from_str(&dsn)
             .map_err(|e| StoreError::PoolInit {
@@ -1384,7 +1414,9 @@ impl PostgresStoreBackend {
         // meta-invariant: even the cleanup is unnamed, so no prepared
         // statement can ever survive a connection release.
         let pool = PgPoolOptions::new()
-            .max_connections(MAX_POOL_CONNECTIONS)
+            // §Fase 113 — `resource.capacity`, or the legacy default when the
+            // store is not on a resource.
+            .max_connections(max_connections.max(1))
             .min_connections(0)
             .acquire_timeout(Duration::from_secs(ACQUIRE_TIMEOUT_SECS))
             .idle_timeout(Duration::from_secs(IDLE_TIMEOUT_SECS))

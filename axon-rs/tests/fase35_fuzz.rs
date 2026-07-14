@@ -484,6 +484,7 @@ fn fuzz_s5_store_resolution_is_total() {
                 capability: String::new(),
                 class: String::new(),
                 column_schema: None,
+                resource_ref: String::new(),
             })
             .collect();
 

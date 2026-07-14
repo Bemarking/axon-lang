@@ -32,14 +32,14 @@ type IngestRequest { record: SourceRecord }
 // ── Resource bindings ─────────────────────────────────────────────
 
 resource ERPSystem {
-    kind:      sap
-    endpoint:  "sap.corp.internal:443"
+    kind:      https
+    endpoint:  erp.sap.base
     lifetime:  affine
 }
 
 resource CRMSystem {
-    kind:      salesforce
-    endpoint:  "corp.salesforce.com/services/data"
+    kind:      https
+    endpoint:  crm.salesforce.base
     lifetime:  affine
 }
 

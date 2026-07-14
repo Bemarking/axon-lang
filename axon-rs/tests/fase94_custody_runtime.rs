@@ -51,6 +51,7 @@ fn secrets_store_spec() -> IRAxonStore {
         capability: String::new(),
         class: "crm".to_string(),
         column_schema: None,
+        resource_ref: String::new(),
     }
 }
 

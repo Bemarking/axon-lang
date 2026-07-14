@@ -450,7 +450,7 @@ mod tests {
     }
 
     const PROGRAM: &str = r#"
-resource Db { kind: postgres  endpoint: "postgres://127.0.0.1:5432/app"  lifetime: affine }
+resource Db { kind: postgres  endpoint: db.main  lifetime: affine }
 fabric  Vpc { provider: aws }
 manifest Infra { resources: [Db]  fabric: Vpc }
 observe Health from Infra { sources: [sv_probe]  quorum: 1  timeout: 1s  on_partition: fail }
@@ -540,7 +540,7 @@ heal    Repair { source: Sentinel  on_level: doubt  mode: audit_only  scope: ten
         // `sv_ghost` is never registered ⇒ the observe refuses (deny-by-default).
         let ir = compile(
             r#"
-resource Db2 { kind: postgres  endpoint: "postgres://127.0.0.1:5432/app" }
+resource Db2 { kind: postgres  endpoint: db.main }
 manifest Infra { resources: [Db2] }
 observe Blind from Infra { sources: [sv_ghost]  quorum: 1  timeout: 1s  on_partition: fail }
 immune  Sentinel2 { watch: [Blind]  scope: tenant  window: 8 }

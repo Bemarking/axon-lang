@@ -4790,6 +4790,7 @@ mod fase35e_tests {
             capability: String::new(),
             class: String::new(),
             column_schema: None,
+            resource_ref: String::new(),
         }
     }
 

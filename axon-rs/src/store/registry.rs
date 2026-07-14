@@ -120,6 +120,18 @@ pub enum RegistryError {
     UnknownBackend { store: String, backend: String },
     /// Two `axonstore` declarations share a name.
     DuplicateStore { store: String },
+    /// §Fase 113 — the store names a `resource:` that the program does not
+    /// declare. `axon-T946` refuses this at compile; reaching it here means the
+    /// IR was assembled by hand, and we refuse rather than fall back.
+    UnknownResource { store: String, resource: String },
+    /// §Fase 113 — the store's `resource.endpoint` config key could not be
+    /// resolved to an address. **Never a fallback**: a resolver that invents an
+    /// address turns a misconfiguration into a silent connection to nothing.
+    UnresolvedEndpoint {
+        store: String,
+        resource: String,
+        detail: String,
+    },
 }
 
 impl fmt::Display for RegistryError {
@@ -135,6 +147,22 @@ impl fmt::Display for RegistryError {
                 f,
                 "axonstore `{store}` is declared more than once — store \
                  names must be unique"
+            ),
+            RegistryError::UnknownResource { store, resource } => write!(
+                f,
+                "axonstore `{store}` names resource `{resource}`, which the program does not \
+                 declare (axon-T946 refuses this at compile — reaching it here means the IR was \
+                 assembled by hand). We refuse rather than fall back to a default connection: a \
+                 store pointed at nothing beats a store silently pointed somewhere else."
+            ),
+            RegistryError::UnresolvedEndpoint {
+                store,
+                resource,
+                detail,
+            } => write!(
+                f,
+                "axonstore `{store}` runs on resource `{resource}`, whose endpoint could not be \
+                 resolved: {detail}"
             ),
         }
     }
@@ -244,6 +272,23 @@ impl SchemaVerifyReport {
 struct RegisteredStore {
     spec: IRAxonStore,
     kind: StoreBackendKind,
+    /// §Fase 113 — the DSN this store actually connects with.
+    ///
+    /// For a store on a `resource:` this is the RESOLVED `resource.endpoint`
+    /// config key. For the legacy un-resourced form it is `spec.connection`
+    /// verbatim. Either way it is settled ONCE, at build, so `resolve()` cannot
+    /// disagree with the schema verifier about where a store points.
+    dsn_source: String,
+    /// §Fase 113 — the pool size: `resource.capacity`, or the legacy hardcoded
+    /// default when the store names no resource.
+    ///
+    /// This is the field that makes §113 a wire. `capacity` was declared,
+    /// lowered, and read by NOTHING; every pool was 10.
+    capacity: u32,
+    /// §Fase 113 — the resource this store derives from (empty = legacy form).
+    /// Carried for diagnostics: an error about a pool must be able to name the
+    /// declaration the operator has to edit.
+    resource_ref: String,
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -288,6 +333,36 @@ impl StoreRegistry {
     /// lazily, per store, so a broken `postgresql` store cannot fail
     /// the build for an unrelated `in_memory` flow (D3).
     pub fn build(specs: &[IRAxonStore]) -> Result<StoreRegistry, RegistryError> {
+        Self::build_with_resources(specs, &[], &crate::resource_resolver::EnvResourceResolver)
+    }
+
+    /// §Fase 113 — **build a registry where a store DERIVES from its `resource`.**
+    ///
+    /// This is the sub-fase the plan warned itself about, in advance and by name:
+    ///
+    /// > *"A nominal link is not a fix. `axonstore { resource: Db }` as a LABEL —
+    /// > with the store still connecting through its own `connection:` — would
+    /// > give `lease` its hook and leave `endpoint`, `capacity` and `lifetime`
+    /// > governing nothing. **Technically wired and hollow.**"*
+    ///
+    /// So the reference does not merely *point*. When a store names a resource,
+    /// **both facts that matter come from the resource**:
+    ///
+    /// - its **DSN**, by resolving `resource.endpoint` — a config key, never a
+    ///   URL in source (`axon-T944`);
+    /// - its **pool size**, from `resource.capacity` — which until §113 was read
+    ///   by *zero lines of code in either repository* while every pool in
+    ///   existence sat at a hardcoded 10.
+    ///
+    /// A store with no `resource:` keeps the legacy path verbatim. `connection:`
+    /// is what the live deployment runs on, and the migration is soft (ratified):
+    /// it still compiles, it warns, and it is ineligible for `lease`/`observe` —
+    /// you cannot govern what you did not declare.
+    pub fn build_with_resources(
+        specs: &[IRAxonStore],
+        resources: &[crate::ir_nodes::IRResource],
+        resolver: &dyn crate::resource_resolver::ResourceResolver,
+    ) -> Result<StoreRegistry, RegistryError> {
         let mut stores: HashMap<String, RegisteredStore> =
             HashMap::with_capacity(specs.len());
 
@@ -303,9 +378,52 @@ impl StoreRegistry {
                     store: spec.name.clone(),
                 });
             }
+
+            // §Fase 113 — derive from the resource, or keep the legacy shape.
+            let (dsn_source, capacity) = if spec.resource_ref.is_empty() {
+                (spec.connection.clone(), super::postgres_backend::MAX_POOL_CONNECTIONS)
+            } else {
+                let res = resources
+                    .iter()
+                    .find(|r| r.name == spec.resource_ref)
+                    .ok_or_else(|| RegistryError::UnknownResource {
+                        store: spec.name.clone(),
+                        resource: spec.resource_ref.clone(),
+                    })?;
+                // The endpoint is a CONFIG KEY (`axon-T944`). Resolving it is the
+                // only way an address reaches the runtime at all — and an
+                // unresolved key **REFUSES**. It is never defaulted.
+                //
+                // §112 cost three kernel bugs to learn that, and all three were
+                // the same bug: *when the evidence is missing, substitute the
+                // belief and report agreement.* A resolver that quietly returns
+                // `localhost` for an unset key is that bug wearing a helpful
+                // expression — it converts a misconfigured production deployment
+                // into a silent connection to nothing.
+                let addr = resolver.resolve(&res.endpoint).map_err(|e| {
+                    RegistryError::UnresolvedEndpoint {
+                        store: spec.name.clone(),
+                        resource: res.name.clone(),
+                        detail: e.to_string(),
+                    }
+                })?;
+                let cap = res
+                    .capacity
+                    .filter(|c| *c > 0)
+                    .map(|c| c as u32)
+                    .unwrap_or(super::postgres_backend::MAX_POOL_CONNECTIONS);
+                (addr, cap)
+            };
+
             stores.insert(
                 spec.name.clone(),
-                RegisteredStore { spec: spec.clone(), kind },
+                RegisteredStore {
+                    spec: spec.clone(),
+                    kind,
+                    dsn_source,
+                    capacity,
+                    resource_ref: spec.resource_ref.clone(),
+                },
             );
         }
 
@@ -313,6 +431,30 @@ impl StoreRegistry {
             stores,
             pool_cache: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// §Fase 113 — the pool size a store ACTUALLY got.
+    ///
+    /// Exposed so a gate can *prove* `capacity: 20` produced twenty connections
+    /// rather than trusting that it did. **An unobservable wire is
+    /// indistinguishable from a label**, and this fase exists to tell them apart.
+    pub fn pool_capacity_of(&self, store_name: &str) -> Option<u32> {
+        self.stores.get(store_name).map(|r| r.capacity)
+    }
+
+    /// §Fase 113 — the resource a store derives from. `None` ⇒ the legacy
+    /// un-resourced form.
+    pub fn resource_of(&self, store_name: &str) -> Option<&str> {
+        self.stores
+            .get(store_name)
+            .map(|r| r.resource_ref.as_str())
+            .filter(|s| !s.is_empty())
+    }
+
+    /// §Fase 113 — the DSN a store resolves to (the resolved `resource.endpoint`,
+    /// or the legacy `connection:` verbatim). For diagnostics and gates.
+    pub fn dsn_source_of(&self, store_name: &str) -> Option<&str> {
+        self.stores.get(store_name).map(|r| r.dsn_source.as_str())
     }
 
     /// An empty registry — a program that declares no `axonstore`. Every
@@ -353,18 +495,29 @@ impl StoreRegistry {
                 class: registered.spec.class.clone(),
             }),
             StoreBackendKind::Postgresql => {
-                // Resolve the DSN first — this is the cache key, and
-                // the point at which a missing `env:` var surfaces as
-                // a typed error rather than a silent KV fallback.
-                let dsn = resolve_dsn(&registered.spec.connection)?;
+                // §Fase 113 — `dsn_source` is the RESOLVED `resource.endpoint`
+                // when the store runs on a resource, and `spec.connection`
+                // verbatim otherwise. Settled once at build, so this cannot
+                // disagree with the schema verifier about where a store points.
+                //
+                // Resolve the DSN first — it is the cache key, and the point at
+                // which a missing `env:` var surfaces as a typed error rather
+                // than a silent KV fallback.
+                let dsn = resolve_dsn(&registered.dsn_source)?;
 
                 let mut cache = self.lock_cache();
                 if let Some(backend) = cache.get(&dsn) {
                     return Ok(StoreHandle::Postgres(backend.clone()));
                 }
-                let backend = PostgresStoreBackend::connect_named(
-                    &registered.spec.connection,
+                // §Fase 113 — the pool is sized by `resource.capacity`. This one
+                // argument is the difference between a wire and a label: without
+                // it, `capacity:` would remain what it has always been — parsed,
+                // lowered, advertised as a pool cap, and read by nothing.
+                let backend = PostgresStoreBackend::connect_named_sized(
+                    &registered.dsn_source,
                     store_name,
+                    None,
+                    registered.capacity,
                 )?;
                 cache.insert(dsn, backend.clone());
                 Ok(StoreHandle::Postgres(backend))
@@ -838,6 +991,7 @@ mod tests {
             capability: String::new(),
             class: String::new(),
             column_schema: None,
+            resource_ref: String::new(),
         }
     }
 
@@ -1222,6 +1376,7 @@ mod tests {
             capability: String::new(),
             class: String::new(),
             column_schema: Some(schema),
+            resource_ref: String::new(),
         }
     }
 

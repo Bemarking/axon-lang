@@ -312,6 +312,7 @@ pub mod storage;
 pub mod storage_postgres;
 // §Fase 35 — the `axonstore` cognitive data plane runtime. 35.b ships
 // `store::filter` (the parameterized where-expression compiler).
+pub mod resource_resolver;
 pub mod store;
 pub mod stdlib;
 pub mod tenant;

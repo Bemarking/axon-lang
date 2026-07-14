@@ -42,8 +42,8 @@ axonendpoint PatientAPI {
   compliance: [HIPAA, GDPR]
 }
 
-resource Ehr { kind: postgres endpoint: "ehr.internal:5432" lifetime: linear }
-resource Cache { kind: redis lifetime: affine }
+resource Ehr { kind: postgres endpoint: ehr.main lifetime: affine }
+resource Cache { kind: redis endpoint: cache.main lifetime: affine }
 
 fabric ClinicalCloud { provider: aws region: "us-east-1" zones: 3 }
 

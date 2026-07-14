@@ -139,8 +139,8 @@ async fn tick(app: &axum::Router) -> serde_json::Value {
 fn program(tag: &str, tolerance: &str, on_drift: &str) -> String {
     format!(
         r#"
-resource Db{tag}    {{ kind: postgres  endpoint: "postgres://127.0.0.1:5432/app" }}
-resource Cache{tag} {{ kind: redis     endpoint: "redis://127.0.0.1:6379" }}
+resource Db{tag}    {{ kind: postgres  endpoint: db.main }}
+resource Cache{tag} {{ kind: redis     endpoint: cache.main }}
 manifest Infra {{ resources: [Db{tag}, Cache{tag}] }}
 observe  World from Infra {{ sources: [Db{tag}, Cache{tag}]  quorum: 1  timeout: 1s  on_partition: fail }}
 reconcile Keeper {{ observe: World  tolerance: {tolerance}  on_drift: {on_drift} }}

@@ -42,7 +42,7 @@ shield PHIShield {
 
 resource EHRDatabase {
     kind:            postgres
-    endpoint:        "ehr.clinical.internal:5432"
+    endpoint:        ehr.clinical.internal
     capacity:        300
     lifetime:        linear
     certainty_floor: 0.95
@@ -78,20 +78,20 @@ fn manifest_canonical_program_compiles() {
     let src = r#"
 resource EHRDatabase {
     kind:      postgres
-    endpoint:  "ehr.clinical.internal:5432"
+    endpoint:  ehr.clinical.internal
     capacity:  300
     lifetime:  linear
 }
 
 resource TrialArchive {
-    kind:      s3
-    endpoint:  "s3://clinical-trial-archive"
+    kind:      https
+    endpoint:  clinical_trial_archive
     lifetime:  persistent
 }
 
 resource InferenceEngine {
-    kind:      compute
-    endpoint:  "dx-ml.internal:9090"
+    kind:      https
+    endpoint:  dx_ml.internal
     capacity:  4
     lifetime:  affine
 }
@@ -119,7 +119,7 @@ fn observe_canonical_program_compiles() {
     let src = r#"
 resource EHRDatabase {
     kind:      postgres
-    endpoint:  "ehr.clinical.internal:5432"
+    endpoint:  ehr.clinical.internal
     lifetime:  linear
 }
 
@@ -160,7 +160,7 @@ shield PHIShield {
 
 resource EHRDatabase {
     kind:      postgres
-    endpoint:  "ehr.clinical.internal:5432"
+    endpoint:  ehr.clinical.internal
     lifetime:  linear
 }
 
@@ -199,7 +199,7 @@ fn lease_canonical_program_compiles() {
     let src = r#"
 resource BillingDatabase {
     kind:      postgres
-    endpoint:  "billing.internal:5432"
+    endpoint:  billing.internal
     lifetime:  affine
 }
 
@@ -216,9 +216,9 @@ lease BillingLease {
 #[test]
 fn ensemble_canonical_program_compiles() {
     let src = r#"
-resource USDatabase  { kind: postgres  endpoint: "us.db:5432"  lifetime: affine }
-resource EUDatabase  { kind: postgres  endpoint: "eu.db:5432"  lifetime: affine }
-resource APDatabase  { kind: postgres  endpoint: "ap.db:5432"  lifetime: affine }
+resource USDatabase  { kind: postgres  endpoint: us.db  lifetime: affine }
+resource EUDatabase  { kind: postgres  endpoint: eu.db  lifetime: affine }
+resource APDatabase  { kind: postgres  endpoint: ap.db  lifetime: affine }
 
 fabric Global {
     provider:  aws

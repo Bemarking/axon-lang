@@ -1,131 +1,157 @@
 ---
 name: resource
-summary: Declares an external compute/storage resource (database, S3, ML endpoint) consumable by a flow.
+summary: The single source of truth for a connection the runtime opens, holds and pools — its address, its size, and how many holders may share it.
 category: cognitive_io
 top_level: true
-since: Fase 6
+since: Fase 6 (governs anything only since Fase 113)
 grammar: |
   resource <Name> {
-      kind: <ident>                              # required — backend kind slug
-      endpoint: "<addr>"                          # optional — connection URI
-      capacity: <integer>                         # optional — pool/concurrency cap
-      lifetime: <linear|affine|persistent>        # optional — handle lifecycle
-      certainty_floor: <0.0..1.0>                 # optional — observation gate
-      shield: <ShieldRef>                         # optional — defence layer
+      kind:            <http|https|mysql|postgres|redis>   # required — CLOSED catalog
+      endpoint:        <config.key>                        # required — a config KEY, never a URL
+      capacity:        <integer>                           # optional — the POOL SIZE
+      lifetime:        <linear|affine|persistent>          # optional — how many holders may name it
+      within:          <FabricRef>                         # optional — the fabric it lives in
+      certainty_floor: <0.0..1.0>                          # optional — observation gate
+      shield:          <ShieldRef>                         # optional — defence layer
   }
 ---
 
 # `resource`
 
-`resource` declares **an external compute or storage resource** the
-cognitive layer can consume — a database, an S3 bucket, an ML
-inference endpoint, a network egress. A flow references resources
-through the `manifest` declaration; `lease` acquires them with
-typed lifecycle semantics; `observe` watches their health.
+`resource` declares **a connection the runtime opens, holds and pools** — a
+database, a cache, an HTTP service. It is the single source of truth for three
+facts about that connection: **where it is** (`endpoint`), **how big it is**
+(`capacity`), and **how many holders may share it** (`lifetime`).
 
-This is the foundation of AXON's **cognitive I/O surface**:
-external state is named, typed, and lifecycled at the language
-level, not delegated to runtime config files.
-
-## Surface
-
-`resource` is a **top-level declaration**. It is *not* nested
-inside a manifest or fabric.
+A primitive that *holds* a connection names the resource it runs on:
 
 ```axon
-resource EHRDatabase {
-    kind:            postgres
-    endpoint:        "ehr.clinical.internal:5432"
-    capacity:        300
-    lifetime:        linear
-    certainty_floor: 0.95
-    shield:          PHIShield
-}
+fabric   Prod  { provider: aws  region: "us-east-1"  zones: 3 }
+
+resource Db    { kind: postgres  within: Prod
+                 endpoint: db.main  lifetime: affine  capacity: 20 }
+
+axonstore Users { backend: postgresql  resource: Db }
 ```
+
+The store **derives** its DSN, its pool size and its sharing discipline from the
+resource. The derivation is the point — a bare reference would be a label.
+
+## ⚠️ What this page used to say — and why that matters
+
+Until §Fase 113 this page described a runtime that **did not exist**. Recording
+it beats quietly rewriting it, because it is the clearest specimen in the corpus
+of how this failure hides:
+
+> *"the runtime resolves the `kind:` slug against its **mount registry** and
+> acquires a connection pool **sized to `capacity:`**. Every handle carries the
+> declared `lifetime:` discipline — the **linearity analyser** rejects flows that
+> violate the handle's usage contract."*
+
+There was no mount registry. **`capacity` was read by zero lines of code in the
+entire product** — every pool was hardcoded at 10 connections. There was no
+linearity analyser: `lifetime` was parsed, lowered into the IR, and never looked
+at again. And this line —
+
+> *"The two layer: an `axonstore` can sit on top of a `resource`."*
+
+— **is §Fase 113, written in the present tense, years before anyone built it.**
+
+The declaration was always real. The prose about it was aspiration in the
+indicative mood. §113 made the prose true; this page now describes what runs.
 
 ## Fields
 
 ### `kind:` (required)
 
-A **single identifier** naming the backend kind. The catalogue is
-open at the parser level — the runtime decides what's actually
-mountable. Common slugs: `postgres`, `mysql`, `s3`, `redis`,
-`dynamodb`, `compute`, `kafka`, `grpc`.
+A **closed catalog**: `http` · `https` · `mysql` · `postgres` · `redis`.
 
-### `endpoint:` (optional)
+Until §113 this was a *free string that nothing validated* — `kind: postgress`
+compiled clean and produced a resource the runtime could never reach. The catalog
+is exactly what the runtime knows how to *reach*; **adding a kind to it costs an
+implementation**, because a catalog is a promise. (`axon-T942`)
 
-A **string literal** containing the resource address. The format
-is kind-specific — `host:port` for databases, `s3://bucket/prefix`
-for object stores, `https://service.tld/path` for HTTP endpoints.
+### `endpoint:` (required)
+
+A **per-tenant config key** — lowercase, dot-separated: `db.main`,
+`crm.salesforce.base`. **Never a URL and never a DSN.**
+
+This is the same law `axon-T850` already enforces on `upstream.resolve` and
+`axon-T902` on `tool.secret`: *URLs and credentials never appear in source*.
+`resource.endpoint` was a grandfathered violation of it — a production database
+URI, written into the program, in the one declaration that claims to be the
+single source of truth for infrastructure. (`axon-T944`)
 
 ### `capacity:` (optional)
 
-A **non-negative integer literal**. Concurrency cap or pool size
-— the maximum number of in-flight handles the runtime will grant
-simultaneously.
+**The pool size.** `capacity: 20` ⇒ twenty connections.
 
-### `lifetime:` (optional)
+Before §113 there was no way to say this at all: every `postgresql` store in
+existence got a hardcoded 10, with no environment variable and no source-level
+knob. This field is that knob — and wiring it is what makes `resource` a **wire**
+rather than a **label**.
 
-A **single identifier** from the closed lifecycle catalogue,
-mirroring linear-logic semantics:
+### `lifetime:` (optional — default `affine`)
+
+**How many holders may name this resource.** *Not* how long the connection lives
+— that is an idle timeout, an operational knob. The Linear-Logic reading is about
+**sharing**:
 
 | Value | Semantic |
 |---|---|
-| `linear` | Handle must be used exactly once. Move-on-pass. |
-| `affine` | Handle may be used at most once. Drop-allowed. **Default.** |
-| `persistent` | Handle may be shared + reused. |
+| `linear` | **Exactly one** holder — and **naming it zero times is also a breach**. A linear resource must be consumed. |
+| `affine` | **At most one** holder. It may go unused; it may not be shared. **Default.** |
+| `persistent` | The `!` exponential. Freely shared — but you have to *say so*. |
 
-The type checker rejects unknown values. Parser-enforced closed
-set.
+Not decoration. Before §113, two stores silently shared one connection pool
+whenever their DSNs happened to resolve equal — the registry caches pools keyed
+on the resolved DSN. **Nobody declared that sharing, nobody checked it, and
+nothing told you it happened.** A shared pool that nobody declared shared is how
+connection exhaustion arrives without a suspect. Now sharing is *declared*, and
+the undeclared case is refused. (`axon-T945`)
+
+### `within:` (optional)
+
+The `fabric` this resource lives in.
+
+**One field — so Separation-Logic disjointness is *unrepresentable* rather than
+verified.** A resource cannot be in two fabrics because there is no syntax for
+it. A checked invariant is what you settle for when you could not make the bad
+state unwritable; here we could. (`axon-T943` checks only that the fabric
+exists — a resource placed in a phantom fabric is placed nowhere.)
+
+A `manifest` may not contradict it: naming `fabric: Stage` while listing a
+resource that is `within: Prod` is refused. (`axon-T947`)
 
 ### `certainty_floor:` (optional)
 
-A **numeric literal in `[0.0, 1.0]`**. Minimum observational
-certainty the runtime requires before treating reads from this
-resource as authoritative. Below the floor, reads emit
-`axon-W010` and the calling step can decide to retry.
+A numeric literal in `[0.0, 1.0]` — the minimum observational certainty
+`observe` requires before treating this resource as healthy. Below the floor the
+observation is **refused**, not downgraded (§112).
 
 ### `shield:` (optional)
 
-A **single identifier** referencing a declared `shield`. Every
-read/write through the resource passes through the shield's scan
-list before commitment. The most common production discipline:
-HIPAA-tagged resources always carry a PHI-redaction shield.
-
-## Runtime behaviour
-
-`resource` lowers to a `ResourceDefinition` IR node. At deploy
-time, the runtime resolves the `kind:` slug against its mount
-registry and acquires a connection pool sized to `capacity:`.
-Every handle granted to a flow carries the declared `lifetime:`
-discipline — the linearity analyser (Fase 6 §λ-L-E) rejects
-flows that violate the handle's usage contract at parse time.
-
-Every read/write emits an audit row tagged
-`resource:<name>:<op>` carrying `(actor, certainty, latency,
-shield_outcome)`.
+A declared `shield`. The most common production discipline: a HIPAA-tagged
+resource always carries a PHI-redaction shield.
 
 ## What this primitive is NOT
 
-- **Not a connection string.** A resource declaration is a
-  *typed handle to external state*. The endpoint is one of its
-  fields, not the whole declaration.
-- **Not an `axonstore`.** `axonstore` is the typed,
-  audit-chained data plane with explicit columns + isolation;
-  `resource` is the lower-level handle to ANY external
-  service. The two layer: an `axonstore` can sit on top of a
-  `resource`.
-- **Not automatically mounted.** A declared resource that no
-  `manifest` references is rejected by the §40 deployment
-  gate. Resources must be wired into a manifest to be
-  acquirable.
+- **Not a connection string.** It is a typed, sized, shared-or-not handle to
+  external state. The address is one of its fields.
+- **Not an `axonstore`.** `axonstore` is the typed, audit-chained data plane
+  (columns, isolation, breach policy). `resource` is the connection underneath
+  it. **The two layer** — `axonstore { resource: Db }` — and since §113 that
+  sentence is true rather than merely printed.
+- **Not for things that hold nothing.** `deliver`, `document` and `notify` do
+  **not** name a resource: they fire and return, and the host lives in the
+  engine. `capacity`, `lifetime` and `lease` would be decorative over them — and
+  a decorative link is worse than none, because it *looks* governed.
 
 ## See also
 
-- `axon://primitives/manifest` — bundles resources into a
-  deployable unit.
-- `axon://primitives/fabric` — the cloud substrate that hosts
-  resources.
+- `axon://primitives/axonstore` — the typed data plane that runs on a resource.
+- `axon://primitives/manifest` — bundles resources into a deployable unit.
+- `axon://primitives/fabric` — the substrate a resource lives `within:`.
 - `axon://primitives/lease` — typed acquisition + expiry.
 - `axon://primitives/observe` — health monitoring per resource.
-- `axon://primitives/shield` — mandatory defence wrapper.
+- `axon://primitives/shield` — the defence wrapper.

@@ -403,6 +403,47 @@ const VALID_MANDATE_POLICIES: &[&str] = &["coerce", "halt", "retry"];
 // port.
 const VALID_STORE_BACKENDS: &[&str] = &["in_memory", "mysql", "postgresql", "secrets", "sqlite"];
 
+/// §Fase 113 — the CLOSED `resource.kind` catalog.
+///
+/// # This did not exist
+///
+/// Until §113, `resource.kind` was a **free string that nothing validated**.
+/// No `VALID_RESOURCE_KINDS` const existed anywhere in the workspace, and
+/// [`TypeChecker::check_resource`] never read the field. `kind: postgress`
+/// compiled clean and produced a resource the runtime could never reach — the
+/// §111 shape exactly: a declaration that looks governed and governs nothing.
+///
+/// # Why these five
+///
+/// The catalog is **what the runtime can actually REACH** — it mirrors
+/// `axon::source_registry`'s default-port table one-for-one. Adding a kind
+/// here without teaching the runtime to reach it would manufacture a fresh
+/// instance of the very defect this fase descends from. **The catalog is a
+/// promise, and a promise costs an implementation.**
+const VALID_RESOURCE_KINDS: &[&str] = &["http", "https", "mysql", "postgres", "redis"];
+
+/// The **config-key shape** — the compile-time `SecretKeyPolicy` mirror.
+///
+/// `[a-z0-9][a-z0-9_.-]*` — lowercase, dot-separated, no `/`, no `:`. A URL
+/// cannot satisfy it (`://`), and neither can a DSN.
+///
+/// # One law, one predicate
+///
+/// This shape is asserted by `axon-T850` (`upstream.resolve`), `axon-T902`
+/// (`tool.secret`) and — since §113 — `axon-T944` (`resource.endpoint`). It was
+/// previously **inlined** at each site. Three copies of a law is how the islands
+/// happened in the first place: the copies drift, and the one nobody looks at
+/// stops meaning anything. There is now exactly one definition.
+pub(crate) fn is_config_key(key: &str) -> bool {
+    let mut chars = key.chars();
+    let head_ok = chars
+        .next()
+        .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
+    let rest_ok = chars
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '.' | '-'));
+    head_ok && rest_ok
+}
+
 const VALID_STORE_ISOLATION: &[&str] = &["read_committed", "repeatable_read", "serializable"];
 
 const VALID_STORE_ON_BREACH: &[&str] = &["log", "raise", "rollback"];
@@ -1208,7 +1249,165 @@ impl<'a> TypeChecker<'a> {
         // §Fase 85.c — cross-declaration cache laws (single default, effect
         // widening), needs the full tool + cache set.
         self.check_cache_module_laws(&self.program.declarations);
+        // §Fase 113 — the Linear-Logic sharing discipline + manifest/fabric
+        // coherence. Both are cross-declaration by nature: they count HOLDERS
+        // of a resource, which no per-declaration visit can see.
+        self.check_resource_module_laws(&self.program.declarations);
         self.errors
+    }
+
+    /// §Fase 113 — **axon-T945** (sharing discipline) and **axon-T947**
+    /// (manifest/fabric coherence).
+    ///
+    /// # axon-T945 — `lifetime:` finally means something
+    ///
+    /// `lifetime: linear | affine | persistent` was **read by nothing**. It was
+    /// parsed, lowered into the IR, and then never looked at again by any code
+    /// in either repo. The README sold it as Linear Logic; the runtime had
+    /// never heard of it.
+    ///
+    /// The reading that makes it a law is **how many holders may name the
+    /// resource**:
+    ///
+    /// | | |
+    /// |---|---|
+    /// | `linear` | **exactly one** holder — and *not* naming it is itself a breach |
+    /// | `affine` | **at most one** — it may go unused, but **sharing is a breach** |
+    /// | `persistent` | the `!` exponential — freely shared |
+    ///
+    /// This is not decoration. Today two `axonstore`s silently share one
+    /// connection pool whenever their DSNs happen to resolve equal (the
+    /// registry caches pools keyed on the resolved DSN). That sharing is
+    /// **accidental** — nobody declared it, nobody checked it, and nothing
+    /// tells you it happened. Under §113 it is **declared**, and this law makes
+    /// the undeclared case refuse.
+    fn check_resource_module_laws(&mut self, decls: &[Declaration]) {
+        use std::collections::BTreeMap;
+
+        // Every declared resource, by name.
+        let mut resources: BTreeMap<&str, &ResourceDefinition> = BTreeMap::new();
+        for d in decls {
+            if let Declaration::Resource(r) = d {
+                resources.insert(r.name.as_str(), r);
+            }
+        }
+        if resources.is_empty() {
+            return;
+        }
+
+        // Every HOLDER — a declaration that names a resource and therefore
+        // opens, holds and pools a connection to it. §113's ratified criterion:
+        // `deliver`/`document`/`notify` hold nothing, so they are NOT holders
+        // and never appear here.
+        let mut holders: BTreeMap<&str, Vec<(String, Loc)>> = BTreeMap::new();
+        for d in decls {
+            if let Declaration::AxonStore(s) = d {
+                if !s.resource_ref.is_empty() {
+                    holders
+                        .entry(s.resource_ref.as_str())
+                        .or_default()
+                        .push((format!("axonstore '{}'", s.name), s.loc.clone()));
+                }
+            }
+        }
+
+        for (name, res) in &resources {
+            let held_by = holders.get(name).map(Vec::as_slice).unwrap_or(&[]);
+
+            match res.lifetime.as_str() {
+                // `linear` — exactly one. Zero is a breach: a linear resource
+                // MUST be consumed. That is the whole content of linearity, and
+                // it is the half every "linear types" README quietly drops.
+                "linear" => {
+                    if held_by.is_empty() {
+                        self.emit(
+                            format!(
+                                "axon-T945 Resource '{name}' is `lifetime: linear` but NOTHING \
+                                 names it. A linear resource must be consumed exactly once — \
+                                 zero holders is a breach, not an omission. Either give it a \
+                                 holder (`axonstore X {{ resource: {name} }}`) or declare it \
+                                 `affine` (may go unused).",
+                            ),
+                            &res.loc,
+                        );
+                    } else if held_by.len() > 1 {
+                        self.emit(
+                            format!(
+                                "axon-T945 Resource '{name}' is `lifetime: linear` but {} \
+                                 declarations name it ({}). Linear means EXACTLY ONE holder. \
+                                 Declare it `persistent` if it is meant to be shared — but then \
+                                 say so, because a shared pool that nobody declared shared is \
+                                 how connection exhaustion arrives without a suspect.",
+                                held_by.len(),
+                                held_by
+                                    .iter()
+                                    .map(|(w, _)| w.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ),
+                            &res.loc,
+                        );
+                    }
+                }
+                // `affine` — at most one. May go unused (that is exactly what
+                // distinguishes affine from linear); may never be shared.
+                "affine" => {
+                    if held_by.len() > 1 {
+                        self.emit(
+                            format!(
+                                "axon-T945 Resource '{name}' is `lifetime: affine` but {} \
+                                 declarations name it ({}). Affine means AT MOST ONE holder: it \
+                                 may go unused, but it may not be shared. Declare it \
+                                 `persistent` to share it.",
+                                held_by.len(),
+                                held_by
+                                    .iter()
+                                    .map(|(w, _)| w.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ),
+                            &res.loc,
+                        );
+                    }
+                }
+                // `persistent` — the `!` exponential. Any number of holders,
+                // including zero.
+                _ => {}
+            }
+        }
+
+        // axon-T947 — manifest/fabric coherence.
+        //
+        // `within:` makes disjointness unrepresentable, but it introduces a new
+        // way to contradict yourself: a manifest may name fabric F while
+        // listing a resource that lives `within:` G. Two declarations, one
+        // fact, disagreeing — which is the exact disease §113 exists to cure.
+        for d in decls {
+            let Declaration::Manifest(m) = d else { continue };
+            if m.fabric_ref.is_empty() {
+                continue;
+            }
+            for r_name in &m.resources {
+                let Some(res) = resources.get(r_name.as_str()) else {
+                    continue; // undeclared resource: an existing law already refutes it
+                };
+                if res.within.is_empty() {
+                    continue; // no fabric claimed: nothing to contradict
+                }
+                if res.within != m.fabric_ref {
+                    self.emit(
+                        format!(
+                            "axon-T947 Manifest '{}' declares `fabric: {}` and lists resource \
+                             '{}', which is `within: {}`. The two disagree about where '{}' \
+                             lives. `within:` is the single source of truth — a manifest cannot \
+                             relocate a resource by listing it.",
+                            m.name, m.fabric_ref, r_name, res.within, r_name
+                        ),
+                        &m.loc,
+                    );
+                }
+            }
+        }
     }
 
     /// §λ-L-E Fase 13 D4 — return both errors and warnings.
@@ -6364,6 +6563,48 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn check_axonstore(&mut self, node: &AxonStoreDefinition) {
+        // ── §Fase 113 — axon-T946: the store names ONE source of truth ───────
+        //
+        // `resource.endpoint` and `axonstore.connection` are THE SAME FACT
+        // DECLARED TWICE — that is the islands finding, in one sentence. A store
+        // that declares both is that bug, written down deliberately, and nothing
+        // would check the two agree.
+        //
+        // The migration is soft (ratified): `connection:` alone still compiles,
+        // because it is what the live deployment runs on. But you may not have
+        // both, and you may not have neither.
+        if !node.resource_ref.is_empty() && !node.connection.is_empty() {
+            self.emit(
+                format!(
+                    "axon-T946 Axonstore '{}' declares BOTH `resource: {}` and `connection:` — \
+                     the same fact, twice, with nothing checking they agree. That duplication is \
+                     precisely the defect `resource:` exists to end. Keep `resource:` (it also \
+                     carries the pool size and the sharing discipline) and delete `connection:`.",
+                    node.name, node.resource_ref
+                ),
+                &node.loc,
+            );
+        }
+        if !node.resource_ref.is_empty() {
+            match self.symbols.lookup(&node.resource_ref) {
+                None => self.emit(
+                    format!(
+                        "axon-T946 Axonstore '{}' names resource '{}', which is not declared.",
+                        node.name, node.resource_ref
+                    ),
+                    &node.loc,
+                ),
+                Some(sym) if sym.kind != "resource" => self.emit(
+                    format!(
+                        "axon-T946 Axonstore '{}' names '{}', which is a {}, not a resource.",
+                        node.name, node.resource_ref, sym.kind
+                    ),
+                    &node.loc,
+                ),
+                _ => {}
+            }
+        }
+
         // Backend enum
         if !node.backend.is_empty() && !is_valid(&node.backend, VALID_STORE_BACKENDS) {
             self.emit(
@@ -6534,6 +6775,103 @@ impl<'a> TypeChecker<'a> {
                 ),
                 _ => {}
             }
+        }
+
+        // ── §Fase 113 ────────────────────────────────────────────────────────
+
+        // axon-T942 — `kind:` is a CLOSED catalog.
+        //
+        // It was a free string that nothing read. A typo produced a resource
+        // the runtime could never reach, and said nothing.
+        if node.kind.is_empty() {
+            self.emit(
+                format!(
+                    "axon-T942 Resource '{}' has no `kind:` — declare one of: {}. \
+                     A resource with no kind names no infrastructure; the runtime cannot \
+                     reach it, and every discipline hung on it (capacity, lifetime, lease) \
+                     would govern nothing.",
+                    node.name,
+                    VALID_RESOURCE_KINDS.join(" | ")
+                ),
+                &node.loc,
+            );
+        } else if !VALID_RESOURCE_KINDS.contains(&node.kind.as_str()) {
+            self.emit(
+                format!(
+                    "axon-T942 Invalid kind '{}' for resource '{}' — expected one of: {}. \
+                     The catalog is exactly what the runtime can REACH; a kind outside it \
+                     is a promise with no implementation behind it.",
+                    node.kind,
+                    node.name,
+                    VALID_RESOURCE_KINDS.join(" | ")
+                ),
+                &node.loc,
+            );
+        }
+
+        // axon-T943 — `within:` names a DECLARED fabric.
+        //
+        // `within:` is one field, so Separation-Logic disjointness is
+        // unrepresentable rather than checked. What DOES need checking is that
+        // the fabric it names exists: a resource `within:` a phantom fabric is
+        // placed nowhere, and every `*` claim about it is vacuous.
+        if !node.within.is_empty() {
+            match self.symbols.lookup(&node.within) {
+                None => self.emit(
+                    format!(
+                        "axon-T943 Resource '{}' is `within:` fabric '{}', which is not \
+                         declared. A resource placed in a fabric that does not exist is \
+                         placed nowhere.",
+                        node.name, node.within
+                    ),
+                    &node.loc,
+                ),
+                Some(sym) if sym.kind != "fabric" => self.emit(
+                    format!(
+                        "axon-T943 Resource '{}' is `within:` '{}', which is a {}, not a \
+                         fabric.",
+                        node.name, node.within, sym.kind
+                    ),
+                    &node.loc,
+                ),
+                _ => {}
+            }
+        }
+
+        // axon-T944 — `endpoint:` is a per-tenant CONFIG KEY, never a URL literal.
+        //
+        // The language already legislated this. `axon-T850` refuses a URL
+        // literal in `upstream.resolve` with the words "URLs and credentials
+        // never appear in source"; `axon-T902` mirrors it for credentials.
+        // `resource.endpoint` was a GRANDFATHERED VIOLATION OF THE LANGUAGE'S
+        // OWN LAW — a production DB URI, in source, in the one declaration that
+        // claims to be the single source of truth for infrastructure.
+        //
+        // The runtime already speaks this idiom: `resolve_dsn` accepts
+        // `env:VAR`, and adopters already write `connection: "env:AXON_DB_URL"`.
+        // This is a tightening, not an invention.
+        if node.endpoint.is_empty() {
+            self.emit(
+                format!(
+                    "axon-T944 Resource '{}' has no `endpoint:` — declare a per-tenant config \
+                     key (e.g. `endpoint: db.main`). A resource with no endpoint is unreachable.",
+                    node.name
+                ),
+                &node.loc,
+            );
+        } else if !is_config_key(&node.endpoint) {
+            self.emit(
+                format!(
+                    "axon-T944 Resource '{}' `endpoint:` value '{}' is not a config key — keys \
+                     are lowercase dot-separated (`[a-z0-9][a-z0-9_.-]*`, no `/`, no `:`). \
+                     URLs and credentials never appear in source (the same config-not-code law \
+                     `axon-T850` already enforces on `upstream.resolve`, and `axon-T902` on \
+                     `tool.secret`). A production DSN written into the program is exactly the \
+                     shape §94 secret custody exists to refuse.",
+                    node.name, node.endpoint
+                ),
+                &node.loc,
+            );
         }
     }
 
@@ -7680,10 +8018,9 @@ impl<'a> TypeChecker<'a> {
             );
             return;
         }
-        let mut chars = key.chars();
-        let head_ok = chars.next().is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
-        let rest_ok = chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '.' | '-'));
-        if !head_ok || !rest_ok {
+        // §Fase 113 — the shape now lives in ONE place (`is_config_key`), shared
+        // with axon-T902 and axon-T944. It used to be inlined here.
+        if !is_config_key(key) {
             self.emit(
                 format!(
                     "axon-T850 Upstream '{upstream}' `{field}:` value '{key}' is not a config key — keys are lowercase dot-separated (`[a-z0-9][a-z0-9_.-]*`, no `/`, no `:`); URLs and credentials never appear in source (the same config-not-code property as `tool`, §58.g)"

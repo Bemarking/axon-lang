@@ -415,6 +415,7 @@ async fn t11_pillar_iv_capability_gates_a_real_postgresql_store() {
         capability: "vault.read".to_string(),
         class: String::new(),
         column_schema: None,
+        resource_ref: String::new(),
     }])
     .expect("registry build");
 
@@ -755,6 +756,7 @@ async fn t17_d8_deploy_verification_verified_and_missing() {
             capability: String::new(),
             class: String::new(),
             column_schema: None,
+            resource_ref: String::new(),
         },
         IRAxonStore {
             node_type: "axonstore",
@@ -769,6 +771,7 @@ async fn t17_d8_deploy_verification_verified_and_missing() {
             capability: String::new(),
             class: String::new(),
             column_schema: None,
+            resource_ref: String::new(),
         },
     ])
     .expect("registry build");

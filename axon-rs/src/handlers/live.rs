@@ -338,6 +338,7 @@ mod tests {
             lifetime: "affine".into(),
             certainty_floor: None,
             shield_ref: String::new(),
+            within: String::new(),
         }
     }
 
@@ -387,9 +388,21 @@ mod tests {
     fn observe_reaches_a_real_endpoint_and_reports_what_it_established() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
-        register_source_adapter("LiveDb", Arc::new(ResourceProbeAdapter::new("LiveDb")));
+        // §Fase 113 — the resource names a config KEY (`axon-T944`); the resolver
+        // turns it into the address. The probe still opens a real socket to a
+        // real listener: what is observed is still what was actually reached.
+        register_source_adapter(
+            "LiveDb",
+            Arc::new(ResourceProbeAdapter::with_resolver(
+                "LiveDb",
+                Arc::new(
+                    crate::resource_resolver::MapResourceResolver::new()
+                        .with("livedb.main", &format!("postgres://{addr}/app")),
+                ),
+            )),
+        );
 
-        let mut h = handler_with(vec![resource("LiveDb", &format!("postgres://{addr}/app"))]);
+        let mut h = handler_with(vec![resource("LiveDb", "livedb.main")]);
         let out = h
             .observe(&observe("Health", vec!["LiveDb"], None, None), &manifest(), &mut identity_continuation())
             .expect("a reachable resource must be observable");

@@ -28,8 +28,8 @@ type ModerateRequest { sub: UGCSubmission }
 // ── Resource binding for the immune to watch ──────────────────────
 
 resource ModerationSignals {
-    kind:      observability
-    endpoint:  "moderation-signals.internal:8080"
+    kind:      https
+    endpoint:  moderation.signals.base
     lifetime:  persistent
 }
 

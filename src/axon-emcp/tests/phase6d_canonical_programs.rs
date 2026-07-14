@@ -342,7 +342,7 @@ psyche AnalyticalDisposition {
 #[test]
 fn immune_canonical_program_compiles() {
     let src = r#"
-resource MetricsSource { kind: prometheus  endpoint: "metrics.internal:9090"  lifetime: persistent }
+resource MetricsSource { kind: http  endpoint: metrics.internal  lifetime: persistent }
 fabric Global { provider: aws  region: "us-east-1"  zones: 3  ephemeral: false }
 manifest Production { resources: [MetricsSource]  fabric: Global }
 
@@ -368,7 +368,7 @@ immune ClinicalVigil {
 #[test]
 fn reflex_canonical_program_compiles() {
     let src = r#"
-resource MetricsSource { kind: prometheus  endpoint: "metrics.internal:9090"  lifetime: persistent }
+resource MetricsSource { kind: http  endpoint: metrics.internal  lifetime: persistent }
 fabric Global { provider: aws  region: "us-east-1"  zones: 3  ephemeral: false }
 manifest Production { resources: [MetricsSource]  fabric: Global }
 
@@ -395,7 +395,7 @@ reflex QuarantineExfil {
 #[test]
 fn heal_canonical_program_compiles() {
     let src = r#"
-resource MetricsSource { kind: prometheus  endpoint: "metrics.internal:9090"  lifetime: persistent }
+resource MetricsSource { kind: http  endpoint: metrics.internal  lifetime: persistent }
 fabric Global { provider: aws  region: "us-east-1"  zones: 3  ephemeral: false }
 manifest Production { resources: [MetricsSource]  fabric: Global }
 

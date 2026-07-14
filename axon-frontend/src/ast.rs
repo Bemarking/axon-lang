@@ -414,12 +414,29 @@ impl DeliverOp {
 #[derive(Debug, Default)]
 pub struct ResourceDefinition {
     pub name: String,
-    pub kind: String, // postgres | redis | s3 | vpc | gpu | compute | file | custom
-    pub endpoint: String, // connection URI
-    pub capacity: Option<i64>, // pool size / instance count hint
-    pub lifetime: String, // linear | affine | persistent (default: affine)
+    /// §Fase 113 — a CLOSED catalog (`VALID_RESOURCE_KINDS`). Until §113 this
+    /// was a free string that **nothing validated**: `check_resource` never
+    /// read it, and no catalog const existed anywhere in the workspace.
+    pub kind: String,
+    /// §Fase 113 — the DSN, as a **per-tenant config key** (`axon-T944`).
+    ///
+    /// A production DB URI in source is exactly what `axon-T850` already
+    /// forbids one declaration over (*"URLs and credentials never appear in
+    /// source"*) and what §94 custody exists to refuse. `resource` was a
+    /// grandfathered violation of the language's own law.
+    pub endpoint: String,
+    /// §Fase 113 — **the pool size**, and the proof this fase is a wire and not
+    /// a label. Before §113 every axonstore pool was hardcoded at 10.
+    pub capacity: Option<i64>,
+    /// §Fase 113 — **how many holders may name this resource** (Linear Logic):
+    /// `linear` = exactly one · `affine` = at most one (sharing is a breach) ·
+    /// `persistent` = the `!` exponential, freely shared. Default: `affine`.
+    pub lifetime: String,
     pub certainty_floor: Option<f64>, // epistemic gate c ∈ [0.0, 1.0]
-    pub shield_ref: String, // optional shield reference
+    pub shield_ref: String,           // optional shield reference
+    /// §Fase 113 — the `fabric` this resource lives in. **One field ⇒
+    /// Separation-Logic disjointness is unrepresentable, not verified.**
+    pub within: String,
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia attached to this declaration
     /// (comments preceding the declaration's first token, since the
@@ -1811,8 +1828,20 @@ pub struct BudgetQuota {
 #[derive(Debug)]
 pub struct AxonStoreDefinition {
     pub name: String,
-    pub backend: String, // sqlite | postgresql | mysql
+    pub backend: String, // in_memory | postgresql | secrets
+    /// The DSN — **the field that actually runs today**. `connection:` →
+    /// `resolve_dsn` → a real sqlx pool, with no global-pool fallback.
+    ///
+    /// §Fase 113: still accepted (the live deployment depends on it), but it
+    /// **warns**, and a store declared this way is INELIGIBLE for
+    /// `lease` / `observe` / `reconcile`. *You cannot govern what you did not
+    /// declare.*
     pub connection: String,
+    /// §Fase 113 — the `resource` this store runs on. When present, the store
+    /// DERIVES its DSN, its **pool size** and its sharing discipline from the
+    /// resource. The derivation is the point; a bare reference would be the
+    /// nominal link this fase exists to avoid.
+    pub resource_ref: String,
     pub confidence_floor: Option<f64>,
     pub isolation: String, // read_committed | repeatable_read | serializable
     pub on_breach: String, // rollback | raise | log

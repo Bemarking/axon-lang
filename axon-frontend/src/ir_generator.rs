@@ -1826,6 +1826,9 @@ impl IRGenerator {
             name: n.name.clone(),
             backend: n.backend.clone(),
             connection: n.connection.clone(),
+            // §Fase 113 — the `resource` this store runs on (empty = the legacy
+            // un-resourced form; skip-if-empty on the wire ⇒ no IR-SHA drift).
+            resource_ref: n.resource_ref.clone(),
             confidence_floor: n.confidence_floor,
             isolation: n.isolation.clone(),
             on_breach: n.on_breach.clone(),
@@ -1941,6 +1944,8 @@ impl IRGenerator {
             lifetime: n.lifetime.clone(),
             certainty_floor: n.certainty_floor,
             shield_ref: n.shield_ref.clone(),
+            // §Fase 113 — the fabric this resource lives in.
+            within: n.within.clone(),
         }
     }
 

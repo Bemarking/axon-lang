@@ -292,6 +292,7 @@ mod tests {
             lifetime: lifetime.into(),
             certainty_floor: None,
             shield_ref: String::new(),
+            within: String::new(),
         }
     }
 

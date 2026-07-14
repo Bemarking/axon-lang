@@ -123,7 +123,7 @@ async fn tick(app: &axum::Router) -> serde_json::Value {
 fn program(source: &str) -> String {
     format!(
         r#"
-resource Db {{ kind: postgres  endpoint: "postgres://127.0.0.1:5432/app" }}
+resource Db {{ kind: postgres  endpoint: db.main }}
 manifest Infra {{ resources: [Db] }}
 observe  Health from Infra {{ sources: [{source}]  quorum: 1  timeout: 1s  on_partition: fail }}
 immune   Sentinel {{ watch: [Health]  scope: tenant  window: 4  sensitivity: 0.8  tau: 5m }}

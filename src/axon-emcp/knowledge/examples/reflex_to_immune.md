@@ -26,9 +26,9 @@ fabric ClinicalCloud {
 
 resource EHRDatabase {
     kind:            postgres
-    endpoint:        "ehr.clinical.internal:5432"
+    endpoint:        ehr.clinical.main
     capacity:        300
-    lifetime:        linear
+    lifetime:        affine
     certainty_floor: 0.95
 }
 

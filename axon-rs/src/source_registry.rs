@@ -178,8 +178,9 @@ pub fn clear_source_adapters() {
 /// **declared `resource`** is probed by reaching that resource's `endpoint`.
 ///
 /// This is the honest OSS default. It uses only what the program already declares
-/// — `resource Db { kind: postgres  endpoint: "postgres://host:5432/app" }` — and
-/// it goes to the real address. It reports:
+/// — `resource Db { kind: postgres  endpoint: db.main }` — **resolves that config
+/// key** (§113: the address lives in configuration, never in source — `axon-T944`)
+/// and goes to the real address. It reports:
 ///
 /// - `certainty: 1.0` when the endpoint accepts a connection (we reached it and it
 ///   is up — that is a fact we established, not one we assumed);
@@ -193,18 +194,66 @@ pub fn clear_source_adapters() {
 /// enterprise adapters behind this same trait.
 pub struct ResourceProbeAdapter {
     name: String,
+    /// §Fase 113 — `resource.endpoint` is a **config key** (`axon-T944`), not an
+    /// address. Something has to turn it into one, and deciding *where
+    /// configuration lives* is not this module's business — that is the port's.
+    resolver: std::sync::Arc<dyn crate::resource_resolver::ResourceResolver>,
 }
 
 impl ResourceProbeAdapter {
+    /// Probe using the OSS default resolver (`AXON_RESOURCE_<KEY>` env vars).
     pub fn new(name: impl Into<String>) -> Self {
-        ResourceProbeAdapter { name: name.into() }
+        ResourceProbeAdapter {
+            name: name.into(),
+            resolver: std::sync::Arc::new(crate::resource_resolver::EnvResourceResolver),
+        }
     }
 
-    /// Extract `host:port` from a resource endpoint, using the kind's default port
-    /// when the URI omits one. Returns `None` when no address can be determined —
-    /// and the caller refuses rather than guessing.
-    fn socket_addr(resource: &IRResource) -> Option<String> {
-        let ep = resource.endpoint.trim();
+    /// §Fase 113 — probe using an explicit resolver: enterprise's per-tenant
+    /// config, or a test's in-memory map.
+    pub fn with_resolver(
+        name: impl Into<String>,
+        resolver: std::sync::Arc<dyn crate::resource_resolver::ResourceResolver>,
+    ) -> Self {
+        ResourceProbeAdapter {
+            name: name.into(),
+            resolver,
+        }
+    }
+
+    /// Resolve the resource's endpoint **key** and reduce it to `host:port`.
+    ///
+    /// §Fase 113 — the endpoint is a config key, so it is RESOLVED first. That
+    /// also *improves the refusal*: where the pre-§113 code could only say "no
+    /// reachable address", this can say **which key is unset** — a failure that
+    /// names the knob the operator has to turn instead of one that reads like a
+    /// network fault.
+    ///
+    /// `Err` ⇒ the caller refuses rather than guessing. **A refusal we can back
+    /// is worth infinitely more than a confident answer we cannot** — the exact
+    /// trade `DryRunHandler`'s `c: 1.0` got backwards.
+    fn socket_addr(&self, resource: &IRResource) -> Result<String, String> {
+        let key = resource.endpoint.trim();
+        if key.is_empty() {
+            return Err(format!(
+                "resource '{}' declares no `endpoint:` — it names no infrastructure",
+                resource.name
+            ));
+        }
+        let resolved = self.resolver.resolve(key).map_err(|e| e.to_string())?;
+        Self::host_port(&resolved, resource).ok_or_else(|| {
+            format!(
+                "resource '{}' (kind: {}) resolves to '{}', which yields no reachable \
+                 host:port — refusing rather than guessing one",
+                resource.name, resource.kind, resolved
+            )
+        })
+    }
+
+    /// Reduce an already-resolved address to `host:port`, using the kind's
+    /// default port when it omits one. `None` ⇒ no address can be determined.
+    fn host_port(ep: &str, resource: &IRResource) -> Option<String> {
+        let ep = ep.trim();
         if ep.is_empty() {
             return None;
         }
@@ -247,14 +296,12 @@ impl SourceAdapter for ResourceProbeAdapter {
             source: self.name.clone(),
         })?;
 
-        let addr = Self::socket_addr(resource).ok_or_else(|| SourceError::Unreachable {
-            source: self.name.clone(),
-            detail: format!(
-                "resource '{}' (kind: {}) has no reachable address in its `endpoint: {:?}` — \
-                 refusing rather than guessing one",
-                resource.name, resource.kind, resource.endpoint
-            ),
-        })?;
+        let addr = self
+            .socket_addr(resource)
+            .map_err(|detail| SourceError::Unreachable {
+                source: self.name.clone(),
+                detail,
+            })?;
 
         let socket: std::net::SocketAddr = addr
             .parse()
@@ -313,6 +360,7 @@ mod tests {
             lifetime: "affine".into(),
             certainty_floor: None,
             shield_ref: String::new(),
+            within: String::new(),
         }
     }
 
@@ -347,9 +395,15 @@ mod tests {
     fn a_reachable_resource_is_observed_because_we_actually_connected() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
-        let r = resource("Db", "postgres", &format!("postgres://{addr}/app"));
+        // §Fase 113 — the resource names a config KEY; the resolver supplies the
+        // address. The probe still opens a real socket to a real listener.
+        let r = resource("Db", "postgres", "db.main");
+        let resolver = std::sync::Arc::new(
+            crate::resource_resolver::MapResourceResolver::new()
+                .with("db.main", &format!("postgres://{addr}/app")),
+        );
 
-        let reading = ResourceProbeAdapter::new("db")
+        let reading = ResourceProbeAdapter::with_resolver("db", resolver)
             .probe(Some(&r), std::time::Duration::from_secs(2))
             .expect("a listening endpoint must be observable");
 
@@ -364,8 +418,12 @@ mod tests {
     #[test]
     fn an_unreachable_resource_refuses_rather_than_reporting_health() {
         // Port 1 on loopback: nothing listens there.
-        let r = resource("Db", "postgres", "postgres://127.0.0.1:1/app");
-        let err = ResourceProbeAdapter::new("db")
+        let r = resource("Db", "postgres", "db.main");
+        let resolver = std::sync::Arc::new(
+            crate::resource_resolver::MapResourceResolver::new()
+                .with("db.main", "postgres://127.0.0.1:1/app"),
+        );
+        let err = ResourceProbeAdapter::with_resolver("db", resolver)
             .probe(Some(&r), std::time::Duration::from_millis(500))
             .expect_err(
                 "an unreachable resource must REFUSE — returning an envelope here would be a \
@@ -376,33 +434,85 @@ mod tests {
 
     /// We refuse to invent an address. A resource whose endpoint gives us nowhere
     /// to go is not probed optimistically — it is refused.
+    ///
+    /// §Fase 113 — the endpoint is now a config KEY, so "nowhere to go" has two
+    /// distinct shapes, and telling them apart is the whole improvement:
+    /// **the key is unset** (a knob to turn) versus **the key resolves to
+    /// something with no host** (a bad value). Both refuse; neither guesses.
     #[test]
-    fn an_endpoint_with_no_reachable_address_refuses_rather_than_guessing() {
-        let r = resource("Blob", "s3", "s3-bucket-name");
-        let err = ResourceProbeAdapter::new("blob")
-            .probe(Some(&r), std::time::Duration::from_millis(200))
-            .expect_err("no address ⇒ refuse");
+    fn an_unset_endpoint_key_refuses_and_names_the_knob_to_turn() {
+        let r = resource("Blob", "https", "blob.archive");
+        let err = ResourceProbeAdapter::with_resolver(
+            "blob",
+            std::sync::Arc::new(crate::resource_resolver::MapResourceResolver::new()),
+        )
+        .probe(Some(&r), std::time::Duration::from_millis(200))
+        .expect_err("an unset key ⇒ refuse");
         let msg = format!("{err}");
-        assert!(msg.contains("refusing rather than guessing"), "got {msg}");
+        assert!(
+            msg.contains("blob.archive"),
+            "the refusal must name the KEY the operator has to set — where the pre-§113 code \
+             could only say 'no reachable address', which reads like a network fault. Got: {msg}"
+        );
     }
 
+    /// A key that resolves to a value with no host yields no address, and that
+    /// too is a refusal — never an optimistic probe.
+    #[test]
+    fn a_resolved_value_with_no_host_refuses_rather_than_guessing() {
+        let r = resource("Blob", "https", "blob.archive");
+        let err = ResourceProbeAdapter::with_resolver(
+            "blob",
+            std::sync::Arc::new(
+                crate::resource_resolver::MapResourceResolver::new().with("blob.archive", "///"),
+            ),
+        )
+        .probe(Some(&r), std::time::Duration::from_millis(200))
+        .expect_err("no host ⇒ refuse");
+        assert!(format!("{err}").contains("refusing rather than guessing"));
+    }
+
+    /// The kind's default port is applied to the **resolved** address.
     #[test]
     fn default_ports_come_from_the_declared_kind() {
-        let pg = resource("Db", "postgres", "postgres://db.internal/app");
+        let pg = resource("Db", "postgres", "db.main");
         assert_eq!(
-            ResourceProbeAdapter::socket_addr(&pg).as_deref(),
+            ResourceProbeAdapter::host_port("postgres://db.internal/app", &pg).as_deref(),
             Some("db.internal:5432")
         );
-        let redis = resource("Cache", "redis", "redis://cache.internal");
+        let redis = resource("Cache", "redis", "cache.main");
         assert_eq!(
-            ResourceProbeAdapter::socket_addr(&redis).as_deref(),
+            ResourceProbeAdapter::host_port("redis://cache.internal", &redis).as_deref(),
             Some("cache.internal:6379")
         );
-        // Credentials are stripped, an explicit port wins.
-        let auth = resource("Db", "postgres", "postgres://user:pw@db.internal:6000/app");
+        // Credentials are stripped; an explicit port wins over the default.
         assert_eq!(
-            ResourceProbeAdapter::socket_addr(&auth).as_deref(),
+            ResourceProbeAdapter::host_port("postgres://user:pw@db.internal:6000/app", &pg)
+                .as_deref(),
             Some("db.internal:6000")
+        );
+    }
+
+    /// **The address comes from configuration, and only from configuration.**
+    ///
+    /// `axon-T944` took the DSN out of the source; this is the other half of that
+    /// bargain — the runtime knows where to look. A law that removes the address
+    /// from the program without saying where it lives would make programs *less*
+    /// runnable, and that is the kind of "safety" that gets switched off.
+    #[test]
+    fn the_probed_address_is_the_resolved_key_not_the_key_itself() {
+        let pg = resource("Db", "postgres", "db.main");
+        let adapter = ResourceProbeAdapter::with_resolver(
+            "db",
+            std::sync::Arc::new(
+                crate::resource_resolver::MapResourceResolver::new()
+                    .with("db.main", "postgres://db.internal:6000/app"),
+            ),
+        );
+        assert_eq!(
+            adapter.socket_addr(&pg).as_deref(),
+            Ok("db.internal:6000"),
+            "the probe must reach the RESOLVED address, never the config key"
         );
     }
 }

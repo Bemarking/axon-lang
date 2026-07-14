@@ -369,10 +369,41 @@ pub struct IRResource {
     pub name: String,
     pub kind: String,
     pub endpoint: String,
+    /// §Fase 113 — the pool size. Until §113 this was **read by nothing**: every
+    /// `postgresql` axonstore in existence got a hardcoded
+    /// `MAX_POOL_CONNECTIONS = 10` (`store/postgres_backend.rs`), with no env
+    /// var and no source-level knob. `capacity:` is that missing knob, and
+    /// wiring it is what makes `resource` a WIRE rather than a LABEL.
     pub capacity: Option<i64>,
-    pub lifetime: String,             // linear | affine | persistent
+    /// §Fase 113 — **how many holders may name this resource** (Linear Logic).
+    ///
+    /// Not "how long the connection lives" — that is `idle_timeout`, an
+    /// operational knob. The Linear-Logic reading is about *sharing*:
+    ///
+    /// - `linear` — **exactly one** holder, and failing to name it is itself a
+    ///   breach (a linear resource must be consumed).
+    /// - `affine` — **at most one** holder. It may go unused; **sharing it is a
+    ///   breach**.
+    /// - `persistent` — the `!` exponential. Freely shared.
+    ///
+    /// Before §113, two stores shared a connection pool by **accidental DSN
+    /// collision** (the registry keys its pool cache on the resolved DSN).
+    /// Sharing is now *declared*, and `axon-T945` checks it.
+    pub lifetime: String,
     pub certainty_floor: Option<f64>, // c ∈ [0.0, 1.0]
     pub shield_ref: String,
+    /// §Fase 113 — the `fabric` this resource lives in (`within: Prod`).
+    ///
+    /// **One field, therefore Separation-Logic disjointness is UNREPRESENTABLE
+    /// rather than verified**: a resource cannot be in two fabrics because
+    /// there is no syntax for it. A checked invariant is what you settle for
+    /// when you could not make the bad state unwritable; here we could.
+    ///
+    /// Empty ⇒ no fabric declared. Skip-if-empty ⇒ every pre-§113 program
+    /// serializes byte-identically (IR-SHA stability, the §94.a `class`
+    /// precedent).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub within: String,
 }
 
 impl IRResource {
@@ -388,6 +419,7 @@ impl IRResource {
             lifetime: "affine".to_string(),
             certainty_floor: None,
             shield_ref: String::new(),
+            within: String::new(),
         }
     }
 }
@@ -2292,7 +2324,32 @@ pub struct IRAxonStore {
     pub source_column: u32,
     pub name: String,
     pub backend: String,
+    /// The DSN. **This is the field that actually runs.**
+    ///
+    /// `connection:` → `resolve_dsn` → a real sqlx `PgPool`. It is the sole DSN
+    /// source for every store op in every deployed flow; there is no
+    /// global-pool fallback. §113's census established this, and it is why
+    /// §113 is delicate: moving authority to `resource` moves it *away* from
+    /// the one field that governs anything, *toward* the half that governs
+    /// nothing. A `resource:` that merely renames this string would be the
+    /// nominal link — wired and hollow.
+    ///
+    /// §113: still parsed, but **deprecated in favour of [`Self::resource_ref`]**,
+    /// and a store declared this way is INELIGIBLE for `lease` / `observe` /
+    /// `reconcile`. *You cannot govern what you did not declare.*
     pub connection: String,
+    /// §Fase 113 — the `resource` this store runs on (`axonstore U { resource: Db }`).
+    ///
+    /// When present, the store DERIVES its DSN (`resource.endpoint`), its pool
+    /// size (`resource.capacity` — a knob that did not exist before §113; the
+    /// pool was hardcoded at 10), and its sharing discipline
+    /// (`resource.lifetime`, `axon-T941`) from the resource. **That derivation
+    /// — not the reference — is what makes this real.**
+    ///
+    /// Empty ⇒ the legacy un-resourced form. Skip-if-empty ⇒ every pre-§113
+    /// store serializes byte-identically (the §94.a `class` precedent).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub resource_ref: String,
     pub confidence_floor: Option<f64>,
     pub isolation: String,
     pub on_breach: String,

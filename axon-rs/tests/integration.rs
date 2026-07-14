@@ -28201,20 +28201,26 @@ fn test_k5_storage_error_types() {
 fn fase1_resource_minimal_end_to_end() {
     let ir = compile_json(r#"
         resource Db {
-            kind: postgres
-            lifetime: linear
+            kind: postgres  endpoint: db.main
+            lifetime: affine
         }
     "#);
     let res = &ir["resources"][0];
     assert_eq!(res["node_type"], "resource");
     assert_eq!(res["name"], "Db");
     assert_eq!(res["kind"], "postgres");
-    assert_eq!(res["lifetime"], "linear");
-    // Defaults propagate for unspecified fields.
-    assert_eq!(res["endpoint"], "");
+    assert_eq!(res["lifetime"], "affine");
+    // §Fase 113 — `endpoint:` is a CONFIG KEY, and it is REQUIRED: a resource
+    // with no address names no infrastructure (`axon-T944`). It used to be
+    // optional, and an empty endpoint was allowed to mean nothing at all.
+    assert_eq!(res["endpoint"], "db.main");
+    // Defaults still propagate for the genuinely optional fields.
     assert_eq!(res["capacity"], serde_json::Value::Null);
     assert_eq!(res["certainty_floor"], serde_json::Value::Null);
     assert_eq!(res["shield_ref"], "");
+    // §113 — skip-if-empty: a resource with no `within:` emits NO key, so every
+    // pre-§113 program serializes byte-identically (IR-SHA stability).
+    assert!(res.get("within").is_none());
 }
 
 #[test]
@@ -28227,30 +28233,38 @@ fn fase1_resource_full_fields() {
         }
         resource Db {
             kind: postgres
-            endpoint: "postgres://db.internal:5432/app"
+            endpoint: db.main
             capacity: 100
-            lifetime: linear
+            lifetime: affine
             certainty_floor: 0.85
             shield: DBShield
         }
     "#);
     let res = &ir["resources"][0];
-    assert_eq!(res["endpoint"], "postgres://db.internal:5432/app");
+    // §Fase 113 — the endpoint is the config KEY the adopter wrote, verbatim.
+    // The address it names lives in configuration and is resolved at runtime
+    // (`resource_resolver`) — it never appears in the program, and therefore
+    // never in the IR either.
+    assert_eq!(res["endpoint"], "db.main");
+    // §113 — `capacity` is THE POOL SIZE now. Before this fase it was lowered
+    // into the IR exactly like this and then read by zero lines of code, while
+    // every pool in the product sat at a hardcoded 10.
     assert_eq!(res["capacity"], 100);
     assert_eq!(res["certainty_floor"], 0.85);
     assert_eq!(res["shield_ref"], "DBShield");
-    assert_eq!(res["lifetime"], "linear");
+    assert_eq!(res["lifetime"], "affine");
 }
 
 #[test]
 fn fase1_resource_default_lifetime_is_affine() {
-    let ir = compile_json("resource Pool { kind: redis }");
+    let ir = compile_json("resource Pool { kind: redis  endpoint: pool.main }");
     assert_eq!(ir["resources"][0]["lifetime"], "affine");
 }
 
 #[test]
 fn fase1_resource_invalid_lifetime_rejected_by_parser() {
-    let tokens = lex("resource X { lifetime: eternal }");
+    let tokens = lex("resource X {
+        kind: postgres  endpoint: x.main lifetime: eternal }");
     let mut parser = Parser::new(tokens);
     let result = parser.parse();
     assert!(
@@ -28261,7 +28275,7 @@ fn fase1_resource_invalid_lifetime_rejected_by_parser() {
 
 #[test]
 fn fase1_resource_out_of_range_certainty_floor_type_error() {
-    let src = r#"resource X { kind: gpu certainty_floor: 1.5 }"#;
+    let src = r#"resource X { kind: https  endpoint: x.main certainty_floor: 1.5 }"#;
     let errors = type_check(src);
     assert!(
         errors.iter().any(|e| e.message.contains("certainty_floor")
@@ -28272,7 +28286,7 @@ fn fase1_resource_out_of_range_certainty_floor_type_error() {
 
 #[test]
 fn fase1_resource_unknown_shield_is_type_error() {
-    let src = r#"resource X { kind: gpu shield: NonExistent }"#;
+    let src = r#"resource X { kind: https  endpoint: x.main shield: NonExistent }"#;
     let errors = type_check(src);
     assert!(
         errors.iter().any(|e| e.message.contains("Undefined shield 'NonExistent'")
@@ -28284,8 +28298,8 @@ fn fase1_resource_unknown_shield_is_type_error() {
 #[test]
 fn fase1_resource_duplicate_name_rejected() {
     let src = r#"
-        resource Db { kind: postgres }
-        resource Db { kind: redis }
+        resource Db { kind: postgres  endpoint: db.main }
+        resource Db { kind: redis  endpoint: db.main }
     "#;
     let errors = type_check(src);
     assert!(
@@ -28296,7 +28310,7 @@ fn fase1_resource_duplicate_name_rejected() {
 
 #[test]
 fn fase1_resource_irprogram_has_nonempty_resources_vector() {
-    let ir = compile_ir("resource R { kind: compute lifetime: persistent }");
+    let ir = compile_ir("resource R { kind: https  endpoint: r.main lifetime: persistent }");
     assert_eq!(ir.resources.len(), 1);
     assert_eq!(ir.resources[0].name, "R");
     assert_eq!(ir.resources[0].lifetime, "persistent");
@@ -28375,7 +28389,7 @@ fn fase1_fabric_duplicate_name_rejected() {
 #[test]
 fn fase1_manifest_minimal_end_to_end() {
     let ir = compile_json(r#"
-        resource Db { kind: postgres lifetime: linear }
+        resource Db { kind: postgres  endpoint: db.main lifetime: affine }
         fabric Vpc { provider: aws region: "us-east-1" zones: 2 }
         manifest Cluster {
             resources: [Db]
@@ -28392,7 +28406,7 @@ fn fase1_manifest_minimal_end_to_end() {
 #[test]
 fn fase1_manifest_with_compliance_annotation() {
     let ir = compile_json(r#"
-        resource Db { kind: postgres lifetime: linear }
+        resource Db { kind: postgres  endpoint: db.main lifetime: affine }
         fabric Vpc { provider: aws region: "us-east-1" zones: 2 }
         manifest Prod {
             resources: [Db]
@@ -28424,7 +28438,7 @@ fn fase1_manifest_undefined_resource_is_type_error() {
 #[test]
 fn fase1_manifest_undefined_fabric_is_type_error() {
     let errors = type_check(r#"
-        resource Db { kind: postgres }
+        resource Db { kind: postgres  endpoint: db.main }
         manifest M { resources: [Db] fabric: NoSuchFabric }
     "#);
     assert!(
@@ -28437,7 +28451,7 @@ fn fase1_manifest_undefined_fabric_is_type_error() {
 fn fase1_manifest_duplicate_resource_rejected_by_separation_logic() {
     // Within-manifest aliasing of a linear resource violates Separation Logic `*`.
     let errors = type_check(r#"
-        resource Db { kind: postgres lifetime: linear }
+        resource Db { kind: postgres  endpoint: db.main lifetime: affine }
         fabric Vpc { provider: aws }
         manifest M { resources: [Db, Db] fabric: Vpc }
     "#);
@@ -28452,7 +28466,7 @@ fn fase1_manifest_duplicate_resource_rejected_by_separation_logic() {
 fn fase1_manifest_wrong_kind_reference_is_type_error() {
     // `fabric: MyResource` where MyResource is a resource, not a fabric.
     let errors = type_check(r#"
-        resource R { kind: postgres }
+        resource R { kind: postgres  endpoint: r.main }
         manifest M { resources: [R] fabric: R }
     "#);
     assert!(
@@ -28468,7 +28482,7 @@ fn fase1_manifest_wrong_kind_reference_is_type_error() {
 #[test]
 fn fase1_observe_minimal_end_to_end() {
     let ir = compile_json(r#"
-        resource Db { kind: postgres }
+        resource Db { kind: postgres  endpoint: db.main }
         fabric Vpc { provider: aws }
         manifest Cluster { resources: [Db] fabric: Vpc }
         observe State from Cluster {
@@ -28489,7 +28503,7 @@ fn fase1_observe_minimal_end_to_end() {
 #[test]
 fn fase1_observe_full_fields() {
     let ir = compile_json(r#"
-        resource Db { kind: postgres }
+        resource Db { kind: postgres  endpoint: db.main }
         fabric Vpc { provider: aws }
         manifest Cluster { resources: [Db] fabric: Vpc }
         observe State from Cluster {
@@ -28509,7 +28523,7 @@ fn fase1_observe_full_fields() {
 #[test]
 fn fase1_observe_invalid_on_partition_rejected_by_parser() {
     let tokens = lex(r#"
-        resource Db { kind: postgres }
+        resource Db { kind: postgres  endpoint: db.main }
         fabric Vpc { provider: aws }
         manifest M { resources: [Db] fabric: Vpc }
         observe O from M { sources: [x] on_partition: wait }
@@ -28536,7 +28550,7 @@ fn fase1_observe_undefined_target_is_type_error() {
 #[test]
 fn fase1_observe_target_must_be_manifest() {
     let errors = type_check(r#"
-        resource Db { kind: postgres }
+        resource Db { kind: postgres  endpoint: db.main }
         observe O from Db { sources: [x] quorum: 1 }
     "#);
     assert!(
@@ -28550,7 +28564,7 @@ fn fase1_observe_missing_sources_is_type_error() {
     // Omitting `sources:` entirely parses fine but fails type-check —
     // an observation without sources has no ground truth.
     let errors = type_check(r#"
-        resource Db { kind: postgres }
+        resource Db { kind: postgres  endpoint: db.main }
         fabric Vpc { provider: aws }
         manifest M { resources: [Db] fabric: Vpc }
         observe O from M { quorum: 1 }
@@ -28564,7 +28578,7 @@ fn fase1_observe_missing_sources_is_type_error() {
 #[test]
 fn fase1_observe_certainty_floor_out_of_range_type_error() {
     let errors = type_check(r#"
-        resource Db { kind: postgres }
+        resource Db { kind: postgres  endpoint: db.main }
         fabric Vpc { provider: aws }
         manifest M { resources: [Db] fabric: Vpc }
         observe O from M { sources: [x] quorum: 1 certainty_floor: -0.1 }
@@ -28583,7 +28597,7 @@ fn fase1_observe_certainty_floor_out_of_range_type_error() {
 /// Boilerplate that produces a valid `observe` symbol the Fase-3 tests can reference.
 fn fase3_observe_prelude() -> &'static str {
     r#"
-        resource Db { kind: postgres lifetime: linear }
+        resource Db { kind: postgres  endpoint: db.main lifetime: affine }
         fabric Vpc { provider: aws }
         manifest M { resources: [Db] fabric: Vpc }
         observe Health from M { sources: [prom] quorum: 1 }
@@ -28671,7 +28685,7 @@ fn fase3_reconcile_threshold_out_of_range_type_error() {
 fn fase3_reconcile_wrong_observe_kind_is_type_error() {
     // Pointing `observe:` at a manifest is a kind mismatch.
     let errors = type_check(r#"
-        resource Db { kind: postgres }
+        resource Db { kind: postgres  endpoint: db.main }
         fabric Vpc { provider: aws }
         manifest M { resources: [Db] fabric: Vpc }
         reconcile R { observe: M }
@@ -28689,7 +28703,7 @@ fn fase3_reconcile_wrong_observe_kind_is_type_error() {
 #[test]
 fn fase3_lease_minimal_end_to_end() {
     let ir = compile_json(r#"
-        resource Db { kind: postgres lifetime: linear }
+        resource Db { kind: postgres  endpoint: db.main lifetime: affine }
         lease DbWrite { resource: Db duration: 30s }
     "#);
     let l = &ir["leases"][0];
@@ -28704,7 +28718,7 @@ fn fase3_lease_minimal_end_to_end() {
 #[test]
 fn fase3_lease_full_fields() {
     let ir = compile_json(r#"
-        resource Db { kind: postgres }
+        resource Db { kind: postgres  endpoint: db.main }
         lease DbWrite {
             resource: Db
             duration: 5m
@@ -28721,7 +28735,7 @@ fn fase3_lease_full_fields() {
 #[test]
 fn fase3_lease_invalid_acquire_rejected_by_parser() {
     let tokens = lex(r#"
-        resource Db { kind: postgres }
+        resource Db { kind: postgres  endpoint: db.main }
         lease L { resource: Db duration: 30s acquire: eventually }
     "#);
     let mut parser = Parser::new(tokens);
@@ -28731,7 +28745,7 @@ fn fase3_lease_invalid_acquire_rejected_by_parser() {
 #[test]
 fn fase3_lease_invalid_on_expire_rejected_by_parser() {
     let tokens = lex(r#"
-        resource Db { kind: postgres }
+        resource Db { kind: postgres  endpoint: db.main }
         lease L { resource: Db duration: 30s on_expire: forget }
     "#);
     let mut parser = Parser::new(tokens);
@@ -28767,7 +28781,7 @@ fn fase3_lease_wrong_kind_reference_is_type_error() {
 /// Two distinct `observe` symbols the Fase-3 ensemble tests can reference.
 fn fase3_two_observations_prelude() -> &'static str {
     r#"
-        resource Db { kind: postgres }
+        resource Db { kind: postgres  endpoint: db.main }
         fabric Vpc { provider: aws }
         manifest M { resources: [Db] fabric: Vpc }
         observe O1 from M { sources: [prom] quorum: 1 }
@@ -28885,7 +28899,7 @@ fn fase4_nodes_prelude() -> &'static str {
                 output: Data
             }
         }
-        resource Db { kind: postgres }
+        resource Db { kind: postgres  endpoint: db.main }
         axonendpoint Api { public: true method: GET path: "/x" execute: Noop output: FlowEnvelope<Data> }
     "#
 }
@@ -29090,7 +29104,7 @@ fn fase4_topology_liveness_deadlock_cycle_rejected() {
     // is `receive`, the edge is receive-first. Both SAB and SBA have first
     // role start with `receive`, so the whole cycle is blocked → deadlock.
     let errors = type_check(r#"
-        resource Db { kind: postgres }
+        resource Db { kind: postgres  endpoint: db.main }
         fabric Vpc { provider: aws }
         session SAB {
             a: [receive M, end]
@@ -29121,7 +29135,7 @@ fn fase4_topology_liveness_send_first_cycle_is_accepted() {
     // Same cycle topology but the source side is `send` first → progress
     // exists, no deadlock should be reported.
     let errors = type_check(r#"
-        resource Db { kind: postgres }
+        resource Db { kind: postgres  endpoint: db.main }
         fabric Vpc { provider: aws }
         session SAB {
             a: [send M, end]
@@ -29148,7 +29162,7 @@ fn fase4_topology_liveness_send_first_cycle_is_accepted() {
 #[test]
 fn fase4_topology_with_full_fase1_infrastructure_compiles_clean() {
     let ir = compile_ir(r#"
-        resource Db { kind: postgres lifetime: linear }
+        resource Db { kind: postgres  endpoint: db.main lifetime: affine }
         fabric Vpc { provider: aws region: "us-east-1" zones: 2 }
         manifest Prod { resources: [Db] fabric: Vpc compliance: [SOC2] }
         observe Health from Prod { sources: [prom] quorum: 1 }
@@ -29171,7 +29185,7 @@ fn fase4_topology_with_full_fase1_infrastructure_compiles_clean() {
 fn fase3_control_cognitivo_full_stack_compiles_clean() {
     // Integration test: Fase 1 + Fase 3 primitives composed in one program.
     let ir = compile_ir(r#"
-        resource Db { kind: postgres lifetime: linear }
+        resource Db { kind: postgres  endpoint: db.main lifetime: affine }
         fabric Vpc { provider: aws region: "us-east-1" zones: 3 }
         manifest Prod { resources: [Db] fabric: Vpc compliance: [SOC2] }
         observe Health from Prod { sources: [prom] quorum: 1 }
@@ -29191,7 +29205,7 @@ fn fase3_control_cognitivo_full_stack_compiles_clean() {
 #[test]
 fn fase5_immune_minimal_end_to_end() {
     let ir = compile_json(r#"
-        resource Db { kind: postgres }
+        resource Db { kind: postgres  endpoint: db.main }
         fabric Vpc { provider: aws }
         manifest M { resources: [Db] fabric: Vpc }
         observe Health from M { sources: [prom] quorum: 1 }
@@ -29213,7 +29227,7 @@ fn fase5_immune_minimal_end_to_end() {
 #[test]
 fn fase5_immune_full_fields() {
     let ir = compile_json(r#"
-        resource Db { kind: postgres }
+        resource Db { kind: postgres  endpoint: db.main }
         fabric Vpc { provider: aws }
         manifest M { resources: [Db] fabric: Vpc }
         observe Health from M { sources: [prom] quorum: 1 }
@@ -29302,7 +29316,7 @@ fn fase5_reflex_minimal_end_to_end() {
 #[test]
 fn fase5_reflex_trigger_must_be_immune_type_error() {
     let errors = type_check(r#"
-        resource Db { kind: postgres }
+        resource Db { kind: postgres  endpoint: db.main }
         reflex R {
             trigger: Db
             action: drop
@@ -29398,7 +29412,7 @@ fn fase5_heal_adversarial_with_shield_compiles_clean() {
 #[test]
 fn fase5_heal_source_must_be_immune() {
     let errors = type_check(r#"
-        resource Db { kind: postgres }
+        resource Db { kind: postgres  endpoint: db.main }
         heal H { source: Db scope: tenant }
     "#);
     assert!(
@@ -29534,7 +29548,7 @@ fn fase6_1_shield_carries_compliance_into_ir() {
 fn fase6_1_manifest_compliance_already_supported() {
     // Manifest got compliance in 8.2.c; this asserts it still works post-8.2.g.
     let ir = compile_json(r#"
-        resource Db { kind: postgres }
+        resource Db { kind: postgres  endpoint: db.main }
         fabric Vpc { provider: aws }
         manifest M {
             resources: [Db]
@@ -29605,7 +29619,7 @@ fn fase6_1_full_regulated_program_compiles_clean() {
             severity: critical
             compliance: [HIPAA, GDPR, SOC2]
         }
-        resource Ehr { kind: postgres lifetime: linear }
+        resource Ehr { kind: postgres  endpoint: ehr.main lifetime: affine }
         fabric Vpc { provider: aws region: "us-east-1" zones: 2 }
         manifest Prod {
             resources: [Ehr]
@@ -29632,7 +29646,7 @@ fn fase6_1_full_regulated_program_compiles_clean() {
 fn fase5_immune_reflex_heal_full_loop_compiles_clean() {
     // Integration test: the full Fase 5 stack composed together.
     let ir = compile_ir(r#"
-        resource Db { kind: postgres }
+        resource Db { kind: postgres  endpoint: db.main }
         fabric Vpc { provider: aws }
         manifest M { resources: [Db] fabric: Vpc }
         observe Health from M { sources: [prom] quorum: 1 }
@@ -29945,8 +29959,8 @@ fn fase9_healthcare_console_reference_compiles_clean() {
 fn fase1_io_cognitivo_full_stack_compiles_clean() {
     // Integration test: the four Fase 1 primitives wired together.
     let ir = compile_ir(r#"
-        resource Db { kind: postgres lifetime: linear }
-        resource Cache { kind: redis lifetime: affine }
+        resource Db { kind: postgres  endpoint: db.main lifetime: affine }
+        resource Cache { kind: redis  endpoint: cache.main lifetime: affine }
         fabric Vpc { provider: aws region: "us-east-1" zones: 3 ephemeral: false }
         manifest Prod {
             resources: [Db, Cache]

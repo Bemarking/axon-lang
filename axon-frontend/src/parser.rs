@@ -6574,6 +6574,7 @@ impl Parser {
             name,
             backend: String::new(),
             connection: String::new(),
+            resource_ref: String::new(),
             confidence_floor: None,
             isolation: String::new(),
             on_breach: String::new(),
@@ -6617,6 +6618,14 @@ impl Parser {
                     "class" => node.class = self.parse_dotted_identifier()?,
                     "connection" => {
                         node.connection = self.consume(TokenType::StringLit)?.value.clone()
+                    }
+                    // §Fase 113 — the `resource` this store RUNS ON. When
+                    // present the store derives its DSN, its POOL SIZE and its
+                    // sharing discipline from the resource; `connection:`
+                    // becomes redundant and `axon-T946` refuses declaring both
+                    // (the same fact, twice, is how the islands happened).
+                    "resource" => {
+                        node.resource_ref = self.consume_any_ident_or_kw()?.value.clone()
                     }
                     "confidence_floor" => node.confidence_floor = self.parse_optional_float(),
                     "isolation" => node.isolation = self.consume_any_ident_or_kw()?.value.clone(),
@@ -6973,6 +6982,7 @@ impl Parser {
             lifetime: "affine".to_string(),
             certainty_floor: None,
             shield_ref: String::new(),
+            within: String::new(),
             loc: Loc {
                 line: tok.line,
                 column: tok.column,
@@ -6995,7 +7005,25 @@ impl Parser {
             self.advance(); // past ':'
             match field_name.as_str() {
                 "kind" => node.kind = self.consume_any_ident_or_kw()?.value,
-                "endpoint" => node.endpoint = self.consume(TokenType::StringLit)?.value,
+                // §Fase 113 — `endpoint:` accepts BOTH shapes on purpose:
+                //   - a dotted config key  (`endpoint: db.main`)      — the law
+                //   - a string literal     (`endpoint: "postgres://…"`) — the sin
+                //
+                // The literal is REFUSED, but by `axon-T944`, not by the parser.
+                // If it died here the adopter would read "Expected StringLit",
+                // which explains nothing. The law gets to say why: *URLs and
+                // credentials never appear in source* — the same sentence
+                // `axon-T850` has been saying to `upstream.resolve` all along.
+                //
+                // A diagnostic that names the rule teaches; one that names the
+                // token type only tells you the compiler is unhappy.
+                "endpoint" => {
+                    node.endpoint = if self.check(TokenType::StringLit) {
+                        self.consume(TokenType::StringLit)?.value
+                    } else {
+                        self.parse_dotted_identifier()?
+                    };
+                }
                 "capacity" => {
                     node.capacity = self.parse_optional_int();
                 }
@@ -7020,7 +7048,31 @@ impl Parser {
                     node.certainty_floor = self.parse_optional_float();
                 }
                 "shield" => node.shield_ref = self.consume_any_ident_or_kw()?.value,
-                _ => self.skip_value(),
+                // §Fase 113 — `within: <fabric>`. ONE field, so a resource
+                // cannot be in two fabrics: Separation-Logic disjointness is
+                // unrepresentable rather than verified.
+                "within" => node.within = self.consume_any_ident_or_kw()?.value,
+                // §Fase 113 — an unknown field is a HARD ERROR, not a shrug.
+                //
+                // This arm used to be `_ => self.skip_value()`. That is the same
+                // family as §111's root cause (`parse_block_step` →
+                // `skip_braced_block()`, which silently killed four primitives):
+                // a misspelled `withn:` would have been swallowed without a
+                // word, and the resource would have governed nothing while
+                // looking governed. A field the parser does not know is a field
+                // the adopter believes in and the compiler does not.
+                unknown => {
+                    return Err(ParseError {
+                        message: format!(
+                            "Unknown field '{unknown}' in resource '{}' — expected one of: \
+                             kind, endpoint, capacity, lifetime, certainty_floor, shield, within",
+                            node.name
+                        ),
+                        line: field_tok.line,
+                        column: field_tok.column,
+                        ..Default::default()
+                    });
+                }
             }
         }
         self.consume(TokenType::RBrace)?;

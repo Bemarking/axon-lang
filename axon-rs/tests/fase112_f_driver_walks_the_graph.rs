@@ -65,7 +65,7 @@ impl SourceAdapter for Fixed {
 }
 
 const PROGRAM: &str = r#"
-resource DrvDb { kind: postgres  endpoint: "postgres://127.0.0.1:5432/app" }
+resource DrvDb { kind: postgres  endpoint: db.main }
 manifest Infra { resources: [DrvDb] }
 observe  Health from Infra { sources: [drv_probe]  quorum: 1  timeout: 1s  on_partition: fail }
 immune   Watcher { watch: [Health]  scope: tenant  window: 3 }

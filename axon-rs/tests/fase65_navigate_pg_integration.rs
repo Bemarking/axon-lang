@@ -210,6 +210,7 @@ fn store_specs() -> Vec<IRAxonStore> {
             capability: String::new(),
             class: String::new(),
             column_schema: None,
+            resource_ref: String::new(),
         })
         .collect()
 }

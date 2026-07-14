@@ -773,6 +773,7 @@ mod tests {
             capability: capability.to_string(),
             class: String::new(),
             column_schema: None,
+            resource_ref: String::new(),
         }
     }
 

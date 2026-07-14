@@ -104,7 +104,7 @@ async fn deploy(app: &axum::Router, src: &str) -> serde_json::Value {
 
 /// A fully-declared immune system: observe → immune → {reflex, heal}.
 const IMMUNE_PROGRAM: &str = r#"
-resource Db { kind: postgres  endpoint: "postgres://127.0.0.1:5432/app"  lifetime: affine }
+resource Db { kind: postgres  endpoint: db.main  lifetime: affine }
 fabric   Vpc { provider: aws }
 manifest Infra { resources: [Db]  fabric: Vpc }
 observe  Health from Infra { sources: [dep_probe]  quorum: 1  timeout: 1s  on_partition: fail }
@@ -182,7 +182,7 @@ async fn a_refused_observation_is_reported_as_a_refusal_and_feeds_nothing() {
     let (app, _state) = axon::axon_server::build_router_with_state(server_cfg());
 
     let src = r#"
-resource Db { kind: postgres  endpoint: "postgres://127.0.0.1:5432/app" }
+resource Db { kind: postgres  endpoint: db.main }
 manifest Infra { resources: [Db] }
 observe  Blind from Infra { sources: [ghost_probe]  quorum: 1  timeout: 1s  on_partition: fail }
 immune   Watch { watch: [Blind]  scope: tenant  window: 8 }
@@ -244,7 +244,7 @@ async fn an_invalid_graph_refuses_the_deploy_rather_than_half_existing() {
 
     // quorum 5 over 1 declared observation — unsatisfiable by construction.
     let src = r#"
-resource Db { kind: postgres  endpoint: "postgres://127.0.0.1:5432/app" }
+resource Db { kind: postgres  endpoint: db.main }
 manifest Infra { resources: [Db] }
 observe  A from Infra { sources: [p]  quorum: 1  timeout: 1s  on_partition: fail }
 ensemble Impossible { observations: [A]  quorum: 5  aggregation: byzantine }
