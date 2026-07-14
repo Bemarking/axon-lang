@@ -68,21 +68,67 @@ impl KLDistribution {
             .collect()
     }
 
+    /// The Laplace-smoothed probability this distribution assigns to a symbol it
+    /// has **never seen**.
+    ///
+    /// §Fase 112.d — **this replaces a bug that made the anomaly detector
+    /// structurally blind.**
+    ///
+    /// `kl_against` used to fall back to `q.values().min()` — the *minimum observed*
+    /// probability — for an unseen symbol. Consider the ideal baseline: a stable
+    /// system, sampled 4 times, always reporting the same thing. Then `q` has one
+    /// key with probability **1.0**, so `min = 1.0`, so a **completely novel event**
+    /// is assigned probability 1.0, and
+    ///
+    /// ```text
+    ///   KL contribution = p·ln(p/q) = 1.0 · ln(1.0 / 1.0) = 0
+    /// ```
+    ///
+    /// > **The more consistent the baseline, the blinder the detector.** A perfectly
+    /// > stable system — the *best possible* baseline — could never register an
+    /// > anomaly at all. That is the exact inverse of the job.
+    ///
+    /// The correct fallback is the mass Laplace **reserves for unseen events**:
+    /// `α / (N + α·(k+1))`, where the `+1` accounts for the new symbol entering the
+    /// support. With the baseline above (N=4, k=1, α=1): `1/6 ≈ 0.167`, so a novel
+    /// event yields `ln(6) ≈ 1.79` — a real, large divergence, as it must.
+    ///
+    /// An **empty** distribution has seen nothing, so everything is unseen: it
+    /// returns 1.0, and the divergence against it is 0 rather than infinite. The
+    /// supervisor never classifies against an untrained baseline anyway (§112.d) —
+    /// this is belt to that brace.
+    pub fn unseen_probability(&self, laplace: f64) -> f64 {
+        let mut counts: HashMap<String, i64> = HashMap::new();
+        for v in &self.samples {
+            *counts.entry(v.clone()).or_insert(0) += 1;
+        }
+        if counts.is_empty() {
+            return 1.0;
+        }
+        let n: f64 = counts.values().copied().sum::<i64>() as f64;
+        let k = counts.len() as f64;
+        let total = n + laplace * (k + 1.0);
+        if total <= 0.0 {
+            return 1.0;
+        }
+        laplace / total
+    }
+
     /// D_KL(self || other) with Laplace smoothing on both sides.
+    ///
+    /// A symbol present in `self` but absent from `other` is scored against
+    /// [`Self::unseen_probability`] — the mass reserved for novelty — which is the
+    /// whole reason an anomaly detector exists.
     pub fn kl_against(&self, other: &KLDistribution, laplace: f64) -> f64 {
         let p = self.probabilities(laplace);
         let q = other.probabilities(laplace);
         if p.is_empty() {
             return 0.0;
         }
-        let q_floor = if q.is_empty() {
-            laplace / p.len().max(1) as f64
-        } else {
-            q.values().copied().fold(f64::INFINITY, f64::min)
-        };
+        let q_unseen = other.unseen_probability(laplace);
         let mut kl = 0.0;
         for (k, p_k) in &p {
-            let q_k = q.get(k).copied().unwrap_or(q_floor);
+            let q_k = q.get(k).copied().unwrap_or(q_unseen);
             if *p_k > 0.0 && q_k > 0.0 {
                 kl += p_k * (p_k / q_k).ln();
             }
@@ -212,6 +258,45 @@ impl AnomalyDetector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// §Fase 112.d — **the regression guard for the bug that made this detector
+    /// structurally blind.**
+    ///
+    /// The IDEAL baseline — a stable system that always reports the same thing — is
+    /// exactly the case the old fallback got catastrophically wrong. `q.min()` was
+    /// `1.0`, so a completely novel event scored `ln(1/1) = 0`: **no divergence, no
+    /// anomaly, ever.** The better your baseline, the blinder the sensor.
+    ///
+    /// It was never caught because the kernel had **zero production instantiations**
+    /// (§111 F14). Nobody ever ran it. Wiring it up (§112.b) exposed this on the
+    /// first real tick.
+    #[test]
+    fn a_novel_symbol_diverges_from_a_perfectly_homogeneous_baseline() {
+        let mut baseline = KLDistribution::new(8);
+        baseline.observe_many(["ok:0.98", "ok:0.98", "ok:0.98", "ok:0.98"]);
+
+        let mut current = KLDistribution::new(4);
+        current.observe("ok:0.12"); // never seen before
+
+        let kl = current.kl_against(&baseline, 1.0);
+        assert!(
+            kl > 1.0,
+            "a completely novel symbol must diverge SHARPLY from a homogeneous baseline.              The old code returned 0.0 here — the more consistent your infrastructure, the              blinder its immune system. Got kl={kl}"
+        );
+        // ln(1 / (1/6)) = ln 6 ≈ 1.79
+        assert!((kl - 6f64.ln()).abs() < 1e-9, "kl={kl}");
+    }
+
+    /// The other half: an unchanged world must NOT diverge. A monitor that cries
+    /// wolf is as useless as one that never cries.
+    #[test]
+    fn an_unchanged_world_does_not_diverge() {
+        let mut baseline = KLDistribution::new(8);
+        baseline.observe_many(["ok:0.9", "ok:0.9", "ok:0.9", "ok:0.9"]);
+        let mut current = KLDistribution::new(4);
+        current.observe("ok:0.9");
+        assert_eq!(current.kl_against(&baseline, 1.0), 0.0);
+    }
 
     fn mk_ir(name: &str, sensitivity: Option<f64>, window: i64, tau: &str, decay: &str) -> IRImmune {
         IRImmune {

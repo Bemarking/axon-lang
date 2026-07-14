@@ -134,7 +134,19 @@ async fn deploying_a_declared_immune_system_produces_one() {
          carried into the IR and consumed by nothing (§111 F14). Got: {status}"
     );
 
-    // And it runs.
+    // And it runs. §112.d: `window: 8` ⇒ the first eight ticks LEARN the baseline
+    // (`immune.baseline: learned` is the language's default). Until it exists there
+    // is nothing to be anomalous with respect to — and a reflex fired against an
+    // untrained baseline is a false positive by construction.
+    for _ in 0..8 {
+        let t = post(&app, "/v1/cognitive-io/tick", serde_json::json!({})).await["tick"].clone();
+        assert!(
+            t["learning"]["Sentinel"].is_object(),
+            "while estimating its baseline the immune must SAY so — silence would be \
+             indistinguishable from 'watching and finding nothing wrong'. Got: {t}"
+        );
+    }
+
     let tick = post(&app, "/v1/cognitive-io/tick", serde_json::json!({})).await;
     let t = &tick["tick"];
 
@@ -148,7 +160,7 @@ async fn deploying_a_declared_immune_system_produces_one() {
     // The immune received what it watches, and the report is DERIVED.
     assert!(
         t["health"]["Sentinel"].is_object(),
-        "the immune must receive the observation it declares it watches. Got: {t}"
+        "with a learned baseline the immune must classify the observation it watches. Got: {t}"
     );
     assert!(
         t["health"]["Sentinel"]["kl_divergence"].is_number(),

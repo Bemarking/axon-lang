@@ -76,7 +76,20 @@ pub struct SupervisorTick {
     /// `ensemble` name → its Byzantine-quorum report.
     pub ensembles: HashMap<String, EnsembleReport>,
     /// `immune` name → the health report its KL-divergence sensor produced.
+    ///
+    /// **Absent while the immune is still LEARNING its baseline** — see `learning`.
+    /// There is no such thing as an anomaly before there is a baseline to be
+    /// anomalous with respect to.
     pub health: HashMap<String, HealthReport>,
+    /// `immune` name → `(samples_learned, window)` while its baseline is still
+    /// being estimated.
+    ///
+    /// First-class, like `observation_refusals`: **"I am still learning" is a fact
+    /// the operator must be able to see.** An immune system that silently reported
+    /// nothing during its learning phase would be indistinguishable from one that
+    /// is watching and finding nothing wrong — and those are very different
+    /// statements about your infrastructure.
+    pub learning: HashMap<String, (usize, usize)>,
     /// Reflexes that fired (HMAC-signed traces, idempotency-gated).
     pub reflexes: Vec<ReflexOutcome>,
     /// Heal decisions (audit_only / human_in_loop / adversarial).
@@ -125,8 +138,49 @@ impl SupervisorTick {
                     )
                 })
                 .collect::<serde_json::Map<_, _>>(),
-            "reflexes_fired": self.reflexes.len(),
-            "heal_decisions": self.heals.len(),
+            // "I am still learning" ≠ "I am watching and all is well".
+            "learning": self
+                .learning
+                .iter()
+                .map(|(k, (have, want))| {
+                    (
+                        k.clone(),
+                        serde_json::json!({ "samples": have, "window": want }),
+                    )
+                })
+                .collect::<serde_json::Map<_, _>>(),
+            // `fired` is the truth; the rest were EVALUATED and declined (below the
+            // declared on_level, or idempotency-skipped for a signature already
+            // acted on). Counting evaluations as firings would overstate what the
+            // immune system actually did — the same class of overclaim §111 spent
+            // itself removing.
+            "reflexes_fired": self.reflexes.iter().filter(|r| r.fired).count(),
+            "reflexes": self
+                .reflexes
+                .iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "reflex": r.reflex_name,
+                        "action": r.action,
+                        "fired": r.fired,
+                        "reason": r.reason,
+                        "latency_us": r.latency_us,
+                        // The HMAC-signed trace: a reflex's firing is attestable,
+                        // not merely logged.
+                        "signed_trace": r.signed_trace,
+                    })
+                })
+                .collect::<Vec<_>>(),
+            "heal_decisions": self
+                .heals
+                .iter()
+                .map(|d| {
+                    serde_json::json!({
+                        "outcome": format!("{:?}", d.outcome),
+                        "reason": d.reason,
+                    })
+                })
+                .collect::<Vec<_>>(),
             "ensembles": self.ensembles.len(),
             "reconciles": self
                 .reconciles
@@ -275,13 +329,40 @@ impl CognitiveIoSupervisor {
         }
 
         // ── 3. immune — the KL-divergence sensor over what it watches ──────
+        //
+        // ## The baseline lifecycle (§112.d)
+        //
+        // `immune.baseline: learned` is the language's default, and `window:` is —
+        // in the AST's own words — "samples used to estimate baseline". **The
+        // baseline is LEARNED.** Until it is, there is nothing to deviate *from*.
+        //
+        // A detector classifying against an EMPTY baseline sees every symbol as
+        // novel, reports a high KL divergence, and fires every reflex — on a
+        // perfectly healthy system, on the very first tick.
+        //
+        // > A monitor that cries wolf from the first tick is as useless as one
+        // > that never cries.
+        //
+        // So the supervisor runs each immune through two phases:
+        //
+        //   LEARNING   (baseline.size() < window) — samples TRAIN the baseline.
+        //                                           No health report is emitted,
+        //                                           and therefore NO reflex and NO
+        //                                           heal can fire. There is nothing
+        //                                           to be anomalous with respect to.
+        //   WATCHING   (baseline is full)         — samples are classified against
+        //                                           it (per-window: `classify_batch`
+        //                                           resets `current` each tick, so a
+        //                                           tick's verdict is about THAT
+        //                                           tick).
         for imm in &self.program.immunes {
             let Some(detector) = self.detectors.get_mut(&imm.name) else {
                 continue;
             };
             // The sample is the signature of what the watched observations
             // reported. An immune watching an observation we could not take gets
-            // NOTHING — it must never learn a baseline from silence.
+            // NOTHING — it must never learn a baseline from silence, and it must
+            // never classify against one.
             let samples: Vec<String> = imm
                 .watch
                 .iter()
@@ -291,7 +372,20 @@ impl CognitiveIoSupervisor {
             if samples.is_empty() {
                 continue;
             }
-            let report = detector.observe_many(samples);
+
+            let window = imm.window.max(1) as usize;
+            if detector.baseline.size() < window {
+                detector.train(samples);
+                out.learning.insert(
+                    imm.name.clone(),
+                    (detector.baseline.size(), window),
+                );
+                // Deliberately NO health entry: a reflex fired during the learning
+                // phase is a false positive BY CONSTRUCTION.
+                continue;
+            }
+
+            let report = detector.classify_batch(samples);
             out.health.insert(imm.name.clone(), report);
         }
 
@@ -384,14 +478,33 @@ heal    Repair { source: Sentinel  on_level: doubt  mode: audit_only  scope: ten
         assert!(sup.is_empty());
     }
 
-    /// **The flagship.** One tick walks observe → immune → reflex/heal, and the
-    /// health report is produced from an observation that was *actually taken*.
+    /// **The flagship.** A tick walks observe → immune → reflex/heal, and the health
+    /// report is produced from an observation that was *actually taken*.
+    ///
+    /// §112.d — the first ticks LEARN. `immune.baseline: learned` is the language's
+    /// default and `window:` is, in the AST's own words, "samples used to estimate
+    /// baseline". Until the baseline exists there is nothing to be anomalous with
+    /// respect to, so no health report is emitted and no reflex can fire — a reflex
+    /// against an untrained baseline is a false positive BY CONSTRUCTION.
     #[test]
     fn a_tick_drives_observe_through_immune_to_the_motor_responses() {
         register_source_adapter("sv_probe", Arc::new(Fixed("sv_probe".into(), 0.95)));
 
         let ir = compile(PROGRAM);
         let mut sup = CognitiveIoSupervisor::from_ir(&ir).unwrap();
+
+        // `window: 8` ⇒ the first eight ticks train the baseline.
+        for _ in 0..8 {
+            let t = sup.tick();
+            assert!(
+                t.learning.contains_key("Sentinel"),
+                "while the baseline is being estimated the immune must say so — silence here                  would be indistinguishable from 'watching and finding nothing wrong'"
+            );
+            assert!(t.health.is_empty(), "no anomaly exists before a baseline does");
+            assert!(t.reflexes.is_empty());
+        }
+
+        // Now it is watching.
         let tick = sup.tick();
 
         assert!(
@@ -405,10 +518,14 @@ heal    Repair { source: Sentinel  on_level: doubt  mode: audit_only  scope: ten
         );
         assert!(
             tick.health.contains_key("Sentinel"),
-            "the immune must receive the observation it watches"
+            "with a learned baseline the immune must now classify"
         );
         // The KL sensor ran on a real sample — the report is derived, not defaulted.
         assert_eq!(tick.health["Sentinel"].immune_name, "Sentinel");
+        assert_eq!(
+            tick.health["Sentinel"].classification, "know",
+            "an unchanged world must classify as `know` — a healthy system that trips its own              immune system is a monitor nobody will keep listening to"
+        );
     }
 
     /// **The law the supervisor must not soften.** An `observe` that REFUSES is
