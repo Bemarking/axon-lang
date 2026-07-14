@@ -294,6 +294,10 @@ pub mod runner;
 // scanners (identity); enterprise vertical crates register HIPAA/legal/AML
 // scanners here at boot. The `shield apply` handler consults it.
 pub mod shield_registry;
+/// §Fase 112.a — the source adapter registry: what an `observe` actually looks at.
+/// **Deny-by-default** — an unregistered source is UNKNOWN, not healthy, and the
+/// observation refuses rather than fabricating a reading.
+pub mod source_registry;
 pub mod server_config;
 pub mod server_metrics;
 pub mod session_scope;

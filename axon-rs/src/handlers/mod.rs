@@ -9,6 +9,11 @@
 
 pub mod base;
 pub mod dry_run;
+/// §Fase 112.a — the `Handler` that actually looks at something. Until it landed,
+/// the only implementation was `DryRunHandler`, whose `observe` returns certainty
+/// `1.0` unconditionally — a perfect-confidence clean bill of health for a system
+/// nobody ever examined.
+pub mod live;
 
 pub use base::{
     BLAME_CALLEE, BLAME_CALLER, BLAME_INFRASTRUCTURE, Continuation, Handler, HandlerError,
@@ -16,3 +21,4 @@ pub use base::{
     VALID_OUTCOME_STATUSES, identity_continuation, make_envelope, now_iso,
 };
 pub use dry_run::{DryRunHandler, DryRunState};
+pub use live::LiveHandler;
