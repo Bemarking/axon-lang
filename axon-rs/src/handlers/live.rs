@@ -242,6 +242,26 @@ impl Handler for LiveHandler {
             }
         }
 
+        // §Fase 112.e — **the EVIDENCE.** These are the manifest's declared resources
+        // that we actually REACHED — established, not assumed.
+        //
+        // `reconcile` computes its Jaccard drift as
+        // `jaccard(manifest.resources, resources_observed)`: the *desired* shape
+        // against the *actual* one. It is the whole belief-vs-evidence gap the
+        // primitive exists to close.
+        //
+        // Before this, no handler reported it honestly — `DryRunHandler` filled it
+        // from `manifest.resources` (which is the BELIEF), and `ReconcileLoop`'s
+        // fallback when it was absent was, in its own comment, to "default to
+        // belief". Either path gave `jaccard(belief, belief) = 0`: **drift was
+        // structurally always zero, and reconcile could never detect anything.**
+        let resources_observed: Vec<Value> = readings
+            .iter()
+            .filter(|(name, _)| self.resources.contains_key(name))
+            .filter(|(name, _)| manifest.resources.contains(name))
+            .map(|(name, _)| Value::String(name.clone()))
+            .collect();
+
         let mut data = Map::new();
         data.insert("observe".into(), obs.name.clone().into());
         data.insert("manifest".into(), manifest.name.clone().into());
@@ -249,6 +269,10 @@ impl Handler for LiveHandler {
         data.insert("answered".into(), (readings.len() as i64).into());
         data.insert("of".into(), (obs.sources.len() as i64).into());
         data.insert("sources".into(), Value::Object(per_source));
+        data.insert(
+            "resources_observed".into(),
+            Value::Array(resources_observed),
+        );
 
         let status = if failures.is_empty() { "ok" } else { "partial" };
 

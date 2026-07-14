@@ -205,15 +205,50 @@ impl<'p, H: Handler> ReconcileLoop<'p, H> {
 
         let mut pass: Continuation<'_> = identity_continuation();
         let observation = self.handler.observe(&self.observe, &self.manifest, &mut pass)?;
-        // If the handler's observation payload includes a `resources_observed`
-        // string array, use it as evidence; otherwise default to belief.
-        let observed: Vec<String> = match observation.data.get("resources_observed") {
-            Some(serde_json::Value::Array(arr)) => arr
-                .iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                .collect(),
-            _ => self.manifest.resources.clone(),
+
+        // §Fase 112.e — **the belief-vs-evidence gap, restored.**
+        //
+        // This block used to read:
+        //
+        // ```ignore
+        // // If the handler's observation payload includes a `resources_observed`
+        // // string array, use it as evidence; OTHERWISE DEFAULT TO BELIEF.
+        // _ => self.manifest.resources.clone(),
+        // ```
+        //
+        // When the evidence was missing, the "observed" state became **the
+        // manifest's own declaration** — so
+        //
+        // ```text
+        //   drift = jaccard(manifest.resources, manifest.resources) = 0.0
+        // ```
+        //
+        // **Drift was structurally always zero.** A reconciliation loop whose entire
+        // purpose is closing the gap between belief and evidence *closed it by
+        // assuming there was no gap* — it compared the belief against itself. And
+        // the only handler that existed filled `resources_observed` from
+        // `manifest.resources` too, which is also the belief, so **both paths gave
+        // zero and `reconcile` could never detect anything.**
+        //
+        // It is the same defect as `DryRunHandler`'s `c: 1.0`, in a third place:
+        // *when the evidence is missing, substitute the belief and report agreement.*
+        //
+        // Now: **no evidence ⇒ REFUSE.** We cannot compute a drift we did not
+        // measure, and reporting `0.0` for it is not a conservative default — it is
+        // a claim that the world matches your intent, made without looking.
+        let Some(serde_json::Value::Array(arr)) = observation.data.get("resources_observed") else {
+            return Err(HandlerError::callee(format!(
+                "reconcile '{}': the observation carries no `resources_observed` evidence, so the \
+                 drift between the manifest's DESIRED shape and the world's ACTUAL shape cannot be \
+                 computed. Refusing — reporting zero drift here would be a claim that reality \
+                 matches your intent, made without looking (§112.e)",
+                self.ir.name
+            )));
         };
+        let observed: Vec<String> = arr
+            .iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect();
         let drift = jaccard_drift(&self.manifest.resources, &observed);
         let certainty = observation.envelope.c;
 
