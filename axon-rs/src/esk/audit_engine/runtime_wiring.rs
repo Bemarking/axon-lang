@@ -124,25 +124,35 @@ const WIRING_TABLE: &[(&str, Wiring)] = &[
     ("HmacSigner.random", Wiring::Wired("esk::provenance::HmacSigner::random (via store::audit_chain)")),
     ("HmacSigner.verify", Wiring::Wired("esk::provenance::HmacSigner::verify (via store::audit_chain)")),
 
-    // ── ORPHANED — the kernel exists, nothing calls it ───────────────────
+    // ── WIRED by §Fase 112 — the loop that was never built ────────────────
     //
-    // §111 F9 "real engine, dead wire". Each of these is genuinely
-    // implemented and unit-tested; none is reachable. The executor
-    // (`flow_dispatcher::dispatch_node`) has NO arm for observe / reconcile /
-    // lease / ensemble / immune / reflex / heal, and nothing reads
-    // `IRProgram.{observations,reconciles,leases,ensembles,immunes,reflexes,heals}`.
-    ("AnomalyDetector", Wiring::Orphaned("runtime::immune::detector")),
-    ("axon.runtime.immune.AnomalyDetector", Wiring::Orphaned("runtime::immune::detector")),
-    ("AnomalyDetector + ReflexEngine", Wiring::Orphaned("runtime::immune::{detector,reflex}")),
-    ("axon.runtime.immune + esk.eid", Wiring::Orphaned("runtime::immune")),
-    ("HealKernel", Wiring::Orphaned("runtime::immune::heal")),
-    ("axon.runtime.immune.HealKernel", Wiring::Orphaned("runtime::immune::heal")),
-    ("HealDefinition.mode", Wiring::Orphaned("runtime::immune::heal")),
+    // §111 F9 called these "real engine, dead wire": genuinely implemented,
+    // unit-tested, and reachable by nobody. I diagnosed that as a LANGUAGE
+    // problem. It was not — the declarations already formed a dataflow graph
+    // (`immune.watch: [<observe>]`, `reflex.trigger: <immune>`, …) and the
+    // kernels took the compiled IR **directly**. What was missing was the
+    // supervisor that hands them the graph and drives it.
+    //
+    // §112 built it (`cognitive_io_supervisor`), and every row below now cites a
+    // gate proving it runs through the REAL deploy path. Two of them were also
+    // WRONG, and only running them could tell you: the KL sensor scored an unseen
+    // symbol against the baseline's MINIMUM probability (so a perfectly stable
+    // baseline could never register an anomaly), and `ReconcileLoop` defaulted its
+    // "observed" state to the manifest's own declaration (so drift was structurally
+    // always zero). An orphaned kernel is not idle code — it is code whose
+    // correctness was never tested against reality, and it rots.
+    ("AnomalyDetector", Wiring::Wired("runtime::immune::detector (via cognitive_io_supervisor, §112.d)")),
+    ("axon.runtime.immune.AnomalyDetector", Wiring::Wired("runtime::immune::detector (via cognitive_io_supervisor, §112.d)")),
+    ("AnomalyDetector + ReflexEngine", Wiring::Wired("runtime::immune::{detector,reflex} (via cognitive_io_supervisor, §112.d)")),
+    ("axon.runtime.immune + esk.eid", Wiring::Wired("runtime::immune (via cognitive_io_supervisor, §112.d)")),
+    ("HealKernel", Wiring::Wired("runtime::immune::heal (via cognitive_io_supervisor, §112.d)")),
+    ("axon.runtime.immune.HealKernel", Wiring::Wired("runtime::immune::heal (via cognitive_io_supervisor, §112.d)")),
+    ("HealDefinition.mode", Wiring::Wired("runtime::immune::heal (via cognitive_io_supervisor, §112.d)")),
     ("LeaseKernel", Wiring::Orphaned("runtime::lease_kernel")),
     ("axon.runtime.lease_kernel.LeaseKernel", Wiring::Orphaned("runtime::lease_kernel")),
-    ("ReconcileLoop", Wiring::Orphaned("runtime::reconcile_loop")),
-    ("axon.runtime.reconcile_loop.ReconcileLoop", Wiring::Orphaned("runtime::reconcile_loop")),
-    ("axon.runtime.ensemble_aggregator", Wiring::Orphaned("runtime::ensemble_aggregator")),
+    ("ReconcileLoop", Wiring::Wired("runtime::reconcile_loop (via cognitive_io_supervisor, §112.e)")),
+    ("axon.runtime.reconcile_loop.ReconcileLoop", Wiring::Wired("runtime::reconcile_loop (via cognitive_io_supervisor, §112.e)")),
+    ("axon.runtime.ensemble_aggregator", Wiring::Wired("runtime::ensemble_aggregator (via cognitive_io_supervisor, §112.c)")),
 
     // ── ABSENT — the cited symbol does not exist in any language ──────────
     //
@@ -202,13 +212,20 @@ pub fn wiring_or_absent(locator: &str) -> Wiring {
 /// (§111 F14). Wiring any of them into the executor means deleting its row
 /// here in the same PR.
 const UNENFORCED_FEATURES: &[&str] = &[
-    "has_observe",
-    "has_reconcile",
+    // §112 REMOVED six from this list — `has_observe`, `has_reconcile`,
+    // `has_ensemble`, `has_immune`, `has_reflex`, `has_heal`. They are driven by the
+    // `CognitiveIoSupervisor` now, each with a gate proving it runs through the REAL
+    // deploy path. The SOC2/ISO controls they back can leave `pending` HONESTLY —
+    // which is the whole point of F8: the engine stopped lying, and now it can also
+    // say yes.
+    //
+    // The two that remain need a `resource` to govern something that runs, and it
+    // governs nothing: `resource.endpoint` and `axonstore.connection` are the same
+    // fact declared twice (§111's islands finding). `lease` in particular CANNOT
+    // work — its CT-2 Anchor Breach is breach on post-expiry USE, and a flow can
+    // never USE a resource. That is §113's job, and until then declaring them must
+    // still buy nothing.
     "has_lease",
-    "has_ensemble",
-    "has_immune",
-    "has_reflex",
-    "has_heal",
     "has_resource",
 ];
 
@@ -312,10 +329,37 @@ mod tests {
 
     /// The Cognitive-I/O family must not satisfy control requirements while
     /// it has no dispatch arm.
+    /// §Fase 112 — six of these are now ENFORCED, and this test is the record of it.
+    ///
+    /// The `CognitiveIoSupervisor` drives them through the real deploy path, each
+    /// with a gate that proves it runs. This is the F8 loop closing: §111 made the
+    /// compliance engine stop lying; §112 is what lets it also say YES.
     #[test]
-    fn cognitive_io_features_are_not_enforced() {
-        for f in ["has_lease", "has_heal", "has_reconcile", "has_immune", "has_ensemble"] {
-            assert!(!feature_is_enforced(f), "`{f}` must not count as enforced (§111 F14)");
+    fn the_cognitive_io_features_112_wired_are_now_enforced() {
+        for f in [
+            "has_observe",
+            "has_ensemble",
+            "has_immune",
+            "has_reflex",
+            "has_heal",
+            "has_reconcile",
+        ] {
+            assert!(
+                feature_is_enforced(f),
+                "`{f}` is driven by the CognitiveIoSupervisor (§112) and must now count"
+            );
+        }
+    }
+
+    /// …and `lease` / `resource` still do NOT. They need §113 to give a `resource`
+    /// a use-site. Declaring them must still buy exactly nothing.
+    #[test]
+    fn lease_and_resource_are_still_not_enforced_until_113() {
+        for f in ["has_lease", "has_resource"] {
+            assert!(
+                !feature_is_enforced(f),
+                "`{f}` cannot be enforced until §113 makes a `resource` govern something that                  runs. `lease`'s CT-2 Anchor Breach is breach on post-expiry USE, and a flow can                  never USE a resource — the guarantee is structurally impossible, not merely                  unwired."
+            );
         }
         // …while the genuinely-wired surfaces still do.
         for f in ["has_shield", "has_endpoint", "has_compliance_annotation"] {

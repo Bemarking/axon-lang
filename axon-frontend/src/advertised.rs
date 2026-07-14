@@ -166,19 +166,19 @@ pub const ADVERTISED: &[(&str, RuntimeStatus)] = &[
     ("resource", NotImplemented { finding: "§111 F14/§11 — no consumption surface exists in the language" }),
     ("fabric", NotImplemented { finding: "§111 F14 — Separation-Logic `*` disjointness is never checked between fabrics; no runtime consumer" }),
     ("manifest", Partial { gap: "§111 F14 — the κ/compliance half IS genuinely consumed (it feeds attestation + the audit scorer); the \"desired shape\" half is dead" }),
-    ("observe", NotImplemented { finding: "§111 F14 — the ΛD envelope ⟨c,τ,ρ,δ⟩ is only ever produced by a DryRunHandler with zero production instantiations" }),
-    ("reconcile", NotImplemented { finding: "§111 F14 — Jaccard drift + the shield gate are really implemented; every ReconcileLoop::new call site is inside #[cfg(test)]" }),
+    ("observe", Real { proof: "tests/fase112_c_cognitive_io_deploy.rs (§112.a/c — a real Handler reaches a real target through a deny-by-default SourceRegistry; an observation that cannot be taken REFUSES. The only prior Handler returned certainty 1.0 unconditionally, without going anywhere)" }),
+    ("reconcile", Real { proof: "tests/fase112_e_reconcile_drift.rs (§112.e — REAL Jaccard drift between the manifest's desired shape and the world's actual shape. It used to compare the belief against ITSELF: when evidence was missing it defaulted to the manifest, so drift was structurally always 0.0)" }),
     ("lease", NotImplemented { finding: "§111 F14 — τ-decay + CT-2 breach logic exists; LeaseKernel has zero non-test callers. (SOC2 CC6.3 used to cite it as a RuntimeInvariant — see F8)" }),
-    ("ensemble", NotImplemented { finding: "§111 F14 — real quorum gate + byzantine_filter + Cφ fusion, constructed only in its own tests" }),
+    ("ensemble", Real { proof: "tests/fase112_c_cognitive_io_deploy.rs (§112.b/c — the EnsembleAggregator is instantiated from the IR at deploy and aggregates only observations ACTUALLY TAKEN; a refused source is absent, not present-and-failing, which is what lets its quorum gate work honestly)" }),
     ("topology", Real { proof: "type_checker::check_topology_liveness — a genuine DFS gray/black cycle detector emitting a Honda-liveness violation (narrow sufficient condition, but real)" }),
     ("session", Real { proof: "type_checker::check_session_duality → session.rs (dual involution, capture-avoiding substitution, coinductive equality). Duality is genuinely DECIDED, not faked" }),
     ("send", Real { proof: "lowered into the session algebra; an unmatched send fails the duality check" }),
     ("receive", Real { proof: "lowered into the session algebra; dual of send" }),
     ("select", Real { proof: "session.rs dual_map — internal/external choice duality is really checked arm-for-arm" }),
     ("branch", Real { proof: "session.rs dual_map — the dual of select" }),
-    ("immune", NotImplemented { finding: "§111 F14 — genuine KL-divergence + τ decay; AnomalyDetector is constructed only in its own tests" }),
-    ("reflex", NotImplemented { finding: "§111 F14 — real HMAC-SHA256 signing + idempotency set; nothing outside #[cfg(test)] ever registers a reflex" }),
-    ("heal", NotImplemented { finding: "§111 F14 — audit_only/human_in_loop/adversarial modes + one-shot Applied→Collapsed patch linearity all exist; HealKernel has zero production callers" }),
+    ("immune", Real { proof: "tests/fase112_d_immune_fires.rs (§112.d — the KL sensor detects a REAL deviation from a LEARNED baseline. Wiring it exposed a kernel bug that made it structurally blind: an unseen symbol was scored against the baseline's MINIMUM probability, so a perfectly stable baseline could never register an anomaly at all)" }),
+    ("reflex", Real { proof: "tests/fase112_d_immune_fires.rs (§112.d — a real anomaly FIRES the declared action with an HMAC-signed trace, within its sla:, and the same signature does not re-fire. No reflex may fire while the baseline is still being learned — that would be a false positive by construction)" }),
+    ("heal", Real { proof: "tests/fase112_d_immune_fires.rs (§112.d — the HealKernel is registered from the IR and renders a decision under its declared mode: on a real health report)" }),
     ("compliance", Partial { gap: "§111 F16 — the language's flagship claim, and exactly ONE genuine κ-coverage rule exists (scoped to `component`). The axon-T890 endpoint rule is a PRESENCE check (`!compliance.is_empty()`), not a coverage law. The checker documents its own gap at type_checker.rs:11726" }),
     ("component", Partial { gap: "§111 — the compile-time shield-coverage law over regulated κ IS genuinely enforced (a real set difference). But the component renders NOTHING; the README itself defers the renderer" }),
     ("view", Partial { gap: "§111 — only referential integrity is checked. No `route` check, no session-typed-reactivity check, and it renders nothing" }),
@@ -218,17 +218,26 @@ pub const KNOWN_DEBT: &[&str] = &[
     "ots",
     "mandate",
     "lambda",
-    // The Cognitive-I/O block — UNREACHABLE BY CONSTRUCTION (§112 designs the
-    // consumption surface; there is no verb in the language that can reach them).
+    // The Cognitive-I/O block.
+    //
+    // §112 PAID SIX OF THESE. `observe` · `ensemble` · `immune` · `reflex` · `heal` ·
+    // `reconcile` are now driven by the CognitiveIoSupervisor and each cites a gate
+    // that proves it runs through the REAL deploy path.
+    //
+    // My §111 diagnosis of this family was WRONG in a way worth remembering: I called
+    // it a language-design problem ("no verb can reach them"). The language was
+    // already complete — the declarations form a dataflow graph and reference each
+    // other, and the kernels took the compiled IR directly. **Nobody had ever built
+    // the loop.**
+    //
+    // The three that remain need a `resource` to govern something that runs, and it
+    // governs nothing: `resource.endpoint` and `axonstore.connection` are the same
+    // fact declared twice, with the Linear-Logic discipline hanging off the copy that
+    // runs nothing. `lease` in particular CANNOT work — the CT-2 Anchor Breach is
+    // breach on post-expiry USE, and a flow can never USE a resource. That is §113.
     "resource",
     "fabric",
-    "observe",
-    "reconcile",
     "lease",
-    "ensemble",
-    "immune",
-    "reflex",
-    "heal",
 ];
 
 /// Look up what an advertised name's runtime actually does.

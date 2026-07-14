@@ -418,19 +418,25 @@ mod tests {
         assert!(gap.pending_code > 0);
     }
 
-    /// The full Cognitive-I/O stack, declared. Before §Fase 111 this program
-    /// was asserted to make **≥25 SOC2 controls `ready`** — and that assertion
-    /// was the bug, written down and pinned by a passing test.
+    /// **The F8 loop, closing.** This test has now been the record of three
+    /// different truths, and that history is the point.
     ///
-    /// None of `resource`/`observe`/`reconcile`/`lease`/`ensemble`/`immune`/
-    /// `reflex`/`heal` has a dispatch arm. Declaring them causes exactly
-    /// nothing to run. A compliance posture built on this program is a
-    /// certificate we cannot back.
+    /// - **Before §111** it asserted this program made **≥25 SOC2 controls
+    ///   `ready`** — and *that assertion was the bug*, written down and pinned by a
+    ///   passing test. None of the stack ran. A compliance posture built on it was
+    ///   a certificate we could not back.
+    /// - **§111 (F8)** inverted it: declaring an **unenforced** primitive must never
+    ///   buy a `ready`. The engine stopped lying.
+    /// - **§112** built the supervisor that actually drives six of them. So now the
+    ///   engine can also **say yes** — *for exactly the six that run, and not one
+    ///   more.*
     ///
-    /// This test now pins the OPPOSITE, and is the regression guard for F8:
-    /// declaring an unenforced primitive must never buy a `ready`.
+    /// That last step is the whole reason F8 was worth doing. A compliance engine
+    /// that can only ever say "no" is honest and useless; one that says "yes" for
+    /// things that do not run is worse than useless. **This asserts it says yes for
+    /// precisely what it can back.**
     #[test]
-    fn declaring_the_cognitive_io_stack_buys_no_compliance_credit() {
+    fn the_cognitive_io_stack_buys_credit_for_exactly_what_runs() {
         let stack = r#"
             resource Db { kind: postgres lifetime: linear }
             fabric Vpc { provider: aws }
@@ -444,37 +450,41 @@ mod tests {
             reflex Rf { trigger: I on_level: doubt action: quarantine scope: tenant }
             heal H { source: I scope: tenant }
         "#;
-        let base = "type R compliance [HIPAA] { x: String }\n\
-                    flow F(r: R) -> R { step S { ask: \"x\" output: R } }\n";
+        let base = "type R compliance [HIPAA] { x: String }
+                    flow F(r: R) -> R { step S { ask: \"x\" output: R } }
+";
 
         let without = analyze_gaps(&compile(base), FrameworkId::Soc2TypeII);
         let with = analyze_gaps(&compile(&format!("{base}{stack}")), FrameworkId::Soc2TypeII);
 
-        // The headline invariant: bolting the whole unenforced stack onto a
-        // program must not move the readiness needle by a single control.
-        assert_eq!(
-            with.ready, without.ready,
-            "declaring the Cognitive-I/O stack changed `ready` from {} to {} — \
-             an unwired primitive bought compliance credit (§111 F8 regression)",
-            without.ready, with.ready
+        // §112 — the six primitives the CognitiveIoSupervisor drives are ENFORCED, so
+        // declaring them legitimately raises the posture. The engine can say yes.
+        assert!(
+            with.ready > without.ready,
+            "the six Cognitive-I/O primitives §112 wired (observe/ensemble/immune/reflex/heal/             reconcile) are driven by the supervisor through the real deploy path. Declaring them              MUST now raise the score — an engine that can only say no is honest and useless.              ready went {} -> {}",
+            without.ready,
+            with.ready
         );
 
-        // …and the adopter must be TOLD, not merely denied. Silence would be
-        // an improvement over a lie, but it is not an answer.
-        for f in ["has_lease", "has_heal", "has_reconcile", "has_immune", "has_ensemble"] {
+        // …but `lease` and `resource` still buy NOTHING. They need §113 to make a
+        // `resource` govern something that runs. `lease`'s CT-2 Anchor Breach is
+        // breach on post-expiry USE, and a flow can never USE a resource — the
+        // guarantee is structurally impossible, not merely unwired.
+        for f in ["has_lease", "has_resource"] {
             assert!(
                 with.declared_but_unenforced.contains(&f.to_string()),
-                "`{f}` is declared and unenforced; the analysis must say so"
+                "`{f}` is declared and STILL unenforced (§113); the analysis must say so. Got:                  {:?}",
+                with.declared_but_unenforced
+            );
+        }
+        for f in ["has_immune", "has_heal", "has_reconcile", "has_ensemble", "has_observe"] {
+            assert!(
+                !with.declared_but_unenforced.contains(&f.to_string()),
+                "`{f}` is driven by the §112 supervisor — it must NOT be reported as unenforced"
             );
         }
 
-        // Every control the catalog backs with an orphaned/absent kernel is
-        // named as OUR defect, and none of them is `ready`.
-        assert!(
-            !with.unbacked_runtime_claims.is_empty(),
-            "SOC2 cites LeaseKernel / HealKernel / ReconcileLoop / ensemble_aggregator — \
-             all orphaned; they must be reported as unbacked runtime claims"
-        );
+        // And no control may still be `ready` on an unbacked runtime invariant.
         for a in &with.assessments {
             if a.evidence_kind == "runtime_invariant"
                 && !crate::esk::audit_engine::runtime_wiring::wiring_or_absent(&a.evidence_locator)
