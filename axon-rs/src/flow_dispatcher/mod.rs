@@ -227,6 +227,27 @@ pub enum StoreRowKind {
     Purged,
 }
 
+/// §Fase 111.d — the active `quant` block's resolved parameters, held for the
+/// duration of its body so a nested `yield` knows what Hilbert space it is
+/// measuring in and with which observable.
+///
+/// This exists because `quant` and `yield` are two halves of one operation:
+/// `quant { … }` declares the space (encoding + observable + register width) and
+/// `yield <carrier>` performs the collapse `E = ⟨ψ|M|ψ⟩`. Before §111.d neither
+/// half did anything, so the split cost nothing; now that both are real, the
+/// frame is what connects them.
+#[derive(Clone, Debug)]
+pub struct QuantFrame {
+    /// How the classical carrier is projected into the state (`amplitude` |
+    /// `angle`).
+    pub encoding: crate::quant::EncodingScheme,
+    /// The resolved Pauli-sum `M`. Hermitian by construction.
+    pub observable: crate::quant::PauliSum,
+    /// The observable's declared name — carried so a measurement result can say
+    /// what it measured, not just what it computed.
+    pub observable_name: String,
+}
+
 #[derive(Clone)]
 pub struct DispatchCtx {
     pub flow_name: String,
@@ -331,6 +352,34 @@ pub struct DispatchCtx {
     /// resolved authorises nothing (the §88 fail-closed posture — the `within`
     /// clause is mandatory precisely so an analysis can never run unscoped).
     pub scopes: Arc<Vec<crate::ir_nodes::IRScope>>,
+    /// §Fase 111.d — the Hilbert-space port behind the `quant` block and its
+    /// `yield` measurement point.
+    ///
+    /// Same shape as `warden` (§111 F12): `run_quant` was a **pure no-op** — it
+    /// inserted `__quant_backend` (a key nothing read), returned an empty
+    /// output, and **silently skipped every step inside `quant { … }`**, even
+    /// though `ir_generator` had faithfully lowered them. `run_yield` stored the
+    /// carrier expression verbatim into `__quant_yield` and collapsed no
+    /// amplitudes. Meanwhile `crate::quant` (`ReferenceSimulator`, `PauliSum`,
+    /// `StateVector`) was real, non-trivial, fuzz-tested code that **no dispatch
+    /// path could reach** — `DispatchCtx` had no port, so enterprise's
+    /// `saas-quant` `Q32Simulator` was reachable only from `POST
+    /// /api/v1/quant/{name}`.
+    ///
+    /// `None` (the `new` default) ⇒ `quant` fails CLOSED with
+    /// `MissingDependency { name: "quant_backend" }`.
+    pub quant_backend: Option<std::sync::Arc<dyn crate::quant::QuantBackend + Send + Sync>>,
+    /// §Fase 111.d — the compiled `observable` declarations (the Pauli-sum
+    /// catalog). A `quant` block measures `E = ⟨ψ|M|ψ⟩`; with no resolvable `M`
+    /// there is nothing to measure, so an unresolvable observable fails CLOSED
+    /// rather than returning a number that means nothing.
+    pub observables: Arc<Vec<crate::ir_nodes::IRObservable>>,
+    /// §Fase 111.d — the active `quant` frame, pushed by `run_quant` for the
+    /// duration of its body so a nested `yield` knows which Hilbert space it is
+    /// collapsing into. `None` outside a `quant` block ⇒ a bare `yield` fails
+    /// CLOSED (a measurement with no state to measure is not a weak result, it
+    /// is a category error).
+    pub quant_frame: Option<QuantFrame>,
     pub cancel: CancellationFlag,
     pub tx: mpsc::UnboundedSender<FlowExecutionEvent>,
     pub enforcement_summaries: Arc<
@@ -567,6 +616,13 @@ impl DispatchCtx {
             // it within; neither is optional.
             warden_backend: None,
             scopes: Arc::new(Vec::new()),
+            // §Fase 111.d — no simulator and no observable catalog by default:
+            // a `quant` block fails CLOSED until both are attached. Measuring
+            // requires a Hilbert space to measure IN and an observable to
+            // measure WITH; neither is optional.
+            quant_backend: None,
+            observables: Arc::new(Vec::new()),
+            quant_frame: None,
             cancel,
             tx,
             enforcement_summaries: Arc::new(Mutex::new(HashMap::new())),
@@ -655,6 +711,26 @@ impl DispatchCtx {
     ) -> Self {
         self.warden_backend = Some(backend);
         self.scopes = scopes;
+        self
+    }
+
+    /// §Fase 111.d — Builder: attach the Hilbert-space simulator AND the
+    /// compiled observable catalog, so a `quant` block can actually measure.
+    ///
+    /// Both together, for the same reason as [`Self::with_warden`]: a simulator
+    /// with no observable catalog is a state you cannot ask a question of.
+    ///
+    /// OSS mounts [`crate::quant::ReferenceSimulator`] (dense statevector, capped
+    /// at `OSS_QUBIT_CAP` qubits — a register above the cap fails closed with
+    /// `axon-E0783`, never a silent truncation). Enterprise mounts its
+    /// `Q32Simulator` behind the same trait.
+    pub fn with_quant(
+        mut self,
+        backend: std::sync::Arc<dyn crate::quant::QuantBackend + Send + Sync>,
+        observables: Arc<Vec<crate::ir_nodes::IRObservable>>,
+    ) -> Self {
+        self.quant_backend = Some(backend);
+        self.observables = observables;
         self
     }
 

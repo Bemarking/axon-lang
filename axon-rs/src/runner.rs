@@ -1363,6 +1363,11 @@ struct NavDispatch {
     /// every warden fails CLOSED (a scope that cannot be resolved authorises
     /// nothing — the §88 posture, now enforced in fact and not only in grammar).
     scopes: std::sync::Arc<Vec<crate::ir_nodes::IRScope>>,
+    /// §Fase 111.d — the compiled `observable` declarations (Pauli sums), so a
+    /// `quant` block can resolve the `M` it measures. Empty ⇒ `quant` fails
+    /// CLOSED: E = ⟨ψ|M|ψ⟩ with no M is not a weak result, it is a category
+    /// error.
+    observables: std::sync::Arc<Vec<crate::ir_nodes::IRObservable>>,
 }
 
 /// §Fase 65.A — kill-switch for the structural-dispatch bridge. ON by default:
@@ -1503,6 +1508,11 @@ async fn dispatch_structural(
     dctx = dctx.with_warden(
         std::sync::Arc::new(crate::warden::ReferenceStaticWarden),
         nd.scopes.clone(),
+    );
+    // §Fase 111.d — see above: the simulator + observable catalog.
+    dctx = dctx.with_quant(
+        std::sync::Arc::new(crate::quant::ReferenceSimulator::new()),
+        nd.observables.clone(),
     );
     // Share the flow's MDN interaction history across all of its navigate nodes
     // so adaptive ω reinforcement sees cross-navigation variance (SSE parity).
@@ -3446,6 +3456,15 @@ async fn collect_via_dispatcher(
         std::sync::Arc::new(crate::warden::ReferenceStaticWarden),
         nav_dispatch.scopes.clone(),
     );
+    // §Fase 111.d — mount the Hilbert-space simulator + the observable catalog,
+    // so a `quant` block MEASURES instead of silently skipping its body. OSS
+    // mounts the capped dense-statevector reference simulator (a register above
+    // the cap fails closed with axon-E0783, never a silent truncation);
+    // enterprise mounts its Q32Simulator behind the same trait.
+    ctx = ctx.with_quant(
+        std::sync::Arc::new(crate::quant::ReferenceSimulator::new()),
+        nav_dispatch.observables.clone(),
+    );
     // §Fase 72.c — attach the linear-effect budget gate (daemon path only).
     if let Some(gate) = budget {
         ctx = ctx.with_budget(gate);
@@ -3922,6 +3941,10 @@ pub fn execute_server_flow(
             // (`POST /api/v1/warden/{scope}`); the LANGUAGE primitive could not
             // reach them, which is why it was a no-op.
             scopes: std::sync::Arc::new(ir.scopes.clone()),
+            // §Fase 111.d — same story as scopes: the observable catalog was
+            // extracted only for the enterprise `POST /api/v1/quant/{name}`
+            // route; the LANGUAGE primitive could not reach it.
+            observables: std::sync::Arc::new(ir.observables.clone()),
         }
     };
 
@@ -5183,6 +5206,7 @@ flow Recall(q: Text) -> Text {
             adaptive: std::sync::Arc::new(std::collections::HashSet::new()),
             dataspace_engine: None,
             scopes: std::sync::Arc::new(Vec::new()),
+            observables: std::sync::Arc::new(Vec::new()),
         };
         let pb = vec![("q".to_string(), "DocA".to_string())];
         let collected = collect_via_dispatcher(
@@ -5428,6 +5452,7 @@ flow Producer(tenant_id: Text) -> Text {
             adaptive: std::sync::Arc::new(std::collections::HashSet::new()),
             dataspace_engine: None,
             scopes: std::sync::Arc::new(Vec::new()),
+            observables: std::sync::Arc::new(Vec::new()),
         }
     }
 }

@@ -1342,6 +1342,38 @@ pub async fn run_transact(
 ///     simulator,
 /// with hardware acceleration (QuIDD / VRAM / QPU) only in the enterprise
 /// backend (§51.f–i). Mirrors the payload-free completion of `run_transact`.
+/// **§Fase 111.d — MADE REAL.**
+///
+/// # What this used to be (§111 F12)
+///
+/// A pure no-op. It inserted `__quant_backend` (a key nothing in the tree read),
+/// returned an empty output, and **silently skipped every step inside
+/// `quant { … }`** — even though `ir_generator` had faithfully lowered them —
+/// while `StepComplete` went out on the wire saying the block had finished.
+///
+/// The simulator was real the entire time (`crate::quant`: `ReferenceSimulator`,
+/// `PauliSum`, `StateVector`, fuzz-tested), and **no dispatch path could reach
+/// it**: `DispatchCtx` had no port, so even enterprise's `Q32Simulator` was
+/// reachable only from `POST /api/v1/quant/{name}`. The math was a library
+/// nobody had wired to the keyword.
+///
+/// # What it is now
+///
+/// `quant` declares the Hilbert space; a nested [`run_yield`] performs the
+/// collapse `E = ⟨ψ|M|ψ⟩`. This handler resolves the space, pushes a
+/// [`QuantFrame`] for the body, and **runs the body**.
+///
+/// ## The `depth:` refusal — the honest one
+///
+/// The grammar accepts `depth: L`, declaring an *L*-layer variational circuit
+/// `U(θ)`. But **no `θ` exists anywhere in the language**: `IRQuant` carries no
+/// parameter vector, and `RotationLayer` needs real angles. §51 shipped the
+/// knob and never shipped its parameter source.
+///
+/// Running `U(0)` and calling it the adopter's circuit would be **fabricating
+/// the physics** — the exact class of defect §111 exists to end. So a declared
+/// `depth:` is REFUSED, and the diagnostic names the gap. Omit it and you get a
+/// real, complete computation: encode the carrier, measure the observable.
 pub async fn run_quant(
     node: &IRQuant,
     ctx: &mut DispatchCtx,
@@ -1353,15 +1385,117 @@ pub async fn run_quant(
     ctx.step_counter += 1;
 
     emit_step_start(ctx, "Quant", step_index, "quant")?;
-    // Record the selected backend tag so a downstream observer can see which
-    // effect the block declared (`quant_sim` default / `qpu_native`). No
-    // Hilbert execution happens here in §51.a.
-    ctx.let_bindings
-        .insert("__quant_backend".to_string(), node.effect.clone());
-    emit_step_complete(ctx, "Quant", step_index, "", 0)?;
+
+    // (1) The simulator. No port ⇒ no Hilbert space ⇒ refusal.
+    if ctx.quant_backend.is_none() {
+        return Err(DispatchError::MissingDependency {
+            name: "quant_backend",
+        });
+    }
+
+    // (2) The `depth:` knob has no θ to drive it. Refuse rather than invent.
+    if let Some(depth) = node.depth {
+        if depth > 0 {
+            return Err(DispatchError::BackendError {
+                name: "quant".to_string(),
+                message: format!(
+                    "`depth: {depth}` declares a {depth}-layer variational circuit U(θ), but the \
+                     language carries no θ — `quant` has no parameter surface, and a rotation \
+                     layer needs real angles. Running U(0) and calling it your circuit would \
+                     fabricate the physics (§111). Omit `depth:` to measure the encoded carrier \
+                     directly (a complete, real computation: E = ⟨ψ|M|ψ⟩); a parameter surface is \
+                     deferred to §111.x"
+                ),
+            });
+        }
+    }
+
+    // (3) The observable. Measuring without an `M` is not a weak result — it is
+    //     a category error, so it fails CLOSED rather than returning a number
+    //     that means nothing.
+    let obs_name = node.observable.clone().unwrap_or_default();
+    if obs_name.trim().is_empty() {
+        return Err(DispatchError::BackendError {
+            name: "quant".to_string(),
+            message: "a `quant` block declares no `observable:` — E = ⟨ψ|M|ψ⟩ needs an M. \
+                      Declare an `observable <Name> { … }` and reference it"
+                .to_string(),
+        });
+    }
+    let obs_ir = ctx
+        .observables
+        .iter()
+        .find(|o| o.name == obs_name)
+        .ok_or_else(|| DispatchError::BackendError {
+            name: "quant".to_string(),
+            message: format!(
+                "`observable: {obs_name}` does not resolve to a declared observable — there is \
+                 nothing to measure"
+            ),
+        })?;
+    let observable = crate::quant::PauliSum {
+        terms: obs_ir
+            .terms
+            .iter()
+            .map(|t| (t.coefficient, t.pauli.clone()))
+            .collect(),
+    };
+
+    // (4) The encoding scheme (closed catalog; `angle` is the default — O(1)
+    //     depth, no normalization requirement).
+    let encoding = match node.encoding.as_deref().unwrap_or("angle") {
+        "amplitude" => crate::quant::EncodingScheme::Amplitude,
+        "angle" => crate::quant::EncodingScheme::Angle,
+        other => {
+            return Err(DispatchError::BackendError {
+                name: "quant".to_string(),
+                message: format!(
+                    "unknown `encoding: {other}` — the closed catalog is `amplitude` | `angle`"
+                ),
+            })
+        }
+    };
+
+    // (5) Push the frame, RUN THE BODY (the part that used to be skipped), pop.
+    let saved = ctx.quant_frame.take();
+    ctx.quant_frame = Some(crate::flow_dispatcher::QuantFrame {
+        encoding,
+        observable,
+        observable_name: obs_name.clone(),
+    });
+
+    let mut last_expectation: Option<String> = None;
+    let mut early: Option<NodeOutcome> = None;
+    for child in &node.body {
+        match Box::pin(dispatch_node(child, ctx)).await {
+            Ok(NodeOutcome::Completed { output, .. }) => {
+                if !output.is_empty() {
+                    last_expectation = Some(output);
+                }
+            }
+            Ok(other) => {
+                early = Some(other);
+                break;
+            }
+            Err(e) => {
+                ctx.quant_frame = saved;
+                return Err(e);
+            }
+        }
+    }
+    ctx.quant_frame = saved;
+
+    if let Some(outcome) = early {
+        emit_step_complete(ctx, "Quant", step_index, "", 0)?;
+        return Ok(outcome);
+    }
+
+    // The block's value is its last measurement — the collapse it performed.
+    let output = last_expectation.unwrap_or_default();
+    emit_step_complete(ctx, "Quant", step_index, &output, 0)?;
 
     Ok(NodeOutcome::Completed {
-        output: String::new(),
+        output,
         tokens_emitted: 0,
         step_index,
     })
@@ -1530,15 +1664,27 @@ pub async fn run_warden(
 //  Yield (§Fase 51.d.2 — quant measurement point, surface only)
 // ────────────────────────────────────────────────────────────────────
 
-/// §Fase 51.d.2 — the `yield <expr>` measurement point. Wire shape:
-/// `step_type: "yield"`.
+/// §Fase 51.d.2 / **§Fase 111.d — MADE REAL** — the `yield <carrier>`
+/// measurement point. Wire shape: `step_type: "yield"`.
 ///
-/// SURFACE ONLY: the OSS dispatcher emits the canonical start/complete wire
-/// shape but does NOT collapse amplitudes — the measurement + its one-shot
-/// delimited continuation (suspend the classical thread, resolve via the
-/// `quant_sim`/`qpu_native` handler, resume at the suspension point) is the
-/// §51.e reference simulator / enterprise QuIDD-QPU backend. Mirrors the
-/// payload-free completion of `run_quant`.
+/// # What this used to be
+///
+/// It stored `node.value_expr` — the raw expression **text** — into
+/// `__quant_yield`, a key nothing read, and collapsed nothing. The doc comment
+/// said so plainly ("SURFACE ONLY … does NOT collapse amplitudes"), and the
+/// README sold `quant` as a Hilbert-space primitive anyway.
+///
+/// # What it is now
+///
+/// The real collapse: resolve the classical carrier, project it into the state
+/// declared by the enclosing `quant` block, and return the expectation
+/// `E = ⟨ψ|M|ψ⟩` of that block's observable.
+///
+/// A `yield` outside a `quant` block fails CLOSED. That is not pedantry: a
+/// measurement with no state to measure is a **category error**, and returning
+/// `0.0` for it would be indistinguishable from a genuine expectation of zero —
+/// the same "silence looks like a result" defect that made the old `warden` an
+/// anti-feature.
 pub async fn run_yield(
     node: &IRYield,
     ctx: &mut DispatchCtx,
@@ -1550,18 +1696,94 @@ pub async fn run_yield(
     ctx.step_counter += 1;
 
     emit_step_start(ctx, "Yield", step_index, "yield")?;
-    emit_step_complete(ctx, "Yield", step_index, "", 0)?;
 
-    // Record the measured expression so a downstream observer sees what the
-    // quant block yields; no Hilbert collapse happens here in §51.d.2.
+    // (1) A measurement needs a state to measure in.
+    let frame = ctx.quant_frame.clone().ok_or_else(|| DispatchError::BackendError {
+        name: "yield".to_string(),
+        message: "`yield` outside a `quant { … }` block — there is no Hilbert space to collapse \
+                  into and no observable to measure with. Returning 0.0 here would be \
+                  indistinguishable from a genuine expectation of zero (§111)"
+            .to_string(),
+    })?;
+    let backend = ctx
+        .quant_backend
+        .clone()
+        .ok_or(DispatchError::MissingDependency {
+            name: "quant_backend",
+        })?;
+
+    // (2) The classical carrier. `yield x` measures the vector bound to `x`.
+    let raw = crate::exec_context::resolve_value_reference(&node.value_expr, &ctx.let_bindings);
+    let carrier = parse_carrier(&raw).ok_or_else(|| DispatchError::BackendError {
+        name: "yield".to_string(),
+        message: format!(
+            "`yield {}` does not resolve to a real vector — got `{}`. The carrier must be a \
+             numeric vector (a JSON array like `[0.1, 0.9]`, or comma-separated reals) so it can \
+             be projected into the Hilbert space",
+            node.value_expr, raw
+        ),
+    })?;
+
+    // (3) The collapse: encode → measure. Every quant error surfaces with its
+    //     stable diagnostic code (e.g. axon-E0783 register over capacity,
+    //     axon-E0788 amplitude encoding requires ‖x‖₂ = 1) — never a silent
+    //     truncation, never a fabricated number.
+    let state = backend
+        .encode(&carrier, frame.encoding)
+        .map_err(|e| DispatchError::BackendError {
+            name: "yield".to_string(),
+            message: format!("{} — {e}", e.code()),
+        })?;
+    let expectation = backend
+        .measure(&state, &frame.observable)
+        .map_err(|e| DispatchError::BackendError {
+            name: "yield".to_string(),
+            message: format!("{} — {e}", e.code()),
+        })?;
+
+    // (4) The result says WHAT it measured, not merely what it computed.
+    let output = serde_json::json!({
+        "expectation": expectation,
+        "observable": frame.observable_name,
+        "qubits": state.n,
+    })
+    .to_string();
+
     ctx.let_bindings
-        .insert("__quant_yield".to_string(), node.value_expr.clone());
+        .insert("__quant_yield".to_string(), output.clone());
+    ctx.let_bindings
+        .insert("expectation".to_string(), expectation.to_string());
+
+    emit_step_complete(ctx, "Yield", step_index, &output, 0)?;
 
     Ok(NodeOutcome::Completed {
-        output: String::new(),
+        output,
         tokens_emitted: 0,
         step_index,
     })
+}
+
+/// Parse a classical carrier vector: a JSON array (`[0.1, 0.9]`) or a plain
+/// comma-separated list of reals. Returns `None` for anything that is not a
+/// non-empty vector of finite reals — the caller REFUSES rather than guessing,
+/// because a mis-parsed carrier would silently measure the wrong state.
+fn parse_carrier(raw: &str) -> Option<Vec<f64>> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return None;
+    }
+    if let Ok(serde_json::Value::Array(items)) = serde_json::from_str::<serde_json::Value>(s) {
+        let v: Option<Vec<f64>> = items.iter().map(|i| i.as_f64()).collect();
+        return v.filter(|v| !v.is_empty() && v.iter().all(|x| x.is_finite()));
+    }
+    let v: Result<Vec<f64>, _> = s
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .split(',')
+        .map(|p| p.trim().parse::<f64>())
+        .collect();
+    v.ok()
+        .filter(|v| !v.is_empty() && v.iter().all(|x| x.is_finite()))
 }
 
 // ────────────────────────────────────────────────────────────────────

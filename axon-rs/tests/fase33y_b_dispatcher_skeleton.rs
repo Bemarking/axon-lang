@@ -829,7 +829,22 @@ const LAMBDA_TOOLS_GRADUATED: &[&str] = &["lambda_data_apply", "use_tool"];
 /// an algebraic-effect block, D9) which asserts only `tokens_emitted == 0`.
 /// §Fase 51.d.2 adds `yield` (the measurement point) to the same surface-only
 /// bucket — `run_yield` likewise returns `Completed { tokens_emitted: 0 }`.
-const QUANT_GRADUATED: &[&str] = &["quant", "yield"];
+/// §Fase 111.d — `quant` and `yield` are no longer surface-only either. They
+/// used to "complete" with an empty output while the block's body was SILENTLY
+/// SKIPPED and no amplitude was ever collapsed.
+///
+/// Both now REFUSE without their port, and the refusal IS the routing proof:
+///   `quant` — MissingDependency { quant_backend }
+///   `yield` — BackendError { yield }: a measurement outside a `quant` block has
+///             no Hilbert space to collapse into, and returning 0.0 would be
+///             indistinguishable from a genuine expectation of zero.
+const QUANT_GRADUATED: &[&str] = &[];
+
+/// §Fase 111.d — `quant` + `yield`, now fail-closed. Kept as their own counted
+/// sub-catalog so the exhaustive-partition check still covers every variant: a
+/// primitive that moves from "completes empty" to "refuses" must not silently
+/// fall OUT of the census — that is how a no-op hides.
+const QUANT_FAILCLOSED: &[&str] = &["quant", "yield"];
 
 /// §Fase 111.c — `warden` is no longer surface-only. It used to sit in
 /// QUANT_GRADUATED and "complete" with an empty output — which is exactly the
@@ -870,6 +885,7 @@ async fn every_ir_flow_node_routes_to_its_labeled_handler() {
             || LAMBDA_TOOLS_GRADUATED.contains(&expected_kind)
             // §Fase 51.a — quant routes here (Completed, 0 tokens).
             || QUANT_GRADUATED.contains(&expected_kind);
+        let _ = QUANT_FAILCLOSED; // handled by its own fail-closed arms below
         let _ = WARDEN_GRADUATED; // handled by its own fail-closed arm below
 
         // Cognitive-framing handlers behave like pure-shape (1 token).
@@ -908,6 +924,28 @@ async fn every_ir_flow_node_routes_to_its_labeled_handler() {
                     if name == "grad" => {}
                 other => panic!(
                     "grad must fail CLOSED on a stale shape (BackendError name=grad),                      got {other:?}",
+                ),
+            }
+            continue;
+        }
+
+        // §Fase 111.d — `quant` refuses without its simulator; `yield` refuses
+        // outside a quant frame. Both used to "complete" empty.
+        if expected_kind == "quant" {
+            match outcome {
+                Err(axon::flow_dispatcher::DispatchError::MissingDependency {
+                    name: "quant_backend",
+                }) => {}
+                other => panic!("quant must fail CLOSED without its simulator, got {other:?}"),
+            }
+            continue;
+        }
+        if expected_kind == "yield" {
+            match outcome {
+                Err(axon::flow_dispatcher::DispatchError::BackendError { ref name, .. })
+                    if name == "yield" => {}
+                other => panic!(
+                    "a bare `yield` (no enclosing quant frame) must fail CLOSED, got {other:?}",
                 ),
             }
             continue;
@@ -1060,7 +1098,8 @@ fn graduated_variants_set_size_pinned_48_of_48() {
     assert_eq!(WIRE_INTEGRATIONS_GRADUATED.len(), 10);
     assert_eq!(PIX_GRADUATED.len(), 3);
     assert_eq!(LAMBDA_TOOLS_GRADUATED.len(), 2);
-    assert_eq!(QUANT_GRADUATED.len(), 2);
+    assert_eq!(QUANT_GRADUATED.len(), 0);
+    assert_eq!(QUANT_FAILCLOSED.len(), 2);
     assert_eq!(WARDEN_GRADUATED.len(), 1);
 
     // Sum check — the partition is exhaustive (no variant in
@@ -1076,6 +1115,7 @@ fn graduated_variants_set_size_pinned_48_of_48() {
         + PIX_GRADUATED.len()
         + LAMBDA_TOOLS_GRADUATED.len()
         + QUANT_GRADUATED.len()
+        + QUANT_FAILCLOSED.len()
         + WARDEN_GRADUATED.len()
         + GRAD_GRADUATED.len();
     assert_eq!(
