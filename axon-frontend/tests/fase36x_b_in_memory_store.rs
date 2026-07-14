@@ -62,17 +62,60 @@ fn s2_in_memory_store_needs_no_connection() {
     );
 }
 
-// ─── §3 — the SQL backends still type-check (no regression) ────────
+// ─── §3 — the backends that EXIST type-check; the ones that don't, don't ──────
 
+/// The backends the runtime can actually build still type-check. No regression.
+///
+/// (`secrets` carries its own `axon-T900` obligation — a class-less secrets store
+/// would enumerate the tenant's ENTIRE secret namespace, so the `class:` is
+/// mandatory (§94.a). That is a *different* law, and a correct one; the fixture
+/// declares it.)
 #[test]
-fn s3_sql_backends_still_valid() {
-    for b in ["postgresql", "mysql", "sqlite"] {
-        let errs =
-            backend_errors(&format!("axonstore s {{ backend: {b} connection: \"x\" }}"));
+fn s3_the_implemented_backends_are_still_valid() {
+    for decl in [
+        "axonstore s { backend: postgresql }",
+        "axonstore s { backend: in_memory }",
+        "axonstore s { backend: secrets  class: crm }",
+    ] {
+        let errs = backend_errors(decl);
         assert!(
             errs.is_empty(),
-            "36.x.b D5: `backend: {b}` must remain valid — no \
-             regression. Got: {errs:?}"
+            "`{decl}` names a backend `classify_backend` implements — it must remain valid. \
+             Got: {errs:?}"
+        );
+    }
+}
+
+/// **§Fase 113 — this test used to assert the OPPOSITE, and it was wrong.**
+///
+/// It was called `s3_sql_backends_still_valid` and it demanded that `mysql` and
+/// `sqlite` type-check clean. They did. **And then they died at DEPLOY** with
+/// `UnknownBackend`, because `classify_backend` implements three backends and the
+/// grammar advertised five.
+///
+/// The type-checker knew. Its own comment, right above the catalog, said so:
+///
+/// > *"`mysql` / `sqlite` remain type-check-valid but runtime-absent (a documented
+/// > future fase)"*
+///
+/// **A gap that has been written down stops looking like a gap** — and this test
+/// was the thing holding it in place. It is the same shape as the nine tests §111
+/// found asserting `compute`'s placeholder: *a suite can pin a lie as firmly as a
+/// truth, and the build stays green either way.*
+///
+/// Nothing that worked stops working. A program declaring `mysql` was **already
+/// broken**; it now fails while the adopter is still holding the code, instead of
+/// while they are holding an incident.
+#[test]
+fn s3b_a_backend_with_no_implementation_is_refused_at_compile_not_at_deploy() {
+    for b in ["mysql", "sqlite"] {
+        let errs = backend_errors(&format!("axonstore s {{ backend: {b} connection: \"x\" }}"));
+        assert!(
+            !errs.is_empty(),
+            "`backend: {b}` has NO runtime implementation (`classify_backend` returns None), so \
+             it must be refused by the COMPILER. Accepting it here is what let it reach deploy \
+             and fail there for years. If you are re-adding it to the grammar, write the backend \
+             in the same PR — a catalog is a promise, and a promise costs an implementation."
         );
     }
 }

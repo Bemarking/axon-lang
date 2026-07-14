@@ -85,10 +85,15 @@ fn gen_shape(lcg: &mut Lcg) -> (String, String) {
         ),
         // 3 — empty flow (zero nodes).
         3 => ("flow F() -> Unit { }".into(), "F".into()),
-        // 4 — erroring flow: a `sqlite` store has no runtime backend,
-        //     so `StoreRegistry::build` fails → §2.5 `FlowError`.
+        // 4 — erroring flow.
+        //
+        //     §Fase 113: this used to lean on `backend: sqlite` having no runtime
+        //     backend, so `StoreRegistry::build` would fail. That trick is gone —
+        //     `sqlite` was never implemented, and §113 moved the refusal to the
+        //     COMPILER, where it belongs. The erroring path is now the one an
+        //     adopter actually hits: a real backend with an unresolvable DSN.
         4 => (
-            "axonstore bad { backend: sqlite connection: \"x\" }\n\
+            "axonstore bad { backend: postgresql connection: \"not a dsn\" }\n\
              flow F() -> Unit {\n\
                  retrieve bad { where: \"1 = 1\" as: r }\n\
                  step S { ask: \"q\" output: Stream<Token> }\n\
@@ -212,7 +217,7 @@ async fn every_archetype_is_reachable_and_holds_the_contract() {
         ("flow F() -> Unit { step S { ask: \"x\" output: Stream<Token> } }", "F"),
         ("flow F() -> Unit { }", "F"),
         (
-            "axonstore bad { backend: sqlite connection: \"x\" }\n\
+            "axonstore bad { backend: postgresql connection: \"not a dsn\" }\n\
              flow F() -> Unit { retrieve bad { where: \"1=1\" as: r } }",
             "F",
         ),

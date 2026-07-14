@@ -1905,8 +1905,14 @@ async fn deploy_handler(
             }
         };
 
-    let store_report = match crate::store::registry::StoreRegistry::build(
+    // §Fase 113 — the deploy-time schema verifier must resolve stores exactly as a
+    // flow run does, or it would verify a DIFFERENT database than the one the flow
+    // will talk to. (An un-resourced store keeps its legacy `connection:` path.)
+    let store_report = match crate::store::registry::StoreRegistry::build_governed(
         &ir.axonstore_specs,
+        &ir.resources,
+        &ir.leases,
+        &crate::resource_resolver::EnvResourceResolver,
     ) {
         Ok(registry) => {
             registry

@@ -393,15 +393,27 @@ const VALID_MANDATE_POLICIES: &[&str] = &["coerce", "halt", "retry"];
 // `in_memory` store (it is optional for every backend at the
 // type-checker layer — no `connection`-required check exists here).
 //
-// `mysql` / `sqlite` remain type-check-valid but runtime-absent (a
-// documented future fase) — see `docs/fase/fase_36x_mixed_flow_streaming.md` §7.
-// §Fase 94.a — `secrets` is the metadata VIEW over the tenant's secret
-// custody (doctrine `rotation_without_revelation`): read-only (T897),
-// class-scoped (T900), fixed synthesized schema. It is a backend in the
-// grammar sense only — there is no connection string and no adopter
-// table behind it; the runtime binds it to the `axon::secret_custody`
-// port.
-const VALID_STORE_BACKENDS: &[&str] = &["in_memory", "mysql", "postgresql", "secrets", "sqlite"];
+// §Fase 113 — `mysql` and `sqlite` are GONE from this catalog.
+//
+// This comment used to read: *"`mysql` / `sqlite` remain type-check-valid but
+// runtime-absent (a documented future fase)"*. Written down, calmly, next to the
+// catalog that let them through — which is the exact disease §111 spent itself
+// on. `classify_backend` implements THREE backends. This list declared FIVE. So
+// `backend: mysql` type-checked clean and then died at **deploy** with
+// `UnknownBackend`, and the compiler — which knew — said nothing.
+//
+// Nothing that works today stops working. A program declaring `mysql` was already
+// broken; it now fails at COMPILE, where the adopter is still holding the code,
+// instead of at deploy, where they are holding an incident.
+//
+// **The catalog is a promise, and a promise costs an implementation.** Putting
+// `mysql` back means writing a MySQL backend in the same PR.
+//
+// `secrets` is the metadata VIEW over the tenant's secret custody (§94.a,
+// `rotation_without_revelation`): read-only (T897), class-scoped (T900), fixed
+// synthesized schema. A backend in the grammar sense only — no connection string,
+// no adopter table; the runtime binds it to the `axon::secret_custody` port.
+pub const VALID_STORE_BACKENDS: &[&str] = &["in_memory", "postgresql", "secrets"];
 
 /// §Fase 113 — the CLOSED `resource.kind` catalog.
 ///

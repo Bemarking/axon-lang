@@ -3898,9 +3898,25 @@ pub fn execute_server_flow(
     // §Fase 65.A — Arc the registry so it can be shared (by clone) into the
     // structural-navigate `DispatchCtx` while still being borrowed (via Deref)
     // by the eager-pin walk + `execute_real_async`'s own store path.
+    // §Fase 113 — build the registry GOVERNED: the store derives its DSN and its
+    // POOL SIZE from the `resource:` it names, and the `lease`s over those
+    // resources are acquired so a store operation is a *use* of the resource.
+    //
+    // 🔴 THIS LINE IS THE FASE. It used to read `StoreRegistry::build(&ir
+    // .axonstore_specs)` — the legacy entry, which passes NO resources and NO
+    // leases. With that call, `build_with_resources` and `build_governed` would
+    // have existed and been reachable from nothing: a real engine with a dead
+    // wire, in the very fase whose purpose is deleting them. `capacity: 20` would
+    // have produced a pool of 10 in every deployed flow, and the gate proving
+    // otherwise would have been testing a code path production never took.
     let store_registry = std::sync::Arc::new(
-        StoreRegistry::build(&ir.axonstore_specs)
-            .map_err(|e| format!("axonstore registry: {e}"))?,
+        StoreRegistry::build_governed(
+            &ir.axonstore_specs,
+            &ir.resources,
+            &ir.leases,
+            &crate::resource_resolver::EnvResourceResolver,
+        )
+        .map_err(|e| format!("axonstore registry: {e}"))?,
     );
 
     // §Fase 65.A — build the dispatcher's corpus state from the IR exactly as
@@ -4525,7 +4541,14 @@ pub fn run_run(
 
     // §Fase 35.e — build the axonstore registry (D2 closed-catalog
     // gate). An unknown `backend:` fails fast, before execution.
-    let store_registry = match StoreRegistry::build(&ir_program.axonstore_specs) {
+    // §Fase 113 — governed: the store derives DSN + pool size from its `resource:`,
+    // and leases over those resources are acquired (see `execute_server_flow`).
+    let store_registry = match StoreRegistry::build_governed(
+        &ir_program.axonstore_specs,
+        &ir_program.resources,
+        &ir_program.leases,
+        &crate::resource_resolver::EnvResourceResolver,
+    ) {
         Ok(r) => r,
         Err(e) => {
             eprintln!(

@@ -249,3 +249,96 @@ fn the_resolver_denies_by_default() {
     let r = MapResourceResolver::new();
     assert!(r.resolve("anything.at.all").is_err());
 }
+
+// ── §113.f — the compiler's backend catalog cannot outrun the runtime ────────
+
+/// **A catalog is a promise, and a promise costs an implementation.**
+///
+/// `VALID_STORE_BACKENDS` declared **five** backends. `classify_backend`
+/// implements **three**. So `backend: mysql` type-checked clean and then died at
+/// **deploy** with `UnknownBackend` — and the type-checker, which knew, said
+/// nothing. Its own comment admitted it:
+///
+/// > *"`mysql` / `sqlite` remain type-check-valid but runtime-absent (a
+/// > documented future fase)"*
+///
+/// Written down, calmly, right next to the catalog that let them through. That is
+/// the §111 disease in one line: **a gap that has been documented stops looking
+/// like a gap.**
+///
+/// This test is the ratchet. Putting `mysql` back into the grammar now means
+/// writing a MySQL backend in the same PR — which is the entire point.
+#[test]
+fn every_backend_the_compiler_accepts_is_one_the_runtime_can_actually_build() {
+    for backend in axon_frontend::type_checker::VALID_STORE_BACKENDS {
+        assert!(
+            axon::store::registry::classify_backend(backend).is_some(),
+            "the type-checker accepts `backend: {backend}`, but `classify_backend` cannot build \
+             it — so the program compiles clean and dies at DEPLOY. That gap is what let `mysql` \
+             and `sqlite` sit in the grammar for years with nothing behind them. If you are \
+             adding a backend to the catalog, add its implementation in the SAME PR."
+        );
+    }
+}
+
+// ── §113.g — the DEPLOYED executor must actually build the governed registry ──
+
+/// 🔴 **The bug I very nearly shipped, and the gate that stops it recurring.**
+///
+/// §113.c built `build_with_resources` / `build_governed` and proved them with
+/// nine passing tests. Every one of them called the new entry point *directly*.
+///
+/// **Production did not.** All three real sites — `execute_server_flow` (the
+/// deployed executor), the CLI runner, and the deploy-time schema verifier —
+/// still called the LEGACY `StoreRegistry::build(&ir.axonstore_specs)`, which
+/// passes no resources and no leases. So:
+///
+/// - `capacity: 20` would have produced a pool of **10** in every deployed flow;
+/// - `lease`'s Anchor Breach could never fire, because no lease was ever acquired;
+/// - and the gates proving otherwise would have been **testing a code path
+///   production never took**.
+///
+/// A real engine, reachable from nothing. **That is the §111 defect, in the fase
+/// written to delete it, by the person who wrote the gate against it.** It was
+/// caught only because I went looking for the deploy seam BEFORE the release
+/// rather than after — the same check that would have caught §111.i's socket bug
+/// years earlier.
+///
+/// This test compiles a program through the REAL pipeline and asserts the
+/// executor's own registry honours the declaration. It fails if anyone reverts
+/// those call sites to the legacy entry.
+#[test]
+fn the_deployed_executor_builds_a_governed_registry_not_the_legacy_one() {
+    const PROGRAM: &str = r#"
+resource  Db    { kind: postgres  endpoint: gate.db  lifetime: affine  capacity: 27 }
+axonstore Users { backend: postgresql  resource: Db }
+"#;
+    // The address lives in configuration (axon-T944) — as it does in production.
+    std::env::set_var("AXON_RESOURCE_GATE_DB", "postgres://127.0.0.1:5432/app");
+
+    let tokens = axon_frontend::lexer::Lexer::new(PROGRAM, "gate.axon")
+        .tokenize()
+        .expect("lex");
+    let prog = axon_frontend::parser::Parser::new(tokens).parse().expect("parse");
+    let errs = axon_frontend::type_checker::TypeChecker::new(&prog).check();
+    assert!(errs.is_empty(), "the program must type-check: {errs:?}");
+    let ir = axon_frontend::ir_generator::IRGenerator::new().generate(&prog);
+
+    // Build the registry EXACTLY as `execute_server_flow` does.
+    let reg = StoreRegistry::build_governed(
+        &ir.axonstore_specs,
+        &ir.resources,
+        &ir.leases,
+        &axon::resource_resolver::EnvResourceResolver,
+    )
+    .expect("the deployed executor's registry must build");
+
+    assert_eq!(
+        reg.pool_capacity_of("Users"),
+        Some(27),
+        "the DEPLOYED executor must honour `capacity:`. If this is 10, the production call site \
+         went back to `StoreRegistry::build(&ir.axonstore_specs)` — the legacy entry, which \
+         passes no resources — and §113 is once again a wire that only the tests can reach."
+    );
+    assert_eq!(reg.resource_of("Users"), Some("Db"));
+}
