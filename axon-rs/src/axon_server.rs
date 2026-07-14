@@ -389,6 +389,21 @@ pub struct ServerState {
     /// collision (a known limitation of the 32.c surface; a future
     /// type-registry fase will add deploy-scoped namespacing).
     pub dynamic_types: HashMap<String, crate::route_schema::TypeSchema>,
+    /// §Fase 111.i — the deployed `socket` declarations, compiled to their
+    /// **declared** session schema.
+    ///
+    /// The OSS server had **no WebSocket route at all** — while the public README
+    /// (this repo's) advertises the language as shipping "session-typed WebSocket
+    /// dialogue" and calls it the first of its kind. The compile-time half was
+    /// real (duality genuinely *decided*), the enterprise server served the wire,
+    /// and an OSS adopter could not open a socket to evaluate any of it.
+    ///
+    /// Key = socket name; value = the schema its `protocol:` names, compiled from
+    /// the IR via [`crate::session_runtime::compile`], plus the declared §41.c
+    /// backpressure credit. A socket whose protocol does not resolve is **not
+    /// registered** — the upgrade is refused rather than served a substitute
+    /// shape, which is the defect §111 §13 found in the enterprise path.
+    pub socket_schemas: HashMap<String, (crate::session::SessionType, Option<u64>)>,
     /// §Fase 32.f — Idempotency-Key store for POST/PUT axonendpoint
     /// routes. Stripe-compatible. Indexed by `(client_id,
     /// endpoint_path, idempotency_key)`. Cross-tenant isolation is a
@@ -971,6 +986,8 @@ impl ServerState {
             // §Fase 32.c — Per-name type schemas captured alongside the
             // dynamic routes for body-schema validation at request time.
             dynamic_types: HashMap::new(),
+            // §Fase 111.i — populated at deploy from the compiled `socket` decls.
+            socket_schemas: HashMap::new(),
             // §Fase 32.f — Idempotency-Key store with 24h default
             // retention. Populated on first POST/PUT request bearing
             // the header; consulted on every repeat.
@@ -1968,6 +1985,27 @@ async fn deploy_handler(
         // when route merge succeeded.
         for (name, schema) in &incoming_types {
             s.dynamic_types.insert(name.clone(), schema.clone());
+        }
+
+        // §Fase 111.i — register every declared `socket` with the schema its
+        // `protocol:` actually names. A socket whose protocol does not resolve is
+        // NOT registered: the upgrade will be refused rather than served a
+        // substitute shape. (The enterprise path used to hand every socket a
+        // hardcoded chat schema, so a protocol could be PROVEN dual at compile
+        // time and a different one enforced at runtime — §111 §13.)
+        for sock in &ir.sockets {
+            match crate::session_runtime::schema_for_socket(&ir, &sock.name) {
+                Some(schema) => {
+                    let credit = crate::session_runtime::credit_for_socket(&ir, &sock.name);
+                    s.socket_schemas.insert(sock.name.clone(), (schema, credit));
+                }
+                None => {
+                    eprintln!(
+                        "axon: socket '{}' declares `protocol: {}`, which is not a declared                          `session` — its WebSocket upgrade will be REFUSED. §111.i: we do not                          serve a protocol the adopter did not write.",
+                        sock.name, sock.protocol
+                    );
+                }
+            }
         }
 
         // Record versions
@@ -18524,6 +18562,82 @@ async fn execute_stream_handler(
 // on disconnect; the wire format does NOT change.
 // ──────────────────────────────────────────────────────────────────────────
 
+
+// ────────────────────────────────────────────────────────────────────
+//  §Fase 111.i — the session-typed WebSocket route (OSS)
+// ────────────────────────────────────────────────────────────────────
+
+/// `GET /ws/{socket}` — upgrade to a session-typed dialogue.
+///
+/// # What was missing
+///
+/// **The OSS server had no WebSocket route at all.** Not a stub, not a
+/// placeholder — none. Meanwhile this repo's public README leads with
+/// *"session-typed WebSocket dialogue as a cognitive primitive"* and calls it the
+/// first of its kind in any language, and the two-repo note says **this** repo
+/// ships "the language + runtime + … + WebSocket session types".
+///
+/// Every piece existed. `session_runtime::drive` is a complete, e2e-tested
+/// protocol loop. `SessionRuntime` is a real cursor state machine with credit
+/// windows and sealed/resumed snapshots. The duality proof is genuine. The
+/// enterprise server serves the wire and drives *this same* OSS runtime. An OSS
+/// adopter simply had no door to open, and so could not evaluate the central
+/// claim of the project at all.
+///
+/// # The refusal that matters
+///
+/// The socket must resolve to a **declared** `session`, and the schema we enforce
+/// is the one the adopter **wrote** — compiled from the IR by
+/// [`crate::session_runtime::compile`]. If the protocol does not resolve, the
+/// upgrade is **refused**.
+///
+/// That refusal is the point. The enterprise path handed every deployed socket a
+/// hardcoded canonical chat schema (its own comment, under a heading called
+/// "SessionType resolution honesty", says so), which means a protocol could be
+/// *proven dual at compile time* and a **different one enforced at runtime**. A
+/// proof about a protocol you do not run is not a proof about anything. Serving a
+/// substitute shape here would be the same defect wearing a friendlier name.
+async fn ws_session_handler(
+    ws: axum::extract::WebSocketUpgrade,
+    State(state): State<SharedState>,
+    Path(socket_name): Path<String>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+
+    let entry = {
+        let s = state.lock().unwrap();
+        s.socket_schemas.get(&socket_name).cloned()
+    };
+
+    let Some((schema, credit)) = entry else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": format!(
+                    "socket '{socket_name}' is not deployed, or its `protocol:` does not name a                      declared `session`. The upgrade is refused: axon does not serve a protocol                      you did not write (§111.i)"
+                ),
+                "code": "axon.socket.unresolved",
+            })),
+        )
+            .into_response();
+    };
+
+    ws.on_upgrade(move |socket| async move {
+        let runtime = crate::session_runtime::SessionRuntime::new(schema, credit);
+        // The server plays the FIRST declared role; the client plays its dual —
+        // which the type-checker has already proven is the dual.
+        if let Err(e) =
+            crate::session_runtime::drive(socket, runtime, crate::session_runtime::PeerRole::Server)
+                .await
+        {
+            // A ProtocolError is the runtime REFUSING an off-protocol frame. The
+            // driver has already sent the peer an `error` frame and closed with
+            // 1002; log it and let the carrier go.
+            eprintln!("axon: session '{socket_name}' ended on a protocol error: {e}");
+        }
+    })
+}
+
 use axum::response::sse::{Event, Sse};
 use futures::stream::Stream;
 use std::convert::Infallible;
@@ -28059,6 +28173,11 @@ pub fn build_router_with_state(config: ServerConfig) -> (Router, SharedState) {
     let state = Arc::new(Mutex::new(ServerState::new(config)));
 
     let router = Router::new()
+        // §Fase 111.i — the session-typed WebSocket wire. The OSS server had NO
+        // WebSocket route at all, while this repo's README advertises the language
+        // as shipping session-typed WebSocket dialogue. The state machine, the
+        // duality proof and the protocol driver all existed; there was no door.
+        .route("/ws/{socket}", get(ws_session_handler))
         .route("/v1/health", get(health_handler))
         .route("/v1/health/live", get(health_live_handler))
         .route("/v1/health/ready", get(health_ready_handler))

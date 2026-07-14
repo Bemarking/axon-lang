@@ -31,6 +31,14 @@
 //! - 41.h: multiparty projection (the global-type `G` projected to each
 //!   role `G⌐r`, each running its own `SessionRuntime`).
 
+/// §Fase 111.i — the SessionType compiler: `IRSession` → [`crate::session::SessionType`].
+///
+/// The declarations reached the IR all along; nothing read them. The type-checker
+/// lowered the roles to prove duality and dropped the result, and the enterprise
+/// server — which *does* serve the wire — substituted a hardcoded chat schema for
+/// every deployed socket. So a protocol could be *proven* dual at compile time and
+/// a **different one** enforced at runtime. This module closes that gap.
+pub mod compile;
 pub mod error;
 pub mod sse;
 pub mod state;
@@ -43,5 +51,6 @@ pub use state::{
     CreditWindow, ParkedContinuation, ResumeError, SealedRuntime, SessionRuntime,
     SEALED_RUNTIME_VERSION,
 };
+pub use compile::{credit_for_socket, schema_for_socket, server_schema, session_type_of_role};
 pub use wire::{Frame, AXON_WIRE_VERSION};
 pub use ws::{drive, PeerRole};

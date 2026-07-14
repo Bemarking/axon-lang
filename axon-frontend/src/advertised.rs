@@ -189,7 +189,7 @@ pub const ADVERTISED: &[(&str, RuntimeStatus)] = &[
     ("path rewrite", Unaudited),
     ("PASETO", Unaudited),
     // ── Session types (§41)
-    ("socket", Partial { gap: "§111 §13 — the COMPILE-TIME half is real (duality decided + a PCC credit-positivity witness) and ENTERPRISE serves the wire, driving the OSS SessionRuntime. But the OSS server has NO WebSocket route, while this (OSS, public) README says the repo ships WebSocket session types. A mis-declared OSS/ENT split" }),
+    ("socket", Real { proof: "tests/fase111_i_socket_served.rs (§111.i — the OSS server now SERVES the session-typed WebSocket at GET /ws/{socket}, and enforces the protocol the adopter DECLARED: the missing SessionType compiler lands in session_runtime::compile. An unresolvable protocol is REFUSED, never substituted — enterprise used to hand every socket a hardcoded chat schema, so a protocol proven dual at compile time had a different one enforced at runtime)" }),
     ("send T", Real { proof: "the session algebra's send, carrying a payload type" }),
     ("receive T", Real { proof: "the session algebra's receive" }),
     ("select {ℓᵢ:…}", Real { proof: "session.rs Select — labelled internal choice" }),
