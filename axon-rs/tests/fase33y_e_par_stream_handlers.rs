@@ -63,6 +63,8 @@ fn stream_node() -> IRFlowNode {
         node_type: "stream_block",
         source_line: 0,
         source_column: 0,
+        body: Vec::new(),
+
     })
 }
 
@@ -357,6 +359,8 @@ async fn run_stream_directly_returns_completed() {
         node_type: "stream_block",
         source_line: 0,
         source_column: 0,
+        body: Vec::new(),
+
     };
     let outcome = run_stream(&block, &mut ctx).await.unwrap();
     assert!(matches!(outcome, NodeOutcome::Completed { .. }));

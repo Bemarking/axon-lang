@@ -1066,6 +1066,9 @@ impl IRGenerator {
                 node_type: "stream",
                 source_line: s.loc.line,
                 source_column: s.loc.column,
+                // §Fase 111.e — lower the body. It used to be discarded at parse
+                // time, which is why `run_stream` had nothing to run.
+                body: s.body.iter().map(|st| self.visit_flow_step(st)).collect(),
             }),
             FlowStep::Navigate(s) => IRFlowNode::Navigate(IRNavigateStep {
                 node_type: "navigate",

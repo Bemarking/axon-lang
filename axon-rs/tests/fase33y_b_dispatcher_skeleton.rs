@@ -364,6 +364,8 @@ fn stream_node() -> IRFlowNode {
         node_type: "stream_block",
         source_line: 0,
         source_column: 0,
+        body: Vec::new(),
+
     })
 }
 

@@ -35,15 +35,29 @@
 //! The trace-collected count post-run is recorded as the
 //! authoritative `tokens_emitted` for the StepAuditRecord (D6).
 //!
-//! # `IRStreamBlock` payload reality
+//! # `IRStreamBlock` payload reality — **fixed in §Fase 111.e**
 //!
-//! In v1.25.0's AST/IR, `IRStreamBlock` is **payload-free** (mirror
-//! of `ast::StreamBlock`). The handler [`run_stream`] emits the
-//! canonical `step_type: "stream"` wire shape with zero token
-//! events. Future IR extensions wire an `instructions:
-//! Vec<Instruction>` field into the block; `dispatch_node` will
-//! delegate to [`bridge_effect_stream_yield`] with that field's
-//! value.
+//! This section used to read: *"`IRStreamBlock` is **payload-free**
+//! (mirror of `ast::StreamBlock`). The handler emits the canonical
+//! wire shape with zero token events."* It was accurate, and it was
+//! describing a defect.
+//!
+//! The block was payload-free because **the parser threw its body
+//! away**: `stream` went through `parse_block_step`, whose entire job
+//! is `skip_braced_block()` — shared with `deliberate`, `consensus`
+//! and (pre-retraction) `transact`. One function, four advertised
+//! primitives, all no-ops *by construction* rather than by neglect.
+//!
+//! §111.e gives `stream` its body: `StreamBlock` (AST) and
+//! `IRStreamBlock` (IR) carry `body`, the parser parses it as real
+//! typed flow steps, and [`run_stream`] **executes it**. The field is
+//! `skip_serializing_if = "Vec::is_empty"`, so an empty block still
+//! serialises exactly as before — no pre-111 artifact's IR-SHA moves,
+//! and a legacy IR still runs as the old no-op.
+//!
+//! The `perform Stream.Yield` bridge below ([`bridge_effect_stream_yield`])
+//! remains the Fase-23 algebraic-effects surface, reachable on its own
+//! terms; it is orthogonal to the block's body.
 //!
 //! # D-letter anchors
 //!
@@ -70,14 +84,33 @@ use crate::ir_nodes::IRStreamBlock;
 //  run_stream — dispatcher arm
 // ────────────────────────────────────────────────────────────────────
 
-/// Stream handler. In v1.25.0 the IR variant is payload-free so
-/// this handler emits the canonical wire shape (StepStart with
-/// `step_type: "stream"` + StepComplete) without invoking the
-/// EffectRuntime. Future IR extensions delegate to
-/// [`bridge_effect_stream_yield`] with the extracted instruction
-/// block.
+/// **§Fase 111.e — MADE REAL.**
+///
+/// # What this used to be
+///
+/// It emitted `StepStart` + `StepComplete` and returned an empty string. The doc
+/// comment blamed the IR — *"the IR variant is payload-free"* — and it was right,
+/// but that was a symptom, not the cause.
+///
+/// The cause was one function. `stream`, `deliberate`, `consensus` and (before
+/// its §111.b retraction) `transact` all parsed through `parse_block_step`, whose
+/// **entire job is `skip_braced_block()`**. The block's contents were thrown away
+/// at PARSE time. These handlers were not no-ops through neglect — they were
+/// no-ops *by construction*: there was nothing in the AST for anyone to execute.
+/// **Four advertised primitives died in that one function**, and each handler's
+/// comment honestly described its own emptiness while the README sold the whole
+/// set.
+///
+/// # What it is now
+///
+/// `stream { <steps> }` carries its body (AST → IR, additively: the field is
+/// elided when empty, so every pre-111 artifact's IR JSON stays byte-identical
+/// and a legacy IR still executes as the old no-op rather than changing
+/// behaviour under an adopter). The handler **runs the body**, and each step's
+/// output streams out on the flow's event channel as it is produced — which is
+/// what "stream" meant all along.
 pub async fn run_stream(
-    _node: &IRStreamBlock,
+    node: &IRStreamBlock,
     ctx: &mut DispatchCtx,
 ) -> Result<NodeOutcome, DispatchError> {
     if ctx.cancel.is_cancelled() {
@@ -99,16 +132,44 @@ pub async fn run_stream(
         })
         .map_err(|_| DispatchError::ChannelClosed)?;
 
-    // No body to dispatch — IRStreamBlock is payload-free in
-    // v1.25.0. Future IR extensions extract Instruction block +
-    // call `bridge_effect_stream_yield` here.
+    // §111.e — RUN THE BODY. Every step inside `stream { … }` dispatches
+    // normally; its fragments reach the caller through the same `ctx.tx` channel
+    // as it produces them, so the block streams rather than buffering.
+    //
+    // A `return` / `break` / `continue` inside propagates, as in every other
+    // body-bearing node.
+    let mut last = String::new();
+    for child in &node.body {
+        match Box::pin(crate::flow_dispatcher::dispatch_node(child, ctx)).await? {
+            NodeOutcome::Completed { output, .. } => {
+                if !output.is_empty() {
+                    last = output;
+                }
+            }
+            other => {
+                ctx.tx
+                    .send(FlowExecutionEvent::StepComplete {
+                        step_name,
+                        step_index,
+                        success: true,
+                        full_output: last,
+                        tokens_input: 0,
+                        tokens_output: 0,
+                        branch_path: ctx.branch_path_string(),
+                        timestamp_ms: now_ms(),
+                    })
+                    .map_err(|_| DispatchError::ChannelClosed)?;
+                return Ok(other);
+            }
+        }
+    }
 
     ctx.tx
         .send(FlowExecutionEvent::StepComplete {
             step_name,
             step_index,
             success: true,
-            full_output: String::new(),
+            full_output: last.clone(),
             tokens_input: 0,
             tokens_output: 0,
                 branch_path: ctx.branch_path_string(),
@@ -117,7 +178,7 @@ pub async fn run_stream(
         .map_err(|_| DispatchError::ChannelClosed)?;
 
     Ok(NodeOutcome::Completed {
-        output: String::new(),
+        output: last,
         tokens_emitted: 0,
         step_index,
     })
@@ -564,6 +625,8 @@ mod tests {
             node_type: "stream_block",
             source_line: 0,
             source_column: 0,
+        body: Vec::new(),
+
         };
         let outcome = run_stream(&node, &mut ctx).await.unwrap();
         match outcome {

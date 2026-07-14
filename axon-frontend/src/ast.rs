@@ -3067,8 +3067,19 @@ pub struct ShieldApplyStep {
     pub output_type: String,
     pub loc: Loc,
 }
+/// §Fase 34 / **§Fase 111.e** — `stream { <steps> }`.
+///
+/// The body used to NOT EXIST. `parse_block_step` — shared with `deliberate`,
+/// `consensus` and (pre-retraction) `transact` — called `skip_braced_block()`
+/// and threw the block's contents away at PARSE time. The handler was not a
+/// no-op because someone forgot to implement it; it was a no-op because the
+/// body never reached the AST for anything to execute. Four advertised
+/// primitives died in that one function.
 #[derive(Debug)]
 pub struct StreamBlock {
+    /// The steps inside the block. Executed in order; each one's fragments are
+    /// emitted on the flow's event channel as they are produced.
+    pub body: Vec<FlowStep>,
     pub loc: Loc,
 }
 #[derive(Debug)]

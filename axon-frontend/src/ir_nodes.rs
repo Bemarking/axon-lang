@@ -1469,6 +1469,13 @@ pub struct IRStreamBlock {
     pub node_type: &'static str,
     pub source_line: u32,
     pub source_column: u32,
+    /// §Fase 111.e — the block's lowered body. ADDITIVE: `skip_serializing_if`
+    /// elides it when empty, so every pre-111 program's IR JSON stays
+    /// byte-identical and a legacy IR deserialises to an empty body (which then
+    /// executes as a no-op, exactly as before — no silent behaviour change for
+    /// an artifact compiled by an older frontend).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub body: Vec<IRFlowNode>,
 }
 
 #[derive(Debug, Clone, Serialize)]

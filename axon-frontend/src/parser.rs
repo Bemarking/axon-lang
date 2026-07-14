@@ -3065,7 +3065,12 @@ impl Parser {
             TokenType::Explore => self.parse_explore_step(),
             TokenType::Ingest => self.parse_ingest_step(),
             TokenType::Shield => self.parse_apply_step("shield").map(|l| FlowStep::ShieldApply(ShieldApplyStep { shield_name: l.1, target: l.2, output_type: l.3, loc: l.0 })),
-            TokenType::Stream => self.parse_block_step("stream").map(|l| FlowStep::Stream(StreamBlock { loc: l })),
+            // §Fase 111.e — `stream` parses its BODY. It used to go through
+            // `parse_block_step`, whose entire job is `skip_braced_block()` —
+            // the block's contents were thrown away at parse time, which is why
+            // `run_stream` had nothing to run and "completed" with an empty
+            // string while the README sold "Algebraic Effects and Free Monads".
+            TokenType::Stream => self.parse_stream_block().map(FlowStep::Stream),
             TokenType::Navigate => self.parse_navigate_step(),
             TokenType::Drill => self.parse_drill_step(),
             TokenType::Trail => self.parse_flow_step_simple("trail").map(|l| FlowStep::Trail(TrailStep { navigate_ref: l.1, loc: l.0 })),
@@ -4101,6 +4106,43 @@ impl Parser {
     }
 
     /// Parse: keyword { ... } — block-level step, skip body structurally.
+    /// §Fase 111.e — `stream { <steps> }` with a REAL body.
+    ///
+    /// The four block primitives (`deliberate`, `consensus`, `stream`,
+    /// `transact`) all went through [`Self::parse_block_step`], whose entire job
+    /// is `skip_braced_block()`. Their bodies were discarded at parse time — so
+    /// their handlers were not no-ops through neglect, they were no-ops
+    /// *by construction*: there was nothing in the AST to execute. §111 retracted
+    /// `transact`; this gives `stream` its body back. `deliberate` / `consensus`
+    /// remain body-less pending their Tier-4 disposition.
+    fn parse_stream_block(&mut self) -> Result<StreamBlock, ParseError> {
+        let tok = self.current().clone();
+        let loc = self.loc_of(&tok);
+        self.advance(); // consume `stream`
+
+        // Tolerate the pre-111 form `stream <effect-ish tokens> { … }`: skip any
+        // argument tokens ahead of the brace, exactly as `parse_block_step` did,
+        // so an existing program keeps parsing. Only the BODY changes.
+        while !self.check(TokenType::LBrace)
+            && !self.check(TokenType::RBrace)
+            && !self.check(TokenType::Eof)
+            && !self.at_declaration_start()
+        {
+            self.advance();
+        }
+
+        let mut body = Vec::new();
+        if self.check(TokenType::LBrace) {
+            self.advance();
+            while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+                body.push(self.parse_flow_step()?);
+            }
+            self.consume(TokenType::RBrace)?;
+        }
+
+        Ok(StreamBlock { body, loc })
+    }
+
     fn parse_block_step(&mut self, _kw: &str) -> Result<Loc, ParseError> {
         let tok = self.current().clone();
         self.advance();
