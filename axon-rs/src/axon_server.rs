@@ -389,6 +389,16 @@ pub struct ServerState {
     /// collision (a known limitation of the 32.c surface; a future
     /// type-registry fase will add deploy-scoped namespacing).
     pub dynamic_types: HashMap<String, crate::route_schema::TypeSchema>,
+    /// §Fase 112.c — the Cognitive-I/O supervisor for the deployed program.
+    ///
+    /// `None` ⇒ the program declares no `observe`/`immune`/`ensemble`/`reconcile`,
+    /// so there is no graph to drive and nothing is paid for. Built at deploy from
+    /// the compiled IR — every kernel takes the declarations directly; nothing had
+    /// ever handed them to one (§112.b).
+    pub cognitive_io: Option<std::sync::Arc<std::sync::Mutex<crate::cognitive_io_supervisor::CognitiveIoSupervisor>>>,
+    /// §Fase 112.c — the last supervisor pass, for the ops surface. `refusals` is
+    /// first-class here: a system we could not observe is NOT a system that is fine.
+    pub cognitive_io_last_tick: Option<serde_json::Value>,
     /// §Fase 111.i — the deployed `socket` declarations, compiled to their
     /// **declared** session schema.
     ///
@@ -986,6 +996,9 @@ impl ServerState {
             // §Fase 32.c — Per-name type schemas captured alongside the
             // dynamic routes for body-schema validation at request time.
             dynamic_types: HashMap::new(),
+            // §Fase 112.c — built at deploy from the compiled Cognitive-I/O decls.
+            cognitive_io: None,
+            cognitive_io_last_tick: None,
             // §Fase 111.i — populated at deploy from the compiled `socket` decls.
             socket_schemas: HashMap::new(),
             // §Fase 32.f — Idempotency-Key store with 24h default
@@ -1985,6 +1998,36 @@ async fn deploy_handler(
         // when route merge succeeded.
         for (name, schema) in &incoming_types {
             s.dynamic_types.insert(name.clone(), schema.clone());
+        }
+
+        // §Fase 112.c — instantiate the Cognitive-I/O graph.
+        //
+        // Every kernel (`AnomalyDetector`, `EnsembleAggregator`, `ReconcileLoop`)
+        // takes the compiled declarations DIRECTLY — they were built for exactly
+        // this — and until §112.b nothing had ever handed them to one. The graph
+        // was declared, type-checked, carried into the IR, and driven by nobody.
+        //
+        // All-or-nothing (the §108 deploy discipline): an invalid graph REFUSES the
+        // deploy. A program must never half-exist — and a half-instantiated immune
+        // system is worse than none, because it looks like one.
+        match crate::cognitive_io_supervisor::CognitiveIoSupervisor::from_ir(&ir) {
+            Ok(sup) => {
+                if sup.is_empty() {
+                    s.cognitive_io = None;
+                    s.cognitive_io_last_tick = None;
+                } else {
+                    s.cognitive_io = Some(std::sync::Arc::new(std::sync::Mutex::new(sup)));
+                    s.cognitive_io_last_tick = None;
+                }
+            }
+            Err(msg) => {
+                s.metrics.total_errors += 1;
+                return Ok(Json(serde_json::json!({
+                    "success": false,
+                    "error": msg,
+                    "phase": "cognitive_io_supervisor",
+                })));
+            }
         }
 
         // §Fase 111.i — register every declared `socket` with the schema its
@@ -18638,6 +18681,67 @@ async fn ws_session_handler(
     })
 }
 
+
+// ────────────────────────────────────────────────────────────────────
+//  §Fase 112.c — the Cognitive-I/O ops surface
+// ────────────────────────────────────────────────────────────────────
+
+/// `GET /v1/cognitive-io` — what the supervisor last saw.
+///
+/// **`refusals` is reported even when empty, and it is not an afterthought.** A
+/// view that showed you only what the supervisor *managed to observe* would be the
+/// `DryRunHandler` defect in report form: the count of systems we could **not** see
+/// is a first-class fact about the health of the deployment, not an omission.
+///
+/// ⚠️ **A language gap this surface makes visible.** Nothing in the language
+/// declares *how often* the graph should be walked. `observe` declares a `timeout:`
+/// (how long to wait), `immune` a `window:` (how many samples), `reflex` an `sla:`
+/// (how fast to react) — but **no declaration says the tick period.** The whole
+/// family is continuous-process-shaped and none of it says how continuous. Until
+/// the language grows an `every:`, the server ticks on
+/// `AXON_COGNITIVE_IO_TICK_SECS` (default 30) and this endpoint drives one pass on
+/// demand.
+async fn cognitive_io_handler(State(state): State<SharedState>) -> Json<serde_json::Value> {
+    let s = state.lock().unwrap();
+    match (&s.cognitive_io, &s.cognitive_io_last_tick) {
+        (None, _) => Json(serde_json::json!({
+            "active": false,
+            "reason": "the deployed program declares no observe / immune / ensemble / reconcile",
+        })),
+        (Some(_), last) => Json(serde_json::json!({
+            "active": true,
+            "last_tick": last.clone().unwrap_or(serde_json::Value::Null),
+        })),
+    }
+}
+
+/// `POST /v1/cognitive-io/tick` — walk the declared graph once, now.
+///
+/// The ops/diagnostic surface, and the seam that lets the graph be exercised
+/// through the REAL deploy path in a test rather than against a hand-built
+/// supervisor (the §95.f discipline §111 spent itself learning).
+async fn cognitive_io_tick_handler(State(state): State<SharedState>) -> Json<serde_json::Value> {
+    let sup = {
+        let s = state.lock().unwrap();
+        s.cognitive_io.clone()
+    };
+    let Some(sup) = sup else {
+        return Json(serde_json::json!({
+            "active": false,
+            "reason": "no Cognitive-I/O graph is deployed",
+        }));
+    };
+
+    let summary = {
+        let mut guard = sup.lock().expect("cognitive-io supervisor lock poisoned");
+        guard.tick().to_json()
+    };
+
+    let mut s = state.lock().unwrap();
+    s.cognitive_io_last_tick = Some(summary.clone());
+    Json(serde_json::json!({ "active": true, "tick": summary }))
+}
+
 use axum::response::sse::{Event, Sse};
 use futures::stream::Stream;
 use std::convert::Infallible;
@@ -28178,6 +28282,10 @@ pub fn build_router_with_state(config: ServerConfig) -> (Router, SharedState) {
         // as shipping session-typed WebSocket dialogue. The state machine, the
         // duality proof and the protocol driver all existed; there was no door.
         .route("/ws/{socket}", get(ws_session_handler))
+        // §Fase 112.c — the Cognitive-I/O ops surface. The graph the language
+        // always declared, finally observable.
+        .route("/v1/cognitive-io", get(cognitive_io_handler))
+        .route("/v1/cognitive-io/tick", post(cognitive_io_tick_handler))
         .route("/v1/health", get(health_handler))
         .route("/v1/health/live", get(health_live_handler))
         .route("/v1/health/ready", get(health_ready_handler))

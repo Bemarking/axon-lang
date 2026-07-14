@@ -85,6 +85,68 @@ pub struct SupervisorTick {
     pub reconciles: HashMap<String, ReconcileTickReport>,
 }
 
+impl SupervisorTick {
+    /// An auditor-legible summary of what this pass actually did.
+    ///
+    /// `refusals` is emitted **even when empty**, deliberately: a report that only
+    /// showed you what it managed to see would be the `DryRunHandler` defect in
+    /// report form. The count of things we could **not** observe is a first-class
+    /// fact about the health of the system, not an omission.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "observations": self
+                .observations
+                .iter()
+                .map(|(k, o)| {
+                    (
+                        k.clone(),
+                        serde_json::json!({ "status": o.status, "certainty": o.envelope.c }),
+                    )
+                })
+                .collect::<serde_json::Map<_, _>>(),
+            // A system we could not see is NOT a system that is fine.
+            "refusals": self
+                .observation_refusals
+                .iter()
+                .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+                .collect::<serde_json::Map<_, _>>(),
+            "health": self
+                .health
+                .iter()
+                .map(|(k, h)| {
+                    (
+                        k.clone(),
+                        serde_json::json!({
+                            "kl_divergence": h.kl_divergence,
+                            "free_energy": h.free_energy,
+                            "classification": h.classification,
+                            "certainty": h.envelope.c,
+                        }),
+                    )
+                })
+                .collect::<serde_json::Map<_, _>>(),
+            "reflexes_fired": self.reflexes.len(),
+            "heal_decisions": self.heals.len(),
+            "ensembles": self.ensembles.len(),
+            "reconciles": self
+                .reconciles
+                .iter()
+                .map(|(k, r)| {
+                    (
+                        k.clone(),
+                        serde_json::json!({
+                            "action": r.action.as_str(),
+                            "drift": r.drift,
+                            "certainty": r.certainty,
+                            "shield_approved": r.shield_approved,
+                        }),
+                    )
+                })
+                .collect::<serde_json::Map<_, _>>(),
+        })
+    }
+}
+
 /// The supervisor. Built from a compiled program, driven by `tick()`.
 pub struct CognitiveIoSupervisor {
     program: IRProgram,
