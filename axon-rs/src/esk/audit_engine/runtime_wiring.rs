@@ -148,8 +148,11 @@ const WIRING_TABLE: &[(&str, Wiring)] = &[
     ("HealKernel", Wiring::Wired("runtime::immune::heal (via cognitive_io_supervisor, §112.d)")),
     ("axon.runtime.immune.HealKernel", Wiring::Wired("runtime::immune::heal (via cognitive_io_supervisor, §112.d)")),
     ("HealDefinition.mode", Wiring::Wired("runtime::immune::heal (via cognitive_io_supervisor, §112.d)")),
-    ("LeaseKernel", Wiring::Orphaned("runtime::lease_kernel")),
-    ("axon.runtime.lease_kernel.LeaseKernel", Wiring::Orphaned("runtime::lease_kernel")),
+    // §113.d — the lease has a USE-SITE: `StoreRegistry::charge_lease` runs on every
+    // `resolve()` of a leased store, so a store operation IS a use of the resource and
+    // the post-expiry one is the CT-2 Anchor Breach.
+    ("LeaseKernel", Wiring::Wired("store::registry::charge_lease")),
+    ("axon.runtime.lease_kernel.LeaseKernel", Wiring::Wired("store::registry::charge_lease")),
     ("ReconcileLoop", Wiring::Wired("runtime::reconcile_loop (via cognitive_io_supervisor, §112.e)")),
     ("axon.runtime.reconcile_loop.ReconcileLoop", Wiring::Wired("runtime::reconcile_loop (via cognitive_io_supervisor, §112.e)")),
     ("axon.runtime.ensemble_aggregator", Wiring::Wired("runtime::ensemble_aggregator (via cognitive_io_supervisor, §112.c)")),
@@ -212,21 +215,32 @@ pub fn wiring_or_absent(locator: &str) -> Wiring {
 /// (§111 F14). Wiring any of them into the executor means deleting its row
 /// here in the same PR.
 const UNENFORCED_FEATURES: &[&str] = &[
-    // §112 REMOVED six from this list — `has_observe`, `has_reconcile`,
-    // `has_ensemble`, `has_immune`, `has_reflex`, `has_heal`. They are driven by the
-    // `CognitiveIoSupervisor` now, each with a gate proving it runs through the REAL
-    // deploy path. The SOC2/ISO controls they back can leave `pending` HONESTLY —
-    // which is the whole point of F8: the engine stopped lying, and now it can also
-    // say yes.
+    // §112 removed SIX (`has_observe`, `has_reconcile`, `has_ensemble`, `has_immune`,
+    // `has_reflex`, `has_heal`) — driven by the `CognitiveIoSupervisor`, each with a
+    // gate proving it runs through the REAL deploy path.
     //
-    // The two that remain need a `resource` to govern something that runs, and it
-    // governs nothing: `resource.endpoint` and `axonstore.connection` are the same
-    // fact declared twice (§111's islands finding). `lease` in particular CANNOT
-    // work — its CT-2 Anchor Breach is breach on post-expiry USE, and a flow can
-    // never USE a resource. That is §113's job, and until then declaring them must
-    // still buy nothing.
-    "has_lease",
-    "has_resource",
+    // §113 removed the last TWO — `has_lease` and `has_resource`.
+    //
+    //   `has_resource`: a `resource` now governs what runs. An `axonstore
+    //   { resource: Db }` DERIVES its DSN and its POOL SIZE from it (`capacity: 20`
+    //   ⇒ twenty connections; before §113 that field was read by ZERO lines of code
+    //   while every pool sat at a hardcoded 10), and `lifetime` decides how many
+    //   holders may name it (axon-T945).
+    //
+    //   `has_lease`: the CT-2 Anchor Breach fires. The kernel was never broken — it
+    //   had no SUBJECT. A flow could not USE a resource, so a guarantee about
+    //   post-expiry USE was vacuous: unviolatable, and therefore unkeepable. §113
+    //   made the store operation the use.
+    //
+    // THIS LIST IS NOW EMPTY, AND THAT IS THE POINT OF F8.
+    //
+    // §111 found this engine UNSOUND in the worst possible direction: declaring a
+    // DEAD primitive RAISED your SOC2 score. §111 made it stop lying — every one of
+    // these features bought exactly nothing. §112 and §113 let it start saying YES,
+    // and every yes now cites a kernel on a production path.
+    //
+    // An empty list is not a licence. A NEW feature whose kernel does not run belongs
+    // here, immediately, in the same PR that declares it.
 ];
 
 /// Is this program feature backed by a kernel that actually runs?
@@ -308,16 +322,27 @@ mod tests {
         assert!(!Wiring::Absent.is_enforced());
     }
 
-    /// The §111 headline, pinned: declaring `lease` must NOT be evidence.
+    /// The §111 headline, **paid**: declaring `lease` is now genuine evidence.
+    ///
+    /// §111 wrote this test to pin the LIE. SOC2 CC6.3 cited `LeaseKernel`, which
+    /// had zero production callers — so declaring a `lease` RAISED an adopter's
+    /// compliance score while enforcing precisely nothing. That was F8: the engine
+    /// was unsound in the worst possible direction.
+    ///
+    /// The §111 assertion ended with an instruction to whoever eventually fixed it:
+    /// *"If this now passes, wire it AND flip its WIRING_TABLE row in the same
+    /// PR."* §113.d did exactly that, and this is the same test, inverted.
     #[test]
-    fn the_soc2_cc63_lease_claim_is_not_enforced() {
+    fn the_soc2_cc63_lease_claim_is_now_genuinely_enforced() {
         let w = wiring_or_absent("axon.runtime.lease_kernel.LeaseKernel");
         assert!(
-            !w.is_enforced(),
-            "SOC2 CC6.3 cites LeaseKernel; it has no production caller. If this now \
-             passes, wire it AND flip its WIRING_TABLE row in the same PR."
+            w.is_enforced(),
+            "§113.d — `LeaseKernel` is on a production path: `StoreRegistry::charge_lease` runs \
+             on every resolve of a leased store, so a store operation IS a use of the resource \
+             and the post-expiry one is the CT-2 Anchor Breach. SOC2 CC6.3 may now cite it and \
+             MEAN it."
         );
-        assert_eq!(w.as_str(), "orphaned");
+        assert_eq!(w.as_str(), "wired");
     }
 
     /// An unknown locator must fail CLOSED, never default to enforced.
@@ -351,19 +376,49 @@ mod tests {
         }
     }
 
-    /// …and `lease` / `resource` still do NOT. They need §113 to give a `resource`
-    /// a use-site. Declaring them must still buy exactly nothing.
+    /// …and since §113, so do `lease` and `resource`.
+    ///
+    /// The §111 version of this test was named `..._until_113` and asserted the
+    /// **negation** of every line below. It was a promise with a date on it.
     #[test]
-    fn lease_and_resource_are_still_not_enforced_until_113() {
+    fn lease_and_resource_are_enforced_since_113() {
         for f in ["has_lease", "has_resource"] {
             assert!(
-                !feature_is_enforced(f),
-                "`{f}` cannot be enforced until §113 makes a `resource` govern something that                  runs. `lease`'s CT-2 Anchor Breach is breach on post-expiry USE, and a flow can                  never USE a resource — the guarantee is structurally impossible, not merely                  unwired."
+                feature_is_enforced(f),
+                "§113 — `{f}` is enforced. A `resource` governs what runs (an `axonstore` \
+                 derives its DSN and its POOL SIZE from it), and `lease`'s CT-2 Anchor Breach \
+                 has a moment to fire in: the store operation IS the use of the resource. \
+                 Before §113 that guarantee was structurally IMPOSSIBLE, not merely unwired — \
+                 and an impossible guarantee is one that cannot be KEPT, not merely one that \
+                 cannot be broken."
             );
         }
-        // …while the genuinely-wired surfaces still do.
+        // …and the genuinely-wired surfaces still count, as they always did.
         for f in ["has_shield", "has_endpoint", "has_compliance_annotation"] {
             assert!(feature_is_enforced(f), "`{f}` is wired and must still count");
         }
+    }
+
+    /// **The debt ledger is empty — and an empty ledger is not a licence.**
+    ///
+    /// §111 opened this list with eight entries, and found the compliance engine
+    /// scoring adopters on primitives that did nothing: **declaring a dead
+    /// primitive RAISED your SOC2 score.** §112 paid six of them; §113 paid the
+    /// last two.
+    ///
+    /// This test exists so the emptiness stays *earned*. A new feature whose kernel
+    /// does not run belongs on this list immediately, in the same PR that declares
+    /// it. If someone skips that step, the gates above turn it into a red build
+    /// instead of a quiet lie inside a compliance report — which is the entire
+    /// value of F8.
+    #[test]
+    fn the_unenforced_ledger_is_empty_and_that_emptiness_is_earned() {
+        assert!(
+            unenforced_features().is_empty(),
+            "the ledger is expected empty as of §113. Adding an entry back is CORRECT and \
+             honest when a kernel does not run — but say so out loud in the fase that adds \
+             it, because it means the compliance engine can no longer say yes for that \
+             feature. That admission is the point."
+        );
     }
 }

@@ -438,8 +438,9 @@ mod tests {
     #[test]
     fn the_cognitive_io_stack_buys_credit_for_exactly_what_runs() {
         let stack = r#"
-            resource Db { kind: postgres lifetime: linear }
             fabric Vpc { provider: aws }
+            resource Db { kind: postgres endpoint: db.main within: Vpc lifetime: affine capacity: 20 }
+            axonstore Users { backend: postgresql resource: Db }
             manifest M { resources: [Db] fabric: Vpc compliance: [HIPAA] }
             observe O from M { sources: [prom] quorum: 1 }
             observe O2 from M { sources: [cw] quorum: 1 }
@@ -466,21 +467,26 @@ mod tests {
             with.ready
         );
 
-        // …but `lease` and `resource` still buy NOTHING. They need §113 to make a
-        // `resource` govern something that runs. `lease`'s CT-2 Anchor Breach is
-        // breach on post-expiry USE, and a flow can never USE a resource — the
-        // guarantee is structurally impossible, not merely unwired.
-        for f in ["has_lease", "has_resource"] {
-            assert!(
-                with.declared_but_unenforced.contains(&f.to_string()),
-                "`{f}` is declared and STILL unenforced (§113); the analysis must say so. Got:                  {:?}",
-                with.declared_but_unenforced
-            );
-        }
-        for f in ["has_immune", "has_heal", "has_reconcile", "has_ensemble", "has_observe"] {
+        // §113 — and now `lease` and `resource` buy credit too, because they finally
+        // govern something. An `axonstore { resource: Db }` derives its DSN and its
+        // POOL SIZE from the resource, and `lease`'s CT-2 Anchor Breach fires on the
+        // store operation, which IS the use of the resource.
+        //
+        // The §111 version of this block asserted the exact OPPOSITE, and was right
+        // to: back then the guarantee was structurally impossible, not merely
+        // unwired — and an impossible guarantee cannot be KEPT, not merely broken.
+        //
+        // NOTHING declared here is unenforced any more. That sentence is the whole
+        // arc of §111 → §112 → §113.
+        assert!(
+            with.declared_but_unenforced.is_empty(),
+            "as of §113 every primitive in this stack is on a production path; the analysis              must report NOTHING as declared-but-unenforced. Got: {:?}",
+            with.declared_but_unenforced
+        );
+        for f in ["has_lease", "has_resource", "has_immune", "has_heal", "has_reconcile", "has_ensemble", "has_observe"] {
             assert!(
                 !with.declared_but_unenforced.contains(&f.to_string()),
-                "`{f}` is driven by the §112 supervisor — it must NOT be reported as unenforced"
+                "`{f}` runs on a production path (§112 supervisor / §113 resource+lease) — it                  must NOT be reported as unenforced"
             );
         }
 

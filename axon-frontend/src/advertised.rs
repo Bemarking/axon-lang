@@ -163,12 +163,12 @@ pub const ADVERTISED: &[(&str, RuntimeStatus)] = &[
     // daemon field that can consume any of them. The kernels are real,
     // well-written and unit-tested; the language never grew a way to reach them.
     // Founder-ratified: designing that consumption surface is §112+.
-    ("resource", NotImplemented { finding: "§111 F14/§11 — no consumption surface exists in the language" }),
-    ("fabric", NotImplemented { finding: "§111 F14 — Separation-Logic `*` disjointness is never checked between fabrics; no runtime consumer" }),
+    ("resource", Real { proof: "tests/fase113_c_resource_is_a_wire.rs (§113.c — an `axonstore { resource: Db }` DERIVES its DSN and its POOL SIZE from the resource: `capacity: 20` produces twenty connections. Before §113 `capacity` was read by zero lines of code in either repo while every pool sat at a hardcoded 10, and `lifetime` — sold as Linear Logic — was read by nothing at all)" }),
+    ("fabric", NotImplemented { finding: "§113 — `within:` gave it SUBJECTS, and disjointness is now unrepresentable by construction (one field ⇒ a resource cannot be in two fabrics). But `provider`/`region`/`zones` are consumed by NOTHING at runtime: in `LiveHandler::provision` the parameter is literally `_fabrics`, and that function refuses anyway. Still governs nothing that runs" }),
     ("manifest", Partial { gap: "§111 F14 — the κ/compliance half IS genuinely consumed (it feeds attestation + the audit scorer); the \"desired shape\" half is dead" }),
     ("observe", Real { proof: "tests/fase112_c_cognitive_io_deploy.rs (§112.a/c — a real Handler reaches a real target through a deny-by-default SourceRegistry; an observation that cannot be taken REFUSES. The only prior Handler returned certainty 1.0 unconditionally, without going anywhere)" }),
     ("reconcile", Real { proof: "tests/fase112_e_reconcile_drift.rs (§112.e — REAL Jaccard drift between the manifest's desired shape and the world's actual shape. It used to compare the belief against ITSELF: when evidence was missing it defaulted to the manifest, so drift was structurally always 0.0)" }),
-    ("lease", NotImplemented { finding: "§111 F14 — τ-decay + CT-2 breach logic exists; LeaseKernel has zero non-test callers. (SOC2 CC6.3 used to cite it as a RuntimeInvariant — see F8)" }),
+    ("lease", Real { proof: "tests/fase113_d_lease_breach_fires.rs (§113.d — post-expiry USE of a leased store is the CT-2 Anchor Breach, and all three `on_expire` policies are honoured. The kernel was NEVER broken: it had no SUBJECT. A flow could not USE a resource, so a guarantee about post-expiry use was VACUOUS — unviolatable, and therefore unkeepable. §113 made the store operation the use)" }),
     ("ensemble", Real { proof: "tests/fase112_c_cognitive_io_deploy.rs (§112.b/c — the EnsembleAggregator is instantiated from the IR at deploy and aggregates only observations ACTUALLY TAKEN; a refused source is absent, not present-and-failing, which is what lets its quorum gate work honestly)" }),
     ("topology", Real { proof: "type_checker::check_topology_liveness — a genuine DFS gray/black cycle detector emitting a Honda-liveness violation (narrow sufficient condition, but real)" }),
     ("session", Real { proof: "type_checker::check_session_duality → session.rs (dual involution, capture-avoiding substitution, coinductive equality). Duality is genuinely DECIDED, not faked" }),
@@ -230,14 +230,37 @@ pub const KNOWN_DEBT: &[&str] = &[
     // other, and the kernels took the compiled IR directly. **Nobody had ever built
     // the loop.**
     //
-    // The three that remain need a `resource` to govern something that runs, and it
-    // governs nothing: `resource.endpoint` and `axonstore.connection` are the same
-    // fact declared twice, with the Linear-Logic discipline hanging off the copy that
-    // runs nothing. `lease` in particular CANNOT work — the CT-2 Anchor Breach is
-    // breach on post-expiry USE, and a flow can never USE a resource. That is §113.
-    "resource",
+    // §113 PAID TWO MORE. `resource` and `lease` left this ledger.
+    //
+    // `resource` now governs what actually runs: an `axonstore { resource: Db }`
+    // DERIVES its DSN and its POOL SIZE from the resource (`capacity: 20` ⇒ twenty
+    // connections — before §113 that field was read by zero lines of code in either
+    // repository while every pool sat at a hardcoded 10), and `lifetime` decides how
+    // many holders may name it (`axon-T945`).
+    //
+    // `lease` was the sharpest case in the whole line, and worth remembering: its
+    // kernel was never broken. `LeaseKernel` had `acquire`, `use_token`, `release`,
+    // the CT-2 Anchor Breach and all three `on_expire` policies, and its unit tests
+    // passed for years. **IT HAD NO SUBJECT.** The README promised that using a
+    // resource after expiry is a breach — in a language where a flow could not USE a
+    // resource at all. A guarantee about using a thing that cannot be used is not a
+    // weak guarantee; it is a VACUOUS one. It cannot be violated, and so it cannot be
+    // kept. §113 made the store operation the use, and the breach finally fires.
+    //
+    // ── AND `fabric` STAYS. ────────────────────────────────────────────────────
+    //
+    // This is the ratchet doing its job on the fase that was in a position to fudge
+    // it. `within:` gave `fabric` subjects, and Separation-Logic disjointness is now
+    // unrepresentable by construction (one field ⇒ a resource cannot be in two
+    // fabrics). It would be *easy* to call that Real.
+    //
+    // But `provider` / `region` / `zones` are consumed by NOTHING at runtime — in
+    // `LiveHandler::provision` the parameter is literally `_fabrics`, underscored,
+    // and that function refuses anyway. A `fabric` still governs nothing that runs.
+    //
+    // Calling it Real here is exactly the lie §111.g exists to prevent, told by the
+    // person who wrote the gate. The ledger only shrinks by what is PROVEN.
     "fabric",
-    "lease",
 ];
 
 /// Look up what an advertised name's runtime actually does.

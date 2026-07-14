@@ -132,6 +132,14 @@ pub enum RegistryError {
         resource: String,
         detail: String,
     },
+    /// §Fase 113.d — a `lease` could not be acquired: it targets a `persistent`
+    /// resource (the `!` exponential has no τ to decay), or its duration is
+    /// unparseable.
+    LeaseRefused {
+        lease: String,
+        resource: String,
+        detail: String,
+    },
 }
 
 impl fmt::Display for RegistryError {
@@ -163,6 +171,14 @@ impl fmt::Display for RegistryError {
                 f,
                 "axonstore `{store}` runs on resource `{resource}`, whose endpoint could not be \
                  resolved: {detail}"
+            ),
+            RegistryError::LeaseRefused {
+                lease,
+                resource,
+                detail,
+            } => write!(
+                f,
+                "lease `{lease}` over resource `{resource}` could not be acquired: {detail}"
             ),
         }
     }
@@ -305,6 +321,34 @@ pub struct StoreRegistry {
     /// first `resolve` of a postgresql store with that DSN. Stores that
     /// share a DSN share one pool.
     pool_cache: Mutex<HashMap<String, PostgresStoreBackend>>,
+    /// §Fase 113.d — **the lease's use-site, which is the reason §113 exists.**
+    ///
+    /// The README promises `lease` is a τ-decaying affine capability whose
+    /// **post-expiry USE is a CT-2 Anchor Breach**. `LeaseKernel` implements that
+    /// perfectly — `acquire`, `use_token`, `release`, the breach and all three
+    /// `on_expire` policies. It was never *unwired*. It was **unreachable**:
+    ///
+    /// > **A flow could not `use` a `resource`, so the breach had no moment to
+    /// > fire in. The headline guarantee was structurally impossible, not merely
+    /// > un-plumbed.** (§111 F14.)
+    ///
+    /// §113 created the moment. A flow uses an `axonstore`; the store runs on a
+    /// `resource`; **that store operation IS the use of the resource.** So every
+    /// `resolve()` of a leased store's handle passes through `use_token`, and a
+    /// post-expiry one refuses.
+    ///
+    /// `None` ⇒ the program declares no leases, and this costs nothing.
+    leases: Option<Mutex<LeaseGuard>>,
+}
+
+/// §Fase 113.d — the leases held over this program's resources.
+///
+/// One token per leased resource, acquired at build (`acquire: on_start`) and
+/// checked on every use.
+struct LeaseGuard {
+    kernel: crate::runtime::lease_kernel::LeaseKernel,
+    /// resource name → the token held over it.
+    tokens: HashMap<String, crate::runtime::lease_kernel::LeaseToken>,
 }
 
 impl fmt::Debug for StoreRegistry {
@@ -362,6 +406,41 @@ impl StoreRegistry {
         specs: &[IRAxonStore],
         resources: &[crate::ir_nodes::IRResource],
         resolver: &dyn crate::resource_resolver::ResourceResolver,
+    ) -> Result<StoreRegistry, RegistryError> {
+        Self::build_governed(specs, resources, &[], resolver)
+    }
+
+    /// §Fase 113.d — build a registry that also HOLDS THE LEASES over its
+    /// resources, so a store operation is a *use* of the resource it runs on.
+    ///
+    /// This is the seam `lease` waited for. Its kernel was complete years ago;
+    /// what did not exist was a moment at which a resource could be **used**.
+    pub fn build_governed(
+        specs: &[IRAxonStore],
+        resources: &[crate::ir_nodes::IRResource],
+        leases: &[crate::ir_nodes::IRLease],
+        resolver: &dyn crate::resource_resolver::ResourceResolver,
+    ) -> Result<StoreRegistry, RegistryError> {
+        Self::build_governed_with_clock(
+            specs,
+            resources,
+            leases,
+            resolver,
+            Box::new(chrono::Utc::now),
+        )
+    }
+
+    /// §Fase 113.d — as [`Self::build_governed`], with an injectable clock.
+    ///
+    /// τ-decay is only *testable* if time can be moved. A gate that had to sleep
+    /// for an hour to observe an expiry would never run, and a guarantee whose
+    /// gate never runs is the guarantee §111 spent itself deleting.
+    pub fn build_governed_with_clock(
+        specs: &[IRAxonStore],
+        resources: &[crate::ir_nodes::IRResource],
+        leases: &[crate::ir_nodes::IRLease],
+        resolver: &dyn crate::resource_resolver::ResourceResolver,
+        clock: crate::runtime::lease_kernel::Clock,
     ) -> Result<StoreRegistry, RegistryError> {
         let mut stores: HashMap<String, RegisteredStore> =
             HashMap::with_capacity(specs.len());
@@ -427,10 +506,96 @@ impl StoreRegistry {
             );
         }
 
+        // §Fase 113.d — acquire the leases. `acquire: on_start` takes the token
+        // now; `on_demand` is acquired lazily on first use. Either way the token
+        // exists BEFORE any store op can happen, which is what makes the
+        // post-expiry use a detectable event rather than a philosophical one.
+        let lease_guard = if leases.is_empty() {
+            None
+        } else {
+            let mut kernel = crate::runtime::lease_kernel::LeaseKernel::with_clock(clock);
+            let mut tokens = HashMap::new();
+            for l in leases {
+                let Some(res) = resources.iter().find(|r| r.name == l.resource_ref) else {
+                    return Err(RegistryError::UnknownResource {
+                        store: format!("lease '{}'", l.name),
+                        resource: l.resource_ref.clone(),
+                    });
+                };
+                let token = kernel.acquire(l, res).map_err(|e| RegistryError::LeaseRefused {
+                    lease: l.name.clone(),
+                    resource: l.resource_ref.clone(),
+                    detail: e.message.clone(),
+                })?;
+                tokens.insert(l.resource_ref.clone(), token);
+            }
+            Some(Mutex::new(LeaseGuard { kernel, tokens }))
+        };
+
         Ok(StoreRegistry {
             stores,
             pool_cache: Mutex::new(HashMap::new()),
+            leases: lease_guard,
         })
+    }
+
+    /// §Fase 113.d — **the use-site.** Charge a store operation against the lease
+    /// held over the resource it runs on.
+    ///
+    /// The README's promise is that a `lease` is a τ-decaying affine capability
+    /// and that **post-expiry USE is a CT-2 Anchor Breach**. Until §113 a flow
+    /// could not *use* a resource at all, so the breach had no moment to fire in
+    /// — **structurally impossible, not merely unwired**. This is that moment.
+    ///
+    /// `Ok(())` ⇒ no lease governs this store's resource, or the lease is live
+    /// (or was renewed under `on_expire: extend`, or released under `release`).
+    fn charge_lease(&self, store_name: &str) -> Result<(), StoreError> {
+        let Some(guard) = &self.leases else {
+            return Ok(());
+        };
+        let Some(reg) = self.stores.get(store_name) else {
+            return Ok(());
+        };
+        if reg.resource_ref.is_empty() {
+            // §113's ratified posture, enforced here: an UN-RESOURCED store is
+            // INELIGIBLE for lease governance. You cannot govern what you did not
+            // declare — and silently governing it would be worse, because the
+            // adopter would believe a guarantee they never asked for.
+            return Ok(());
+        }
+        let mut g = guard.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(token) = g.tokens.get(&reg.resource_ref).cloned() else {
+            return Ok(()); // no lease over this resource
+        };
+        match g.kernel.use_token(&token) {
+            Ok(crate::runtime::lease_kernel::UseOutcome::Valid(_)) => Ok(()),
+            Ok(crate::runtime::lease_kernel::UseOutcome::Extended(renewed)) => {
+                // `on_expire: extend` — the window rolls forward. Record the new
+                // token, or the next use would present a revoked one.
+                g.tokens.insert(reg.resource_ref.clone(), renewed);
+                Ok(())
+            }
+            Ok(crate::runtime::lease_kernel::UseOutcome::Released) => {
+                // `on_expire: release` — the capability is gone, cleanly. The
+                // store op still cannot proceed: the resource is no longer held.
+                g.tokens.remove(&reg.resource_ref);
+                Err(StoreError::LeaseExpired {
+                    store: store_name.to_string(),
+                    resource: reg.resource_ref.clone(),
+                    lease: token.lease_name.clone(),
+                    detail: format!(
+                        "lease released at expiry (on_expire: release) — the capability over                          '{}' is no longer held",
+                        reg.resource_ref
+                    ),
+                })
+            }
+            Err(e) => Err(StoreError::LeaseExpired {
+                store: store_name.to_string(),
+                resource: reg.resource_ref.clone(),
+                lease: token.lease_name.clone(),
+                detail: e.message,
+            }),
+        }
     }
 
     /// §Fase 113 — the pool size a store ACTUALLY got.
@@ -463,6 +628,7 @@ impl StoreRegistry {
         StoreRegistry {
             stores: HashMap::new(),
             pool_cache: Mutex::new(HashMap::new()),
+            leases: None,
         }
     }
 
@@ -479,6 +645,13 @@ impl StoreRegistry {
     /// Must be called within a Tokio runtime context when it may
     /// connect a postgresql backend (the lazy pool, per 35.c).
     pub fn resolve(&self, store_name: &str) -> Result<StoreHandle, StoreError> {
+        // §Fase 113.d — THE USE-SITE. A store operation is a *use* of the
+        // resource the store runs on, and that is the moment `lease`'s CT-2
+        // Anchor Breach has been waiting for since it was written. Charged
+        // BEFORE the handle is produced: an expired capability must not hand back
+        // a working pool.
+        self.charge_lease(store_name)?;
+
         let registered = match self.stores.get(store_name) {
             // Undeclared → implicit in_memory default (D3 — pre-35
             // behavior: a store needs no declaration to be key-value).

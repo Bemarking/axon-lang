@@ -139,6 +139,20 @@ const IDLE_TIMEOUT_SECS: u64 = 300;
 /// silent empty result masking a failure.
 #[derive(Debug, Clone, PartialEq)]
 pub enum StoreError {
+    /// §Fase 113.d — **the CT-2 Anchor Breach.** A store operation was attempted
+    /// against a resource whose `lease` has expired.
+    ///
+    /// The README has always promised this: a `lease` is a τ-decaying affine
+    /// capability, and *post-expiry USE* is an Anchor Breach. The kernel that
+    /// raises it was complete years ago. What did not exist was **a moment at
+    /// which a resource could be used** — a flow could not `use` a `resource`, so
+    /// the breach had nowhere to fire. §113 made the store operation that moment.
+    LeaseExpired {
+        store: String,
+        resource: String,
+        lease: String,
+        detail: String,
+    },
     /// `connection` was empty or whitespace-only.
     EmptyConnection,
     /// `connection` was the bare prefix `env:` with no variable name.
@@ -202,6 +216,20 @@ pub enum StoreError {
 impl fmt::Display for StoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            StoreError::LeaseExpired {
+                store,
+                resource,
+                lease,
+                detail,
+            } => write!(
+                f,
+                "CT-2 ANCHOR BREACH — axonstore `{store}` was used, but the `lease {lease}` over \
+                 its resource `{resource}` is no longer held: {detail}. A lease is a τ-decaying \
+                 affine capability: using the resource after expiry is the breach, and this is \
+                 the moment it fires. (Until §Fase 113 a flow could not USE a resource at all, \
+                 so this guarantee was structurally impossible to violate — and therefore \
+                 structurally impossible to keep.)"
+            ),
             StoreError::EmptyConnection => write!(
                 f,
                 "axonstore `connection` is empty — expected a DSN or an \
