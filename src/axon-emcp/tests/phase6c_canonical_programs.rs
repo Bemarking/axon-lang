@@ -487,11 +487,31 @@ ledger LedgerAudit {
     must_compile("ledger/canonical", src);
 }
 
+/// §Fase 111.h — this used to be `deliberate_canonical_program_compiles`, and
+/// the program below is worth reading twice before it is deleted.
+///
+/// ```text
+/// flow Decide(q: String) -> String {
+///     deliberate {
+///         let draft = "${q}"
+///         return draft          // ← this never ran
+///     }
+/// }
+/// ```
+///
+/// `deliberate` parses through `parse_block_step`, whose entire job is
+/// `skip_braced_block()`. The body was discarded **at parse time**. So the `let`
+/// never bound, the **`return` never returned**, and the flow silently fell off
+/// its end — while the wire reported the block complete.
+///
+/// **We shipped this as the canonical example.** An adopter copying it got a flow
+/// that does not return, and no diagnostic anywhere.
+///
+/// `deliberate` now refuses (axon-T939). The gate inverts: it guards the
+/// RETRACTION, so a future change that silently resurrects a body-swallowing
+/// `deliberate` fails the build.
 #[test]
-fn deliberate_canonical_program_compiles() {
-    // §Fase 62 — `deliberate { … }` is the bounded reflective block (a
-    // first-class flow step). The pre-§62 validator did not surface it; the
-    // ℰMCP validator must accept it so an adopter can check it locally.
+fn deliberate_is_refused_and_no_longer_swallows_its_body() {
     let src = r#"
 flow Decide(q: String) -> String {
     deliberate {
@@ -500,5 +520,19 @@ flow Decide(q: String) -> String {
     }
 }
 "#;
-    must_compile("deliberate/canonical", src);
+    match run(src, "deliberate/retracted") {
+        Outcome::Ok { .. } => panic!(
+            "`deliberate` compiled clean — but its body is discarded at parse time, so the \
+             `return` inside it never runs. If a real implementation has landed, replace this \
+             gate with a canonical program AND give the block a body in the AST; do not simply \
+             delete the refusal."
+        ),
+        Outcome::Err { errors, .. } => {
+            let joined = format!("{errors:#?}");
+            assert!(
+                joined.contains("axon-T939"),
+                "expected the T939 retraction diagnostic, got: {joined}"
+            );
+        }
+    }
 }

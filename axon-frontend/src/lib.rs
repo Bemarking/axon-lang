@@ -90,6 +90,13 @@ pub mod multiparty;
 // coverage gate + scaffold CLI + future LSP completions / docs-site
 // generators. Pure const data, no runtime deps. See the module-level
 // docs for the discipline (registry + corpus = atomic addition).
+/// §Fase 111 — the anti-drift gate. The public README is parsed at test time and
+/// every primitive it advertises must carry a human-attested statement of what
+/// its runtime actually does. A presence-only gate would not have caught a single
+/// §111 defect (`warden` and `quant` had a badge, a registry entry, a parser
+/// production AND a dispatch arm — and were no-ops), so this one forces the
+/// question no linter can decide.
+pub mod advertised;
 pub mod primitive_registry;
 pub use primitive_registry::{
     by_category, coverage_summary, find as find_primitive, with_status, CoverageSummary,

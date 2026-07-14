@@ -3077,7 +3077,11 @@ impl Parser {
             TokenType::Corroborate => self.parse_corroborate_step(),
             TokenType::Ots => self.parse_apply_step("ots").map(|l| FlowStep::OtsApply(OtsApplyStep { ots_name: l.1, target: l.2, output_type: l.3, loc: l.0 })),
             TokenType::Mandate => self.parse_apply_step("mandate").map(|l| FlowStep::MandateApply(MandateApplyStep { mandate_name: l.1, target: l.2, output_type: l.3, loc: l.0 })),
-            TokenType::Compute => self.parse_apply_step("compute").map(|l| FlowStep::ComputeApply(ComputeApplyStep { compute_name: l.1, arguments: Vec::new(), output_name: l.3, loc: l.0 })),
+            // §Fase 111.f — `compute <Name> on a, b -> out`. The ARGUMENTS used to
+            // be `Vec::new()` — hardcoded empty at the parse site — so even if
+            // the runtime had wanted to compute something, it had nothing to
+            // compute it FROM.
+            TokenType::Compute => self.parse_compute_apply().map(FlowStep::ComputeApply),
             TokenType::Listen => self.parse_listen_step(),
             TokenType::Daemon => self.parse_flow_step_simple("daemon").map(|l| FlowStep::DaemonStep(DaemonStepNode { daemon_ref: l.1, loc: l.0 })),
             // §λ-L-E Fase 13 — Mobile typed channels (paper §3.1, §3.2, §4.3)
@@ -4438,6 +4442,44 @@ impl Parser {
     }
 
     /// Parse: keyword Name on target -> output_type (apply pattern).
+    /// §Fase 111.f — `compute <Name> on <a>, <b>, … -> <out>`.
+    ///
+    /// Positional arguments, bound to the compute's declared parameters in order.
+    /// The generic [`Self::parse_apply_step`] captured a single `on <target>` and
+    /// then the call site threw even that away (`arguments: Vec::new()`).
+    fn parse_compute_apply(&mut self) -> Result<ComputeApplyStep, ParseError> {
+        let tok = self.current().clone();
+        let loc = self.loc_of(&tok);
+        self.advance(); // consume `compute`
+        let compute_name = self.consume_any_ident_or_kw()?.value.clone();
+
+        let mut arguments = Vec::new();
+        if self.current().value == "on" {
+            self.advance();
+            loop {
+                arguments.push(self.consume_any_ident_or_kw()?.value.clone());
+                if self.check(TokenType::Comma) {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+        }
+
+        let mut output_name = String::new();
+        if self.check(TokenType::Arrow) {
+            self.advance();
+            output_name = self.consume_any_ident_or_kw()?.value.clone();
+        }
+
+        Ok(ComputeApplyStep {
+            compute_name,
+            arguments,
+            output_name,
+            loc,
+        })
+    }
+
     fn parse_apply_step(&mut self, _kw: &str) -> Result<(Loc, String, String, String), ParseError> {
         let tok = self.current().clone();
         self.advance(); // consume keyword
@@ -6243,12 +6285,43 @@ impl Parser {
         Ok(node)
     }
 
+    /// §Fase 111.f — `compute <Name>(p: T, …) -> T { <expr> }`.
+    ///
+    /// # What this used to be
+    ///
+    /// ```text
+    /// // Skip optional parameters/return type before brace
+    /// while !self.check(TokenType::LBrace) { self.advance(); }
+    /// ```
+    ///
+    /// The parameters and the return type were **skipped token by token**, and
+    /// the brace held only `shield:`. So a `compute` had **no inputs, no output
+    /// type and no body** — which is why the runtime could do nothing but bind
+    /// the literal string `"compute:Name(args)"`, and why a downstream step then
+    /// consumed that text where it expected a number. The README meanwhile
+    /// promised "native Fast-Path execution bypassing the LLM" **with an O(n)
+    /// guarantee**.
+    ///
+    /// # What it is now
+    ///
+    /// A named pure function over the §70 expression language — the closed,
+    /// total, side-effect-free term algebra the runtime already evaluates
+    /// natively (`eval_expr`, the same evaluator behind `let`, `grad` and
+    /// `conditional`). Linear in the term, no model in the loop: the advertised
+    /// claim, made true rather than louder.
+    ///
+    /// The legacy field form (`compute N { shield: G }`) still parses — its body
+    /// is simply `None`, and applying a bodyless compute is refused (axon-T941)
+    /// instead of silently binding a placeholder.
     fn parse_compute(&mut self) -> Result<ComputeDefinition, ParseError> {
         let tok = self.consume(TokenType::Compute)?;
         let name = self.consume(TokenType::Identifier)?.value;
         let mut node = ComputeDefinition {
             name,
             shield_ref: String::new(),
+            parameters: Vec::new(),
+            return_type: String::new(),
+            body: None,
             loc: Loc {
                 line: tok.line,
                 column: tok.column,
@@ -6256,22 +6329,59 @@ impl Parser {
             leading_trivia: Vec::new(),
             trailing_trivia: Vec::new(),
         };
-        // Skip optional parameters/return type before brace
-        while !self.check(TokenType::LBrace) && !self.check(TokenType::Eof) {
+
+        // `(p: T, q: T)` — the typed parameters (they used to be skipped).
+        if self.check(TokenType::LParen) {
             self.advance();
+            while !self.check(TokenType::RParen) && !self.check(TokenType::Eof) {
+                let ptok = self.current().clone();
+                let pname = self.consume_any_ident_or_kw()?.value.clone();
+                self.consume(TokenType::Colon)?;
+                let ptype = self.parse_type_expr()?;
+                node.parameters.push(Parameter {
+                    name: pname,
+                    type_expr: ptype,
+                    loc: self.loc_of(&ptok),
+                });
+                if self.check(TokenType::Comma) {
+                    self.advance();
+                }
+            }
+            self.consume(TokenType::RParen)?;
         }
+
+        // `-> T` — the declared result type.
+        if self.check(TokenType::Arrow) {
+            self.advance();
+            node.return_type = self.consume_any_ident_or_kw()?.value.clone();
+        }
+
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
-            let field_name = self.current().value.clone();
-            self.advance();
-            if self.check(TokenType::Colon) {
+            // A `<name>:` pair is a legacy field (only `shield:` is meaningful).
+            // Anything else is THE BODY — a §70 expression.
+            //
+            // NOTE: the field name may be a KEYWORD, not just an identifier —
+            // `shield` is `TokenType::Shield`. Testing only for `Identifier` here
+            // sent `compute N { shield: G }` (the legacy declaration form, and
+            // the shape of the shipped canonical program) down the
+            // expression-parsing path and broke it. Back-compat is not optional:
+            // an adopter's existing program must keep compiling.
+            let is_field = self
+                .tokens
+                .get(self.pos + 1)
+                .map(|t| t.ttype == TokenType::Colon)
+                .unwrap_or(false);
+            if is_field {
+                let field_name = self.current().value.clone();
                 self.advance();
+                self.consume(TokenType::Colon)?;
                 match field_name.as_str() {
                     "shield" => node.shield_ref = self.consume_any_ident_or_kw()?.value.clone(),
                     _ => self.skip_value(),
                 }
-            } else if self.check(TokenType::LBrace) {
-                self.skip_braced_block()?;
+            } else {
+                node.body = Some(self.parse_expr()?);
             }
         }
         self.consume(TokenType::RBrace)?;

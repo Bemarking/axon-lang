@@ -111,30 +111,17 @@ pub fn apply_mandate_to_target(mandate_name: &str, target: &str, _ctx: &Dispatch
     target.to_string()
 }
 
-/// Invoke a compute capability with positional arguments. OSS
-/// default: returns a canonical formatted string
-/// `"compute:<name>(<arg1>, <arg2>, ...)"` so adopters observe
-/// the invocation shape on the wire + can chain subsequent steps
-/// against `output_name`. Enterprise overrides
-/// (axon_enterprise.compute) hook into the real compute runtime.
-pub fn invoke_compute_capability(
-    compute_name: &str,
-    arguments: &[String],
-    ctx: &DispatchCtx,
-) -> String {
-    // Resolve each argument through let_bindings (symbolic
-    // reference) or treat as literal.
-    let resolved: Vec<String> = arguments
-        .iter()
-        .map(|arg| {
-            ctx.let_bindings
-                .get(arg)
-                .cloned()
-                .unwrap_or_else(|| arg.clone())
-        })
-        .collect();
-    format!("compute:{compute_name}({})", resolved.join(", "))
-}
+// §Fase 111.f — `invoke_compute_capability` was DELETED here.
+//
+// It was the factory of the lie. It resolved the arguments and returned
+// `format!("compute:{name}({args})")` — a STRING, which `run_compute_apply` bound
+// under the step's output name and a downstream step then consumed as if it were
+// a number. Its doc comment claimed "OSS default: returns a canonical formatted
+// string … Enterprise overrides hook into the real compute runtime". No such hook
+// existed, and no override could have helped: `IRCompute` carried no body to run.
+//
+// `run_compute_apply` now evaluates the declared §70 expression natively via
+// `eval_expr`. There is nothing left for a placeholder to stand in for.
 
 /// Listen on a Fase 13 typed channel for an event. OSS default:
 /// returns a canonical placeholder `"(awaiting <channel>)"` so
@@ -337,9 +324,39 @@ pub async fn run_mandate_apply(
 //  ComputeApply
 // ────────────────────────────────────────────────────────────────────
 
-/// Invoke a compute capability. Wire shape:
-/// `step_type: "compute_apply"`. Arguments are resolved through
-/// `ctx.let_bindings`; the result binds under `output_name`.
+/// **§Fase 111.f — `compute` MADE REAL.** Wire shape: `step_type: "compute_apply"`.
+///
+/// # What this used to be (§111 F10 — the loudest lie in the README)
+///
+/// `invoke_compute_capability` returned the **literal string**
+/// `"compute:CalculatePremium(x_value, 1.2)"`. That string was bound under
+/// `output_name`, and **a downstream step consumed it as if it were a number**.
+///
+/// It did not fall through to the LLM, so it was not *hallucinating* in the §108
+/// sense — it was worse in one specific way: it was a **fabricated determinism
+/// guarantee**. The README advertises `compute` as *"Deterministic muscle —
+/// native Fast-Path execution **bypassing the LLM**"* and even asserts a
+/// complexity class (*"compute steps: O(n) — linear in input size, native
+/// execution"*). `IRCompute` carried only `name` and `shield_ref`: **no
+/// parameters, no body**. There was nothing to execute, natively or otherwise.
+/// The parser skipped the parameters token by token and the apply site hardcoded
+/// `arguments: Vec::new()`.
+///
+/// # What it is now
+///
+/// A named **pure function over the §70 expression language** — the closed,
+/// total, side-effect-free term algebra the runtime already evaluates natively
+/// via `eval_expr` (the same evaluator behind `let`, `grad` and `conditional`).
+///
+/// ```text
+/// compute Premium(base: Number, rate: Number) -> Number { base * rate * 1.2 }
+/// …
+/// compute Premium on amount, r -> premium      // premium is a NUMBER
+/// ```
+///
+/// Linear in the term. **No model in the loop.** The advertised claim, made true
+/// rather than made louder — and every failure is a refusal, never a string
+/// wearing a number's clothes.
 pub async fn run_compute_apply(
     node: &IRComputeApplyStep,
     ctx: &mut DispatchCtx,
@@ -357,10 +374,105 @@ pub async fn run_compute_apply(
     };
     emit_step_start(ctx, &step_name, step_index, "compute_apply")?;
 
-    let result = invoke_compute_capability(&node.compute_name, &node.arguments, ctx);
+    // (1) Resolve the declared function.
+    let spec = ctx
+        .compute_specs
+        .iter()
+        .find(|c| c.name == node.compute_name)
+        .cloned()
+        .ok_or_else(|| DispatchError::BackendError {
+            name: "compute".to_string(),
+            message: format!(
+                "`compute {}` does not resolve to a declared compute — nothing to execute",
+                node.compute_name
+            ),
+        })?;
+
+    // (2) A compute with no body cannot compute. REFUSE rather than bind a
+    //     placeholder string that a downstream step will read as a number.
+    let body = spec.body.clone().ok_or_else(|| DispatchError::BackendError {
+        name: "compute".to_string(),
+        message: format!(
+            "`compute {}` declares no body — it cannot compute anything. Give it one: \
+             `compute {}(x: Number) -> Number {{ x * 2 }}`. Binding a placeholder here is how \
+             the pre-§111 runtime handed a downstream step the text \"compute:{}(…)\" where it \
+             expected a number (§111 F10)",
+            spec.name, spec.name, spec.name
+        ),
+    })?;
+
+    // (3) Arity. A silent mismatch would evaluate the body against a stale or
+    //     missing binding and still produce *a* number — the worst outcome.
+    if node.arguments.len() != spec.parameters.len() {
+        return Err(DispatchError::BackendError {
+            name: "compute".to_string(),
+            message: format!(
+                "`compute {} on …` was applied to {} argument(s) but declares {} parameter(s) ({}). \
+                 A silent arity mismatch would still yield a number — just the wrong one",
+                spec.name,
+                node.arguments.len(),
+                spec.parameters.len(),
+                spec.parameters
+                    .iter()
+                    .map(|p| p.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        });
+    }
+
+    // (4) Bind the arguments into the call frame: each declared parameter takes
+    //     the value of its positional argument, resolved from the caller's
+    //     bindings. Saved and restored, so a parameter name cannot leak out of
+    //     the compute and shadow the caller's own binding.
+    let mut saved: Vec<(String, Option<String>)> = Vec::new();
+    for (param, arg) in spec.parameters.iter().zip(&node.arguments) {
+        let value = crate::exec_context::resolve_value_reference(arg, &ctx.let_bindings);
+        saved.push((param.name.clone(), ctx.let_bindings.get(&param.name).cloned()));
+        ctx.let_bindings.insert(param.name.clone(), value);
+    }
+
+    // (5) Evaluate — natively, deterministically, with no model in the loop.
+    let evaluated = crate::flow_dispatcher::orchestration::eval_expr(&body, ctx);
+
+    // Restore the frame before doing anything else with the result.
+    for (name, prior) in saved {
+        match prior {
+            Some(v) => {
+                ctx.let_bindings.insert(name, v);
+            }
+            None => {
+                ctx.let_bindings.remove(&name);
+            }
+        }
+    }
+
+    use crate::flow_dispatcher::orchestration::EVal;
+    let result = match evaluated {
+        Some(EVal::Int(i)) => i.to_string(),
+        Some(EVal::Float(f)) => f.to_string(),
+        Some(EVal::Bool(b)) => b.to_string(),
+        Some(EVal::Str(s)) => s,
+        // The §70 evaluator fails CLOSED on division by zero, an unresolvable
+        // reference, a type mismatch — every one of which the old handler would
+        // have papered over with a plausible-looking string.
+        _ => {
+            return Err(DispatchError::BackendError {
+                name: "compute".to_string(),
+                message: format!(
+                    "`compute {}` did not evaluate — the expression could not be reduced to a \
+                     value (an unresolvable reference, a type mismatch, or a division by zero). \
+                     Refusing: a compute that cannot compute must not return something that LOOKS \
+                     like a result",
+                    spec.name
+                ),
+            })
+        }
+    };
 
     if !node.output_name.is_empty() {
-        ctx.let_bindings.insert(node.output_name.clone(), result.clone());
+        ctx.let_bindings
+            .insert(node.output_name.clone(), result.clone());
     }
 
     emit_step_complete(ctx, &step_name, step_index, &result, 0)?;
@@ -573,30 +685,6 @@ mod tests {
     fn apply_mandate_oss_default_is_identity() {
         let (ctx, _rx) = fresh_ctx();
         assert_eq!(apply_mandate_to_target("gdpr_erasure", "user record", &ctx), "user record");
-    }
-
-    #[test]
-    fn invoke_compute_canonical_format_with_literal_args() {
-        let (ctx, _rx) = fresh_ctx();
-        let result = invoke_compute_capability(
-            "sum",
-            &["1".to_string(), "2".to_string(), "3".to_string()],
-            &ctx,
-        );
-        assert_eq!(result, "compute:sum(1, 2, 3)");
-    }
-
-    #[test]
-    fn invoke_compute_resolves_symbolic_args_through_let_bindings() {
-        let (mut ctx, _rx) = fresh_ctx();
-        ctx.let_bindings.insert("a".into(), "10".into());
-        ctx.let_bindings.insert("b".into(), "20".into());
-        let result = invoke_compute_capability(
-            "add",
-            &["a".to_string(), "b".to_string()],
-            &ctx,
-        );
-        assert_eq!(result, "compute:add(10, 20)");
     }
 
     #[test]
@@ -815,9 +903,28 @@ mod tests {
 
     // ── ComputeApply ─────────────────────────────────────────────────
 
+    /// §Fase 111.f — **this test used to BE the bug.**
+    ///
+    /// It asserted, in green, for years:
+    ///
+    /// ```text
+    /// assert_eq!(ctx.let_bindings.get("sum").unwrap(), "compute:add(5, 7)");
+    /// ```
+    ///
+    /// A test demanding that the sum of 5 and 7 be the **string**
+    /// `"compute:add(5, 7)"` — and a downstream step would then consume that text
+    /// where it expected a number, while the README promised "native Fast-Path
+    /// execution bypassing the LLM" with an O(n) guarantee.
+    ///
+    /// The placeholder was not an oversight the tests missed. **The tests pinned
+    /// it.** That is worth staring at: a suite can lock a lie in place as firmly
+    /// as it locks a truth.
+    ///
+    /// It now asserts the opposite — an undeclared compute REFUSES rather than
+    /// binding something that looks like a result.
     #[tokio::test]
-    async fn run_compute_apply_binds_result_under_output_name() {
-        let (mut ctx, mut rx) = fresh_ctx();
+    async fn run_compute_apply_refuses_an_undeclared_compute() {
+        let (mut ctx, _rx) = fresh_ctx();
         ctx.let_bindings.insert("x".into(), "5".into());
         ctx.let_bindings.insert("y".into(), "7".into());
         let node = IRComputeApplyStep {
@@ -828,10 +935,73 @@ mod tests {
             arguments: vec!["x".into(), "y".into()],
             output_name: "sum".into(),
         };
-        run_compute_apply(&node, &mut ctx).await.unwrap();
-        assert_eq!(ctx.let_bindings.get("sum").unwrap(), "compute:add(5, 7)");
-        let first = rx.try_recv().unwrap();
-        match first {
+        let err = run_compute_apply(&node, &mut ctx)
+            .await
+            .expect_err("an undeclared compute must refuse, not bind a placeholder string");
+        assert!(format!("{err:?}").contains("does not resolve to a declared compute"));
+        assert!(
+            ctx.let_bindings.get("sum").is_none(),
+            "nothing may be bound for a compute that did not compute"
+        );
+    }
+
+    /// …and a DECLARED compute really adds. `5 + 7 = 12`, a number, zero tokens.
+    #[tokio::test]
+    async fn run_compute_apply_evaluates_the_declared_expression_natively() {
+        use crate::ir_nodes::{IRCompute, IRExpr, IRParameter};
+
+        let (mut ctx, mut rx) = fresh_ctx();
+        ctx.let_bindings.insert("x".into(), "5".into());
+        ctx.let_bindings.insert("y".into(), "7".into());
+
+        let p = |n: &str| IRParameter {
+            node_type: "parameter",
+            source_line: 0,
+            source_column: 0,
+            name: n.into(),
+            type_name: "Number".into(),
+            generic_param: String::new(),
+            optional: false,
+        };
+        ctx.compute_specs = std::sync::Arc::new(vec![IRCompute {
+            node_type: "compute",
+            source_line: 0,
+            source_column: 0,
+            name: "add".into(),
+            shield_ref: String::new(),
+            parameters: vec![p("a"), p("b")],
+            return_type: "Number".into(),
+            body: Some(IRExpr::Binary {
+                op: "add".into(),
+                lhs: Box::new(IRExpr::Ref { path: "a".into() }),
+                rhs: Box::new(IRExpr::Ref { path: "b".into() }),
+            }),
+        }]);
+
+        let node = IRComputeApplyStep {
+            node_type: "compute_apply",
+            source_line: 0,
+            source_column: 0,
+            compute_name: "add".into(),
+            arguments: vec!["x".into(), "y".into()],
+            output_name: "sum".into(),
+        };
+        let outcome = run_compute_apply(&node, &mut ctx).await.unwrap();
+
+        assert_eq!(
+            ctx.let_bindings.get("sum").unwrap(),
+            "12",
+            "5 + 7 = 12 — a NUMBER. This is the line the old test got wrong"
+        );
+        match outcome {
+            NodeOutcome::Completed { tokens_emitted, .. } => assert_eq!(
+                tokens_emitted, 0,
+                "`compute` bypasses the LLM — that is the entire primitive"
+            ),
+            e => panic!("expected Completed, got {e:?}"),
+        }
+
+        match rx.try_recv().unwrap() {
             FlowExecutionEvent::StepStart { step_type, .. } => {
                 assert_eq!(step_type, "compute_apply");
             }

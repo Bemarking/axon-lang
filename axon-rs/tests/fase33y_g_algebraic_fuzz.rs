@@ -82,6 +82,20 @@ fn assert_no_panic(
         Ok(_) => {}
         Err(DispatchError::UpstreamCancelled) => {}
         Err(DispatchError::ChannelClosed) => {}
+        // §Fase 111.f — `compute_apply` REFUSES when the compute is undeclared,
+        // the arity is wrong, or the term cannot be evaluated (this fuzz ctx
+        // attaches no compute catalog and feeds random argument counts, so it
+        // hits all three). The refusal is a TOTAL, correct outcome — and it is
+        // the entire point of the fase.
+        //
+        // This fuzz used to pass because `run_compute_apply` returned
+        // `Ok("compute:add(5, 7)")` for literally any input, including a random
+        // number of arguments to a compute that did not exist. Totality was
+        // achieved by never failing — which is exactly how a placeholder string
+        // reached a downstream step that expected a number (§111 F10).
+        //
+        // A handler that cannot fail is not total. It is mute.
+        Err(DispatchError::BackendError { name, .. }) if name == "compute" => {}
         Err(other) => panic!("{label}: unexpected error variant: {other:?}"),
     }
 }

@@ -343,7 +343,7 @@ fn numeric_cmp(a: &str, b: &str) -> Option<std::cmp::Ordering> {
 /// precision for arithmetic + numeric comparison while coercing to/from strings
 /// at the boundary. Total + pure — no side effects, no I/O.
 #[derive(Debug, Clone)]
-enum EVal {
+pub(crate) enum EVal {
     Int(i64),
     Float(f64),
     Bool(bool),
@@ -366,7 +366,7 @@ enum EVal {
 /// caller fail-closes. This evaluator runs ONLY for `cond = Some` (rich, post-§70
 /// conditions), so it defines clean numeric-aware semantics with no obligation
 /// to reproduce the legacy `eval_triple` string quirks.
-fn eval_expr(e: &crate::ir_nodes::IRExpr, ctx: &DispatchCtx) -> Option<EVal> {
+pub(crate) fn eval_expr(e: &crate::ir_nodes::IRExpr, ctx: &DispatchCtx) -> Option<EVal> {
     use crate::ir_nodes::{IRExpr, IRExprLit};
     match e {
         IRExpr::Lit { lit } => Some(match lit {

@@ -1567,6 +1567,24 @@ impl IRGenerator {
             source_column: n.loc.column,
             name: n.name.clone(),
             shield_ref: n.shield_ref.clone(),
+            // §Fase 111.f — the parameters and the body now reach the IR. Before
+            // this, `IRCompute` carried only `name` + `shield_ref`, so the
+            // "deterministic muscle" had nothing to flex: no inputs, no term.
+            parameters: n
+                .parameters
+                .iter()
+                .map(|p| IRParameter {
+                    node_type: "parameter",
+                    source_line: p.loc.line,
+                    source_column: p.loc.column,
+                    name: p.name.clone(),
+                    type_name: p.type_expr.name.clone(),
+                    generic_param: p.type_expr.generic_param.clone(),
+                    optional: p.type_expr.optional,
+                })
+                .collect(),
+            return_type: n.return_type.clone(),
+            body: n.body.as_ref().map(Self::lower_expr),
         }
     }
 

@@ -22,7 +22,7 @@
 use axon::cancel_token::CancellationFlag;
 use axon::flow_dispatcher::algebraic_handlers::{
     apply_mandate_to_target, apply_ots_to_target, apply_shield_to_target,
-    invoke_compute_capability, invoke_daemon, listen_on_channel,
+    invoke_daemon, listen_on_channel,
 };
 use axon::flow_dispatcher::{dispatch_node, DispatchCtx, DispatchError, NodeOutcome};
 use axon::flow_execution_event::FlowExecutionEvent;
@@ -134,30 +134,6 @@ fn apply_mandate_oss_passthrough() {
 }
 
 #[test]
-fn invoke_compute_resolves_let_bindings_arguments() {
-    let (mut ctx, _rx) = fresh_ctx();
-    ctx.let_bindings.insert("a".into(), "1".into());
-    ctx.let_bindings.insert("b".into(), "2".into());
-    assert_eq!(
-        invoke_compute_capability("add", &["a".into(), "b".into()], &ctx),
-        "compute:add(1, 2)"
-    );
-}
-
-#[test]
-fn invoke_compute_with_literal_args() {
-    let (ctx, _rx) = fresh_ctx();
-    assert_eq!(
-        invoke_compute_capability(
-            "compute_id",
-            &["literal".into(), "value".into()],
-            &ctx
-        ),
-        "compute:compute_id(literal, value)"
-    );
-}
-
-#[test]
 fn listen_returns_awaiting_placeholder() {
     let (ctx, _rx) = fresh_ctx();
     assert_eq!(listen_on_channel("user.events", true, &ctx), "(awaiting user.events)");
@@ -251,15 +227,52 @@ async fn dispatch_node_routes_mandate_apply() {
 //  §5 — ComputeApply through dispatch_node
 // ────────────────────────────────────────────────────────────────────
 
+
+/// §Fase 111.f — a real declared compute: `Sum(a, b) = a + b`.
+///
+/// Before §111, none of the tests below needed one: `run_compute_apply` bound the
+/// literal string `"compute:sum(100, 200)"` for ANY name, declared or not, and the
+/// assertions below pinned exactly that. The placeholder was not something the
+/// suite missed — the suite REQUIRED it.
+fn declare_sum(ctx: &mut DispatchCtx) {
+    use axon::ir_nodes::{IRCompute, IRExpr, IRParameter};
+    let p = |n: &str| IRParameter {
+        node_type: "parameter",
+        source_line: 0,
+        source_column: 0,
+        name: n.into(),
+        type_name: "Number".into(),
+        generic_param: String::new(),
+        optional: false,
+    };
+    ctx.compute_specs = std::sync::Arc::new(vec![IRCompute {
+        node_type: "compute",
+        source_line: 0,
+        source_column: 0,
+        name: "sum".into(),
+        shield_ref: String::new(),
+        parameters: vec![p("a"), p("b")],
+        return_type: "Number".into(),
+        body: Some(IRExpr::Binary {
+            op: "add".into(),
+            lhs: Box::new(IRExpr::Ref { path: "a".into() }),
+            rhs: Box::new(IRExpr::Ref { path: "b".into() }),
+        }),
+    }]);
+}
+
 #[tokio::test]
 async fn dispatch_node_routes_compute_apply() {
     let (mut ctx, mut rx) = fresh_ctx();
     ctx.let_bindings.insert("x".into(), "100".into());
     ctx.let_bindings.insert("y".into(), "200".into());
+    declare_sum(&mut ctx);
     dispatch_node(&compute_apply("sum", vec!["x", "y"], "total"), &mut ctx)
         .await
         .unwrap();
-    assert_eq!(ctx.let_bindings.get("total").unwrap(), "compute:sum(100, 200)");
+    // 100 + 200 = 300. A NUMBER. This assertion used to read
+    // `"compute:sum(100, 200)"` — the lie, pinned green (§111 F10).
+    assert_eq!(ctx.let_bindings.get("total").unwrap(), "300");
     let first = rx.try_recv().unwrap();
     match first {
         FlowExecutionEvent::StepStart { step_type, .. } => {
@@ -270,12 +283,20 @@ async fn dispatch_node_routes_compute_apply() {
 }
 
 #[tokio::test]
-async fn compute_apply_with_no_arguments() {
+async fn compute_apply_to_an_undeclared_compute_refuses() {
+    // Was `compute_apply_with_no_arguments`, and it asserted that applying an
+    // UNDECLARED compute called `ping` bound the string `"compute:ping()"`. The
+    // handler could not tell a declared function from an imaginary one, because
+    // it never looked: it formatted a string from whatever name it was given.
     let (mut ctx, _rx) = fresh_ctx();
-    dispatch_node(&compute_apply("ping", vec![], "result"), &mut ctx)
+    let err = dispatch_node(&compute_apply("ping", vec![], "result"), &mut ctx)
         .await
-        .unwrap();
-    assert_eq!(ctx.let_bindings.get("result").unwrap(), "compute:ping()");
+        .expect_err("an undeclared compute must refuse");
+    assert!(format!("{err:?}").contains("does not resolve to a declared compute"));
+    assert!(
+        ctx.let_bindings.get("result").is_none(),
+        "nothing may be bound for a compute that did not compute"
+    );
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -327,7 +348,7 @@ async fn cancel_propagates_into_every_algebraic_handler() {
         shield_apply("s", "t", "o"),
         ots_apply("s", "t", "o"),
         mandate_apply("s", "t", "o"),
-        compute_apply("s", vec!["a"], "o"),
+        compute_apply("sum", vec!["a", "b"], "o"),
         listen("c", "e"),
         daemon_step("d"),
     ];
@@ -369,13 +390,16 @@ async fn shield_apply_inside_for_in_per_iter() {
 #[tokio::test]
 async fn compute_apply_chained_with_remember() {
     let (mut ctx, _rx) = fresh_ctx();
-    ctx.let_bindings.insert("base".into(), "value-A".into());
+    declare_sum(&mut ctx);
+    ctx.let_bindings.insert("base".into(), "40".into());
+    ctx.let_bindings.insert("other".into(), "2".into());
     dispatch_node(
-        &compute_apply("transform", vec!["base"], "computed"),
+        &compute_apply("sum", vec!["base", "other"], "computed"),
         &mut ctx,
     )
     .await
     .unwrap();
+    assert_eq!(ctx.let_bindings.get("computed").unwrap(), "42");
 
     // Now Remember the result under a stable key.
     dispatch_node(
@@ -391,10 +415,9 @@ async fn compute_apply_chained_with_remember() {
     .await
     .unwrap();
 
-    assert_eq!(
-        ctx.let_bindings.get("checkpoint").unwrap(),
-        "compute:transform(value-A)"
-    );
+    // The remembered checkpoint is the COMPUTED value (40 + 2), not the text
+    // "compute:transform(value-A)" — which is what this assertion used to demand.
+    assert_eq!(ctx.let_bindings.get("checkpoint").unwrap(), "42");
 }
 
 #[tokio::test]
@@ -421,6 +444,9 @@ async fn shield_chain_idempotent_across_two_invocations() {
 #[tokio::test]
 async fn algebraic_handlers_advance_step_counter() {
     let (mut ctx, _rx) = fresh_ctx();
+    declare_sum(&mut ctx);
+    ctx.let_bindings.insert("a".into(), "1".into());
+    ctx.let_bindings.insert("b".into(), "2".into());
     assert_eq!(ctx.step_counter, 0);
     dispatch_node(&shield_apply("s", "t", "o"), &mut ctx).await.unwrap();
     assert_eq!(ctx.step_counter, 1);
@@ -428,7 +454,7 @@ async fn algebraic_handlers_advance_step_counter() {
     assert_eq!(ctx.step_counter, 2);
     dispatch_node(&mandate_apply("s", "t", "o"), &mut ctx).await.unwrap();
     assert_eq!(ctx.step_counter, 3);
-    dispatch_node(&compute_apply("c", vec![], "o"), &mut ctx).await.unwrap();
+    dispatch_node(&compute_apply("sum", vec!["a", "b"], "o"), &mut ctx).await.unwrap();
     assert_eq!(ctx.step_counter, 4);
     dispatch_node(&listen("c", "e"), &mut ctx).await.unwrap();
     assert_eq!(ctx.step_counter, 5);

@@ -1697,6 +1697,27 @@ pub struct MandateDefinition {
 pub struct ComputeDefinition {
     pub name: String,
     pub shield_ref: String,
+    /// §Fase 111.f — the typed parameters. Before §111, `parse_compute` SKIPPED
+    /// everything between the name and the brace ("Skip optional parameters/
+    /// return type"), so a compute had no inputs at all — which is one reason it
+    /// could not compute anything.
+    pub parameters: Vec<Parameter>,
+    /// §Fase 111.f — the declared result type.
+    pub return_type: String,
+    /// §Fase 111.f — **the body**: a §70 `Expr`.
+    ///
+    /// This is what makes `compute` honest. The README sells it as "Deterministic
+    /// muscle — native Fast-Path execution BYPASSING the LLM" and even asserts a
+    /// complexity class ("compute steps: O(n)"). A §70 expression is exactly that
+    /// and nothing more: a closed, total, side-effect-free term the runtime
+    /// evaluates with `eval_expr` — the same native evaluator `let`, `grad` and
+    /// `conditional` already use. Linear in the term. No model in the loop.
+    ///
+    /// `None` ⇒ a compute that cannot compute; applying it is refused
+    /// (axon-T941), rather than binding the literal string `"compute:Name(args)"`
+    /// as the pre-§111 runtime did — which a downstream step then consumed as if
+    /// it were a number.
+    pub body: Option<Expr>,
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia attached to this declaration
     /// (comments preceding the declaration's first token, since the

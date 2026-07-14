@@ -1368,6 +1368,8 @@ struct NavDispatch {
     /// CLOSED: E = ⟨ψ|M|ψ⟩ with no M is not a weak result, it is a category
     /// error.
     observables: std::sync::Arc<Vec<crate::ir_nodes::IRObservable>>,
+    /// §Fase 111.f — the compiled `compute` declarations (pure §70 functions).
+    compute_specs: std::sync::Arc<Vec<crate::ir_nodes::IRCompute>>,
 }
 
 /// §Fase 65.A — kill-switch for the structural-dispatch bridge. ON by default:
@@ -1514,6 +1516,8 @@ async fn dispatch_structural(
         std::sync::Arc::new(crate::quant::ReferenceSimulator::new()),
         nd.observables.clone(),
     );
+    // §Fase 111.f — see above.
+    dctx = dctx.with_computes(nd.compute_specs.clone());
     // Share the flow's MDN interaction history across all of its navigate nodes
     // so adaptive ω reinforcement sees cross-navigation variance (SSE parity).
     dctx.mdn_histories = histories.clone();
@@ -3465,6 +3469,9 @@ async fn collect_via_dispatcher(
         std::sync::Arc::new(crate::quant::ReferenceSimulator::new()),
         nav_dispatch.observables.clone(),
     );
+    // §Fase 111.f — attach the compute catalog so `compute … on …` evaluates its
+    // declared §70 expression NATIVELY instead of binding "compute:Name(args)".
+    ctx = ctx.with_computes(nav_dispatch.compute_specs.clone());
     // §Fase 72.c — attach the linear-effect budget gate (daemon path only).
     if let Some(gate) = budget {
         ctx = ctx.with_budget(gate);
@@ -3945,6 +3952,8 @@ pub fn execute_server_flow(
             // extracted only for the enterprise `POST /api/v1/quant/{name}`
             // route; the LANGUAGE primitive could not reach it.
             observables: std::sync::Arc::new(ir.observables.clone()),
+            // §Fase 111.f — the deterministic muscle finally has something to flex.
+            compute_specs: std::sync::Arc::new(ir.compute_specs.clone()),
         }
     };
 
@@ -5207,6 +5216,7 @@ flow Recall(q: Text) -> Text {
             dataspace_engine: None,
             scopes: std::sync::Arc::new(Vec::new()),
             observables: std::sync::Arc::new(Vec::new()),
+            compute_specs: std::sync::Arc::new(Vec::new()),
         };
         let pb = vec![("q".to_string(), "DocA".to_string())];
         let collected = collect_via_dispatcher(
@@ -5453,6 +5463,7 @@ flow Producer(tenant_id: Text) -> Text {
             dataspace_engine: None,
             scopes: std::sync::Arc::new(Vec::new()),
             observables: std::sync::Arc::new(Vec::new()),
+            compute_specs: std::sync::Arc::new(Vec::new()),
         }
     }
 }

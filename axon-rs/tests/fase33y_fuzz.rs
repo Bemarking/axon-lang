@@ -705,6 +705,20 @@ fn assert_clean_outcome(
         Ok(other) => panic!(
             "33.y.n fuzz: unexpected NodeOutcome variant for {kind} iter {iter}: {other:?}"
         ),
+        // §Fase 111.c/d/f — the primitives MADE REAL in §111 fail CLOSED when
+        // their port / catalog is absent (this fuzz ctx attaches none). The
+        // refusal IS the correct total outcome, and it is the whole point: each
+        // of these used to "complete" with an empty output or a placeholder
+        // string, which is indistinguishable from a real result — the defect the
+        // fase exists to end.
+        //
+        //   compute — a placeholder "compute:Name(args)" a step read as a number
+        //   yield   — a measurement with no Hilbert space to measure in
+        //   warden  — an analysis that never ran, reported as "no findings"
+        //   quant   — a block whose body was silently skipped
+        //   grad    — a stale artifact carrying no compile-time derivative (§109)
+        Err(DispatchError::BackendError { ref name, .. })
+            if matches!(name.as_str(), "compute" | "yield" | "warden" | "quant" | "grad") => {}
         Err(DispatchError::BackendError { name, message }) => panic!(
             "33.y.n fuzz: unexpected BackendError for {kind} iter {iter}: name={name} msg={message}"
         ),
@@ -717,6 +731,13 @@ fn assert_clean_outcome(
             kind,
             "focus" | "associate" | "aggregate" | "explore" | "ingest"
         ) => {}
+        // §Fase 111.c/d — warden + quant refuse without their engine port.
+        Err(DispatchError::MissingDependency {
+            name: "warden_backend",
+        }) if kind == "warden" => {}
+        Err(DispatchError::MissingDependency {
+            name: "quant_backend",
+        }) if matches!(kind, "quant" | "yield") => {}
         Err(DispatchError::MissingDependency { name }) => panic!(
             "33.y.n fuzz: unexpected MissingDependency for {kind} iter {iter}: name={name}"
         ),

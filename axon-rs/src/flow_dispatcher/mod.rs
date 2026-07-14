@@ -380,6 +380,19 @@ pub struct DispatchCtx {
     /// CLOSED (a measurement with no state to measure is not a weak result, it
     /// is a category error).
     pub quant_frame: Option<QuantFrame>,
+    /// §Fase 111.f — the compiled `compute` declarations: named PURE FUNCTIONS
+    /// over the §70 expression language.
+    ///
+    /// Before §111 this catalog did not need to exist, because `IRCompute`
+    /// carried only `name` + `shield_ref` — no parameters, no body. The handler
+    /// therefore bound the literal string `"compute:Name(args)"`, and a
+    /// downstream step consumed that TEXT where it expected a number, while the
+    /// README promised "native Fast-Path execution bypassing the LLM" with an
+    /// O(n) guarantee (§111 F10).
+    ///
+    /// Empty ⇒ `compute … on …` fails CLOSED (axon-T941 catches it at compile
+    /// time; this is the runtime's belt).
+    pub compute_specs: Arc<Vec<crate::ir_nodes::IRCompute>>,
     pub cancel: CancellationFlag,
     pub tx: mpsc::UnboundedSender<FlowExecutionEvent>,
     pub enforcement_summaries: Arc<
@@ -623,6 +636,8 @@ impl DispatchCtx {
             quant_backend: None,
             observables: Arc::new(Vec::new()),
             quant_frame: None,
+            // §Fase 111.f — no compute catalog by default: an apply fails CLOSED.
+            compute_specs: Arc::new(Vec::new()),
             cancel,
             tx,
             enforcement_summaries: Arc::new(Mutex::new(HashMap::new())),
@@ -724,6 +739,14 @@ impl DispatchCtx {
     /// at `OSS_QUBIT_CAP` qubits — a register above the cap fails closed with
     /// `axon-E0783`, never a silent truncation). Enterprise mounts its
     /// `Q32Simulator` behind the same trait.
+    /// §Fase 111.f — Builder: attach the compiled `compute` declarations, so
+    /// `compute <Name> on …` evaluates its declared expression natively instead
+    /// of binding a placeholder string.
+    pub fn with_computes(mut self, specs: Arc<Vec<crate::ir_nodes::IRCompute>>) -> Self {
+        self.compute_specs = specs;
+        self
+    }
+
     pub fn with_quant(
         mut self,
         backend: std::sync::Arc<dyn crate::quant::QuantBackend + Send + Sync>,

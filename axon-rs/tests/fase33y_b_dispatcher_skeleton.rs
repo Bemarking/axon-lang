@@ -799,9 +799,15 @@ const GRAD_GRADUATED: &[&str] = &["grad"];
 /// For zero-payload synthetic inputs in the drift gate, outputs
 /// are sensible defaults (empty/placeholder).
 const ALGEBRAIC_HANDLERS_GRADUATED: &[&str] = &[
-    "shield_apply", "ots_apply", "mandate_apply", "compute_apply", "listen",
+    "shield_apply", "ots_apply", "mandate_apply", "listen",
     "daemon_step",
 ];
+
+/// §Fase 111.f — `compute_apply` REFUSES without a declared compute. It used to
+/// sit in ALGEBRAIC_HANDLERS_GRADUATED and "complete" by binding the literal
+/// string "compute:Name(args)" — which a downstream step then read as a number.
+/// The refusal IS the routing proof (the §108.a / mint / rotate posture).
+const COMPUTE_FAILCLOSED: &[&str] = &["compute_apply"];
 
 /// Wire-integration graduated variants (33.y.h) — π-calc typed
 /// channels + persistence primitives + multi-agent deliberation.
@@ -888,6 +894,7 @@ async fn every_ir_flow_node_routes_to_its_labeled_handler() {
             // §Fase 51.a — quant routes here (Completed, 0 tokens).
             || QUANT_GRADUATED.contains(&expected_kind);
         let _ = QUANT_FAILCLOSED; // handled by its own fail-closed arms below
+        let _ = COMPUTE_FAILCLOSED;
         let _ = WARDEN_GRADUATED; // handled by its own fail-closed arm below
 
         // Cognitive-framing handlers behave like pure-shape (1 token).
@@ -926,6 +933,18 @@ async fn every_ir_flow_node_routes_to_its_labeled_handler() {
                     if name == "grad" => {}
                 other => panic!(
                     "grad must fail CLOSED on a stale shape (BackendError name=grad),                      got {other:?}",
+                ),
+            }
+            continue;
+        }
+
+        // §Fase 111.f — `compute_apply` refuses without a declared compute.
+        if COMPUTE_FAILCLOSED.contains(&expected_kind) {
+            match outcome {
+                Err(axon::flow_dispatcher::DispatchError::BackendError { ref name, .. })
+                    if name == "compute" => {}
+                other => panic!(
+                    "compute_apply must fail CLOSED with no declared compute — binding a                      placeholder string is what §111 F10 was, got {other:?}",
                 ),
             }
             continue;
@@ -1096,7 +1115,8 @@ fn graduated_variants_set_size_pinned_48_of_48() {
     assert_eq!(COGNITIVE_FRAMING_GRADUATED.len(), 2);
     assert_eq!(DATA_PLANE_GRADUATED.len(), 5);
     assert_eq!(GRAD_GRADUATED.len(), 1);
-    assert_eq!(ALGEBRAIC_HANDLERS_GRADUATED.len(), 6);
+    assert_eq!(ALGEBRAIC_HANDLERS_GRADUATED.len(), 5);
+    assert_eq!(COMPUTE_FAILCLOSED.len(), 1);
     assert_eq!(WIRE_INTEGRATIONS_GRADUATED.len(), 10);
     assert_eq!(PIX_GRADUATED.len(), 3);
     assert_eq!(LAMBDA_TOOLS_GRADUATED.len(), 2);
@@ -1113,6 +1133,7 @@ fn graduated_variants_set_size_pinned_48_of_48() {
         + COGNITIVE_FRAMING_GRADUATED.len()
         + DATA_PLANE_GRADUATED.len()
         + ALGEBRAIC_HANDLERS_GRADUATED.len()
+        + COMPUTE_FAILCLOSED.len()
         + WIRE_INTEGRATIONS_GRADUATED.len()
         + PIX_GRADUATED.len()
         + LAMBDA_TOOLS_GRADUATED.len()

@@ -1982,6 +1982,20 @@ pub struct IRCompute {
     pub source_column: u32,
     pub name: String,
     pub shield_ref: String,
+    /// §Fase 111.f — typed parameters. ADDITIVE (`skip_serializing_if`), so every
+    /// pre-111 program's IR JSON stays byte-identical.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parameters: Vec<IRParameter>,
+    /// §Fase 111.f — the declared result type.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub return_type: String,
+    /// §Fase 111.f — the lowered §70 expression the runtime evaluates natively.
+    /// `None` ⇒ the apply is refused (axon-T941): a compute with no body cannot
+    /// compute, and binding a placeholder string in its place is how the old
+    /// runtime handed a downstream step the text `"compute:Name(args)"` where it
+    /// expected a number.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<IRExpr>,
 }
 
 #[derive(Debug, Clone, Serialize)]

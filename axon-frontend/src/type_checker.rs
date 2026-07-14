@@ -9855,6 +9855,52 @@ impl<'a> TypeChecker<'a> {
                 //
                 // Fail CLOSED. A missing feature is survivable; a fabricated
                 // atomicity guarantee corrupts data.
+                // ── §Fase 111 (T939/T940) — `deliberate` / `consensus` ────
+                //
+                // The last two silent no-ops in the language, and they died the
+                // same way `stream` and `transact` did: all four parse through
+                // `parse_block_step`, whose entire job is `skip_braced_block()`.
+                // The block's contents are thrown away AT PARSE TIME —
+                // `DeliberateBlock` and `ConsensusBlock` carry only a source
+                // location. So `run_consensus` does not even take its node
+                // (`_node`), and could not: there is nothing in it.
+                //
+                // The README sells `deliberate` as "Compute budget control
+                // (tokens/depth/strategy)" and `consensus` as "Best-of-N
+                // parallel evaluation & selection". Neither has ever evaluated,
+                // voted, budgeted or selected anything. Writing them bought the
+                // adopter silence — their steps vanished, and `StepComplete`
+                // went out on the wire saying the block had finished.
+                //
+                // Fail CLOSED (the §108 posture): a refusal is reversible, a
+                // silent no-op is not. Whether these are implemented or
+                // retracted is §111's Tier-4 decision; either way, they must
+                // stop swallowing programs today.
+                FlowStep::Deliberate(n) => {
+                    self.emit(
+                        "axon-T939 `deliberate { … }` is REFUSED (§111). It never controlled a \
+                         budget: the block's body is discarded at PARSE time (it shares \
+                         `parse_block_step` with `stream`/`consensus`/`transact`, whose whole job \
+                         is to skip the braces), so the steps you wrote inside it never reached \
+                         the IR and never ran — while the wire reported the block complete. To \
+                         bound compute today, use a `budget { … }` on the daemon or the declared \
+                         `max_tokens:` / `max_time:` / `max_cost:` ceilings, which are enforced."
+                            .to_string(),
+                        &n.loc,
+                    );
+                }
+                FlowStep::Consensus(n) => {
+                    self.emit(
+                        "axon-T940 `consensus { … }` is REFUSED (§111). There is no best-of-N: no \
+                         votes are cast, nothing is aggregated, no candidates are generated. The \
+                         block's body is discarded at PARSE time, so the handler never even \
+                         receives it — a selection over an empty set silently returned nothing \
+                         while the wire reported success. To evaluate alternatives today, run them \
+                         explicitly (e.g. `par { … }`) and select with a `validate` or an `anchor`."
+                            .to_string(),
+                        &n.loc,
+                    );
+                }
                 FlowStep::Transact(n) => {
                     self.emit(
                         "axon-T938 `transact { … }` is RETRACTED (§111). It never opened a \
