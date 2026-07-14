@@ -8,7 +8,11 @@ use serde::Serialize;
 
 // ── Program root ─────────────────────────────────────────────────────────────
 
-#[derive(Debug, Serialize)]
+/// §Fase 112.b — `Clone` is additive and every member IR type already derives it.
+/// The Cognitive-I/O supervisor owns the compiled program it drives (it outlives
+/// the deploy call that built it), and a lifetime-bound supervisor would have to be
+/// threaded through `ServerState` for no benefit.
+#[derive(Debug, Clone, Serialize)]
 pub struct IRProgram {
     pub node_type: &'static str,
     pub source_line: u32,
@@ -304,7 +308,7 @@ pub struct IRWitness {
 // the Python side; the Rust runtime (axon-rs/src/effects/) consumes
 // the JSON IR via its own deserialize structs.
 
-#[derive(Debug, Serialize, Default)]
+#[derive(Debug, Serialize, Default, Clone)]
 pub struct IREffectDeclaration {
     pub node_type: &'static str,
     pub source_line: u32,
@@ -325,7 +329,7 @@ impl IREffectDeclaration {
     }
 }
 
-#[derive(Debug, Serialize, Default)]
+#[derive(Debug, Serialize, Default, Clone)]
 pub struct IREffectOperation {
     pub node_type: &'static str,
     pub source_line: u32,
@@ -659,7 +663,7 @@ pub struct IRView {
 
 // ── Import ───────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct IRImport {
     pub node_type: &'static str,
     pub source_line: u32,
@@ -753,7 +757,7 @@ pub struct IRNamedArg {
     pub value_kind: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct IRToolSpec {
     pub node_type: &'static str,
     pub source_line: u32,
@@ -821,7 +825,7 @@ pub struct IRToolSpec {
 /// `skip_serializing_if` on its empty/none form so a minimal `scrape: {}`
 /// and each partially-populated block serialise deterministically with no
 /// null noise, keeping the IR-SHA additive.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct IRScrapeSpec {
     pub node_type: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -856,7 +860,7 @@ pub struct IRScrapeSpec {
 
 // ── Memory ───────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct IRMemory {
     pub node_type: &'static str,
     pub source_line: u32,
@@ -881,7 +885,7 @@ pub struct IRTypeField {
     pub optional: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct IRType {
     pub node_type: &'static str,
     pub source_line: u32,

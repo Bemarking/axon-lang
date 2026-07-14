@@ -294,6 +294,11 @@ pub mod runner;
 // scanners (identity); enterprise vertical crates register HIPAA/legal/AML
 // scanners here at boot. The `shield apply` handler consults it.
 pub mod shield_registry;
+/// §Fase 112.b — the Cognitive-I/O supervisor: the loop that instantiates the
+/// declared λ-L-E dataflow graph (`observe` → {`ensemble`, `immune`} →
+/// {`reflex`, `heal`}, plus `reconcile`) and drives it. The language was complete
+/// and the kernels took the IR directly; **nobody had ever built the loop.**
+pub mod cognitive_io_supervisor;
 /// §Fase 112.a — the source adapter registry: what an `observe` actually looks at.
 /// **Deny-by-default** — an unregistered source is UNKNOWN, not healthy, and the
 /// observation refuses rather than fabricating a reading.
