@@ -41,7 +41,7 @@
 //! - **D10** — sync-runner parity: in-memory let_bindings semantics
 //!   match the principled persistence + channel discipline.
 
-use crate::flow_dispatcher::{DispatchCtx, DispatchError, NodeOutcome};
+use crate::flow_dispatcher::{dispatch_node, DispatchCtx, DispatchError, NodeOutcome};
 use crate::flow_execution_event::{now_ms, FlowExecutionEvent};
 use crate::ir_nodes::{
     IRConsensusBlock, IRDeliberateBlock, IRDiscover, IREmit, IRMintStep, IRMutateStep,
@@ -1367,16 +1367,42 @@ pub async fn run_quant(
     })
 }
 
-/// §Fase 88.a — the `warden(<target>) within <Scope> { … }` adversarial
-/// security-analysis block. Wire shape: `step_type: "warden"`.
+/// §Fase 88.a / **§Fase 111.c — MADE REAL** — the
+/// `warden(<target>) within <Scope> { … }` adversarial security-analysis block.
+/// Wire shape: `step_type: "warden"`.
 ///
-/// SURFACE ONLY: the OSS dispatcher recognizes the block and emits the canonical
-/// start/complete wire shape (recording the target + scope reference so an
-/// observer sees the authorization binding) but does NOT run the analysis. The
-/// real work — resolving the signed `scope`, ingesting authorized evidence,
-/// abductive adversarial analysis, and emitting attested `Vulnerability`
-/// findings — is the `WardenBackend` port + reference engine (§88.d) and the
-/// enterprise engine (§88.f), all behind the §88.c authorization gate.
+/// # What this used to be (§111 F12)
+///
+/// A no-op wearing a completed step's clothes. It inserted `__warden_scope` into
+/// the let-bindings — a key **nothing in the tree ever read** — returned an empty
+/// output, **silently discarded the block's body**, and emitted `StepComplete` on
+/// the wire. Meanwhile the README advertised *"adversarial abduction over
+/// authorized evidence, emitting attested `Vulnerability` findings"*.
+///
+/// The cruelty of the shape: an analysis that finds nothing and an analysis that
+/// never ran are **indistinguishable to the reader**. A security primitive whose
+/// silence cannot be told apart from a clean bill of health is not a weak
+/// feature — it is an anti-feature. And the engine existed all along
+/// ([`crate::warden`]: `ReferenceStaticWarden`, `Vulnerability`, `verify`), with
+/// enterprise's abduction engine mounted on an HTTP route. Nobody had wired the
+/// math to the keyword.
+///
+/// # What it is now
+///
+/// Fail-CLOSED at every joint, then a real analysis:
+///
+/// 1. **No engine** ⇒ `MissingDependency { name: "warden_backend" }`.
+/// 2. **Unresolvable `within <Scope>`** ⇒ refusal. A scope that cannot be
+///    resolved authorises nothing (§88's whole point).
+/// 3. **Unreadable target** ⇒ refusal. The target must resolve to evidence in
+///    scope of the flow; we do not analyse what we cannot read, and we never
+///    report "no findings" for a target we never opened.
+/// 4. **Backend refusal** (`TargetNotAuthorized` / `DepthNotSupported` /
+///    `Unapproved`) ⇒ surfaced verbatim, never swallowed into an empty result.
+/// 5. Findings are filtered through [`crate::warden::verify`] — an un-witnessed
+///    finding is noise and does not cross the boundary (paper §5.3).
+/// 6. **The body runs**, with the verified findings bound, so a flow can act on
+///    what the analysis actually found.
 pub async fn run_warden(
     node: &crate::ir_nodes::IRWarden,
     ctx: &mut DispatchCtx,
@@ -1388,14 +1414,113 @@ pub async fn run_warden(
     ctx.step_counter += 1;
 
     emit_step_start(ctx, "Warden", step_index, "warden")?;
-    // Record the authorization binding (target + scope) for downstream observers.
-    // No analysis happens here in §88.a.
+
+    // (1) The engine. No port ⇒ no analysis ⇒ refusal (never "0 findings").
+    let backend = ctx
+        .warden_backend
+        .clone()
+        .ok_or(DispatchError::MissingDependency {
+            name: "warden_backend",
+        })?;
+
+    // (2) The authorization envelope. The `within <Scope>` clause is mandatory in
+    //     the grammar; here we make it mandatory in fact.
+    let scope_ir = ctx
+        .scopes
+        .iter()
+        .find(|s| s.name == node.scope_ref)
+        .ok_or_else(|| DispatchError::BackendError {
+            name: "warden".to_string(),
+            message: format!(
+                "`within {}` does not resolve to a declared scope — an analysis with no \
+                 authorization envelope runs on nothing and authorises nothing (§88, fail-closed)",
+                node.scope_ref
+            ),
+        })?;
+    let scope = crate::warden::AnalysisScope {
+        targets: scope_ir.targets.clone(),
+        depth: scope_ir.depth.clone(),
+        approver: scope_ir.approver.clone(),
+    };
+
+    // (3) The evidence. `warden(<target>)` names a resource; its artifact must be
+    //     readable from the flow's bindings. If it is not, we REFUSE — the one
+    //     thing we must never do is analyse an empty buffer and call the silence
+    //     a clean result.
+    let content = crate::exec_context::resolve_value_reference(&node.target, &ctx.let_bindings);
+    if content.trim().is_empty() || content == node.target {
+        return Err(DispatchError::BackendError {
+            name: "warden".to_string(),
+            message: format!(
+                "target `{}` does not resolve to readable evidence in this flow — bind the \
+                 artifact first (e.g. `retrieve` it, or `let {} = …`). Analysing an unread target \
+                 would report 'no findings' for something never opened, which is the one result a \
+                 security primitive must never fabricate (§111 F12)",
+                node.target, node.target
+            ),
+        });
+    }
+
+    let evidence = crate::warden::Evidence {
+        target: node.target.clone(),
+        content: content.into_bytes(),
+    };
+
+    // (4) The analysis. A backend refusal is an ERROR, never an empty Vec.
+    let findings = backend
+        .analyze(&evidence, &scope)
+        .map_err(|e| DispatchError::BackendError {
+            name: "warden".to_string(),
+            message: e.to_string(),
+        })?;
+
+    // (5) The paraconsistent validator (paper §5.3): an un-witnessed finding is
+    //     noise. It does not cross the type boundary.
+    let verified: Vec<crate::warden::Vulnerability> = findings
+        .into_iter()
+        .filter(crate::warden::verify)
+        .collect();
+
+    // (6) Bind the result and RUN THE BODY — the part that used to be discarded.
+    let summary = serde_json::json!({
+        "target": node.target,
+        "scope": node.scope_ref,
+        "depth": scope.depth,
+        "approver": scope.approver,
+        "findings": verified
+            .iter()
+            .map(|v| serde_json::json!({
+                "class": v.class,
+                "target": v.target,
+                "severity": v.severity,
+                "confidence": v.confidence,
+            }))
+            .collect::<Vec<_>>(),
+        "count": verified.len(),
+    })
+    .to_string();
+
     ctx.let_bindings
-        .insert("__warden_scope".to_string(), node.scope_ref.clone());
-    emit_step_complete(ctx, "Warden", step_index, "", 0)?;
+        .insert(format!("__warden_{}", node.scope_ref), summary.clone());
+    ctx.let_bindings
+        .insert("warden".to_string(), summary.clone());
+
+    for child in &node.body {
+        match Box::pin(dispatch_node(child, ctx)).await? {
+            NodeOutcome::Completed { .. } => {}
+            // A `return` / `break` / `continue` inside the block propagates, as
+            // it does in every other body-bearing node.
+            other => {
+                emit_step_complete(ctx, "Warden", step_index, &summary, 0)?;
+                return Ok(other);
+            }
+        }
+    }
+
+    emit_step_complete(ctx, "Warden", step_index, &summary, 0)?;
 
     Ok(NodeOutcome::Completed {
-        output: String::new(),
+        output: summary,
         tokens_emitted: 0,
         step_index,
     })

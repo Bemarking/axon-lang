@@ -829,10 +829,17 @@ const LAMBDA_TOOLS_GRADUATED: &[&str] = &["lambda_data_apply", "use_tool"];
 /// an algebraic-effect block, D9) which asserts only `tokens_emitted == 0`.
 /// §Fase 51.d.2 adds `yield` (the measurement point) to the same surface-only
 /// bucket — `run_yield` likewise returns `Completed { tokens_emitted: 0 }`.
-/// §Fase 88.a adds `warden` — `run_warden` is surface-only with the identical
-/// outcome shape (canonical `step_type: "warden"` wire shape + `Completed {
-/// tokens_emitted: 0 }`); the real analysis lands in §88.d/f.
-const QUANT_GRADUATED: &[&str] = &["quant", "yield", "warden"];
+const QUANT_GRADUATED: &[&str] = &["quant", "yield"];
+
+/// §Fase 111.c — `warden` is no longer surface-only. It used to sit in
+/// QUANT_GRADUATED and "complete" with an empty output — which is exactly the
+/// defect §111 found: an analysis that never ran was indistinguishable from an
+/// analysis that found nothing.
+///
+/// It now REFUSES without its engine port, and the refusal IS the routing proof
+/// (the §108.a / mint / rotate posture). A security primitive must never report
+/// a clean bill of health for a target it never opened.
+const WARDEN_GRADUATED: &[&str] = &["warden"];
 
 #[tokio::test]
 async fn every_ir_flow_node_routes_to_its_labeled_handler() {
@@ -863,6 +870,7 @@ async fn every_ir_flow_node_routes_to_its_labeled_handler() {
             || LAMBDA_TOOLS_GRADUATED.contains(&expected_kind)
             // §Fase 51.a — quant routes here (Completed, 0 tokens).
             || QUANT_GRADUATED.contains(&expected_kind);
+        let _ = WARDEN_GRADUATED; // handled by its own fail-closed arm below
 
         // Cognitive-framing handlers behave like pure-shape (1 token).
         let pure_shape_like = pure_shape || cognitive_framing;
@@ -900,6 +908,21 @@ async fn every_ir_flow_node_routes_to_its_labeled_handler() {
                     if name == "grad" => {}
                 other => panic!(
                     "grad must fail CLOSED on a stale shape (BackendError name=grad),                      got {other:?}",
+                ),
+            }
+            continue;
+        }
+
+        // §Fase 111.c — `warden` REFUSES without its engine port. Pre-111 it
+        // "completed" with an empty output, so a reader could not tell an audit
+        // that found nothing from an audit that never ran.
+        if WARDEN_GRADUATED.contains(&expected_kind) {
+            match outcome {
+                Err(axon::flow_dispatcher::DispatchError::MissingDependency {
+                    name: "warden_backend",
+                }) => {}
+                other => panic!(
+                    "warden must fail CLOSED without its engine                      (MissingDependency: warden_backend), got {other:?}",
                 ),
             }
             continue;
@@ -1037,7 +1060,8 @@ fn graduated_variants_set_size_pinned_48_of_48() {
     assert_eq!(WIRE_INTEGRATIONS_GRADUATED.len(), 10);
     assert_eq!(PIX_GRADUATED.len(), 3);
     assert_eq!(LAMBDA_TOOLS_GRADUATED.len(), 2);
-    assert_eq!(QUANT_GRADUATED.len(), 3);
+    assert_eq!(QUANT_GRADUATED.len(), 2);
+    assert_eq!(WARDEN_GRADUATED.len(), 1);
 
     // Sum check — the partition is exhaustive (no variant in
     // multiple groups; no variant missing).
@@ -1052,6 +1076,7 @@ fn graduated_variants_set_size_pinned_48_of_48() {
         + PIX_GRADUATED.len()
         + LAMBDA_TOOLS_GRADUATED.len()
         + QUANT_GRADUATED.len()
+        + WARDEN_GRADUATED.len()
         + GRAD_GRADUATED.len();
     assert_eq!(
         total, 49,

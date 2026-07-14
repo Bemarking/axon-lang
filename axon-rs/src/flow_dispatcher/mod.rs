@@ -308,6 +308,29 @@ pub struct DispatchCtx {
     /// an LLM narration (the §108.a honesty floor). The deploy hook builds
     /// it from the compiled `ir.dataspace_specs`.
     pub dataspace_engine: Option<crate::dataspace_engine::SharedDataspaceEngine>,
+    /// §Fase 111.c — the adversarial-analysis port behind the `warden` block.
+    ///
+    /// Before §111 there was NO port here, which is why `warden` could not have
+    /// worked even in principle: `run_warden` recorded the scope name in a
+    /// let-binding nobody read, returned an empty string, and **silently
+    /// discarded the block's body** — while `StepComplete` went out on the wire
+    /// saying it had finished. The engine existed the whole time
+    /// (`crate::warden::{WardenBackend, ReferenceStaticWarden, Vulnerability,
+    /// verify}`) and no code path could reach it; enterprise's `saas-warden`
+    /// was mounted only on the `POST /api/v1/warden/{scope}` HTTP route. The
+    /// math was a library nobody wired to the keyword (§111 F12).
+    ///
+    /// `None` (the `new` default) ⇒ the block fails CLOSED with
+    /// `MissingDependency { name: "warden_backend" }`. An unanalysed target must
+    /// never return "no findings" — an empty result and a refusal look identical
+    /// to a reader, and only one of them is honest.
+    pub warden_backend: Option<std::sync::Arc<dyn crate::warden::WardenBackend + Send + Sync>>,
+    /// §Fase 111.c — the compiled `scope` declarations, so `warden(<t>) within
+    /// <Scope>` can resolve its authorization envelope at dispatch time. Empty
+    /// (the `new` default) ⇒ every `warden` fails CLOSED: a scope that cannot be
+    /// resolved authorises nothing (the §88 fail-closed posture — the `within`
+    /// clause is mandatory precisely so an analysis can never run unscoped).
+    pub scopes: Arc<Vec<crate::ir_nodes::IRScope>>,
     pub cancel: CancellationFlag,
     pub tx: mpsc::UnboundedSender<FlowExecutionEvent>,
     pub enforcement_summaries: Arc<
@@ -538,6 +561,12 @@ impl DispatchCtx {
             // §Fase 108.b — no engine by default: the five data-plane verbs
             // fail CLOSED until the deploy hook attaches one.
             dataspace_engine: None,
+            // §Fase 111.c — no warden backend and no scope catalog by default:
+            // a `warden` block fails CLOSED until BOTH are attached. Analysis
+            // requires an engine to run it AND an authorization envelope to run
+            // it within; neither is optional.
+            warden_backend: None,
+            scopes: Arc::new(Vec::new()),
             cancel,
             tx,
             enforcement_summaries: Arc::new(Mutex::new(HashMap::new())),
@@ -604,6 +633,28 @@ impl DispatchCtx {
         engine: crate::dataspace_engine::SharedDataspaceEngine,
     ) -> Self {
         self.dataspace_engine = Some(engine);
+        self
+    }
+
+    /// §Fase 111.c — Builder: attach the adversarial-analysis engine AND the
+    /// compiled scope catalog, so a `warden` block can actually run.
+    ///
+    /// Both, together, on purpose. An engine without a scope catalog would be an
+    /// analysis with no authorization envelope to run within — and the `within
+    /// <Scope>` clause is mandatory in the grammar (§88) *precisely* so that
+    /// cannot happen. Taking them as one argument pair makes the unscoped
+    /// configuration unrepresentable, rather than merely discouraged.
+    ///
+    /// OSS mounts [`crate::warden::ReferenceStaticWarden`] (deterministic static
+    /// checks; `depth: static_artifact` only). Enterprise mounts its abduction
+    /// engine behind the same trait. Without this, `warden` fails CLOSED.
+    pub fn with_warden(
+        mut self,
+        backend: std::sync::Arc<dyn crate::warden::WardenBackend + Send + Sync>,
+        scopes: Arc<Vec<crate::ir_nodes::IRScope>>,
+    ) -> Self {
+        self.warden_backend = Some(backend);
+        self.scopes = scopes;
         self
     }
 

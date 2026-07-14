@@ -1358,6 +1358,11 @@ struct NavDispatch {
     /// §Fase 108.b — the columnar engine port, threaded from the caller's
     /// deployment (`None` ⇒ the data-plane verbs fail CLOSED in dispatch).
     dataspace_engine: Option<crate::dataspace_engine::SharedDataspaceEngine>,
+    /// §Fase 111.c — the compiled `scope` declarations, so a `warden(<t>) within
+    /// <Scope>` can resolve its authorization envelope at dispatch. Empty ⇒
+    /// every warden fails CLOSED (a scope that cannot be resolved authorises
+    /// nothing — the §88 posture, now enforced in fact and not only in grammar).
+    scopes: std::sync::Arc<Vec<crate::ir_nodes::IRScope>>,
 }
 
 /// §Fase 65.A — kill-switch for the structural-dispatch bridge. ON by default:
@@ -1488,6 +1493,17 @@ async fn dispatch_structural(
     if let Some(engine) = &nd.dataspace_engine {
         dctx = dctx.with_dataspace_engine(engine.clone());
     }
+    // §Fase 111.c — mount the adversarial-analysis engine + the deployment's
+    // scope catalog, so a `warden` block RUNS instead of silently completing.
+    // OSS mounts the deterministic `ReferenceStaticWarden` (depth
+    // `static_artifact`; deeper depths fail closed with `DepthNotSupported`);
+    // enterprise mounts its abduction engine behind the same trait. With no
+    // scope catalog the block still fails CLOSED — the `within <Scope>` clause
+    // is mandatory in fact, not just in grammar.
+    dctx = dctx.with_warden(
+        std::sync::Arc::new(crate::warden::ReferenceStaticWarden),
+        nd.scopes.clone(),
+    );
     // Share the flow's MDN interaction history across all of its navigate nodes
     // so adaptive ω reinforcement sees cross-navigation variance (SSE parity).
     dctx.mdn_histories = histories.clone();
@@ -3419,6 +3435,17 @@ async fn collect_via_dispatcher(
     if let Some(engine) = &nav_dispatch.dataspace_engine {
         ctx = ctx.with_dataspace_engine(engine.clone());
     }
+    // §Fase 111.c — mount the adversarial-analysis engine + the deployment's
+    // scope catalog, so a `warden` block RUNS instead of silently completing.
+    // OSS mounts the deterministic `ReferenceStaticWarden` (depth
+    // `static_artifact`; deeper depths fail closed with `DepthNotSupported`);
+    // enterprise mounts its abduction engine behind the same trait. With no
+    // scope catalog the block still fails CLOSED — the `within <Scope>` clause
+    // is mandatory in fact, not just in grammar.
+    ctx = ctx.with_warden(
+        std::sync::Arc::new(crate::warden::ReferenceStaticWarden),
+        nav_dispatch.scopes.clone(),
+    );
     // §Fase 72.c — attach the linear-effect budget gate (daemon path only).
     if let Some(gate) = budget {
         ctx = ctx.with_budget(gate);
@@ -3889,6 +3916,12 @@ pub fn execute_server_flow(
             // §Fase 108.b — thread the deployment's columnar engine (the OSS
             // deploy hook's / enterprise executor's) to the dispatcher.
             dataspace_engine: dataspace_engine.clone(),
+            // §Fase 111.c — thread the compiled `scope` declarations so a
+            // `warden` block can resolve its authorization envelope. Before
+            // §111 these were extracted only for the enterprise HTTP route
+            // (`POST /api/v1/warden/{scope}`); the LANGUAGE primitive could not
+            // reach them, which is why it was a no-op.
+            scopes: std::sync::Arc::new(ir.scopes.clone()),
         }
     };
 
@@ -5149,6 +5182,7 @@ flow Recall(q: Text) -> Text {
             store_sources: std::sync::Arc::new(std::collections::HashMap::new()),
             adaptive: std::sync::Arc::new(std::collections::HashSet::new()),
             dataspace_engine: None,
+            scopes: std::sync::Arc::new(Vec::new()),
         };
         let pb = vec![("q".to_string(), "DocA".to_string())];
         let collected = collect_via_dispatcher(
@@ -5393,6 +5427,7 @@ flow Producer(tenant_id: Text) -> Text {
             store_sources: std::sync::Arc::new(store_sources),
             adaptive: std::sync::Arc::new(std::collections::HashSet::new()),
             dataspace_engine: None,
+            scopes: std::sync::Arc::new(Vec::new()),
         }
     }
 }
