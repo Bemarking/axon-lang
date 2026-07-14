@@ -18742,6 +18742,86 @@ async fn cognitive_io_tick_handler(State(state): State<SharedState>) -> Json<ser
     Json(serde_json::json!({ "active": true, "tick": summary }))
 }
 
+
+/// §Fase 112.f — **the driver. Without it, the supervisor is not a supervisor.**
+///
+/// I documented this before I built it, and that is worth recording rather than
+/// quietly fixing: for one commit, `AXON_COGNITIVE_IO_TICK_SECS` existed **only in
+/// a doc comment**. The graph ran when you POSTed to `/v1/cognitive-io/tick`, and
+/// **nothing walked it in production**. The tests were honest — they drive the tick
+/// explicitly — but the deployment was not: an `immune` would never have learned a
+/// baseline, never detected anything, and never fired.
+///
+/// **A documented behaviour the code does not have is the exact defect §111 and
+/// §112 exist to eliminate, and I shipped one into the fase whose whole purpose is
+/// eliminating them.** Caught by re-reading my own claim against the code, which is
+/// the only thing that ever catches it.
+///
+/// The Cognitive-I/O graph is a **continuous process** — `immune.window:` counts
+/// samples over time, `reflex.sla:` bounds a reaction, `observe.timeout:` bounds a
+/// poll. All of it presumes something walks the graph on its own.
+///
+/// ⚠️ **The period is a SERVER DEFAULT, not a semantic.** Nothing in the language
+/// declares how often the graph should be walked — `observe` has a `timeout:`,
+/// `immune` a `window:`, `reflex` an `sla:`, and **no declaration says the tick
+/// period**. The language should grow an `every:`. Until it does, this is
+/// `AXON_COGNITIVE_IO_TICK_SECS` (default 30), and it is recorded **as** a default
+/// rather than dressed up as the adopter's intent.
+///
+/// The task re-reads the supervisor from state on every pass, so a **redeploy is
+/// picked up automatically** — the graph a tick walks is always the graph currently
+/// deployed.
+pub fn spawn_cognitive_io_driver(state: SharedState) {
+    let secs: u64 = std::env::var("AXON_COGNITIVE_IO_TICK_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(30);
+
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(secs));
+        // A missed deadline must not burst-catch-up: an immune system that fires a
+        // year of ticks in one second is worse than one that skipped them.
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            ticker.tick().await;
+
+            let sup = {
+                let s = match state.lock() {
+                    Ok(s) => s,
+                    Err(_) => return, // state poisoned — the process is going down
+                };
+                s.cognitive_io.clone()
+            };
+            let Some(sup) = sup else { continue };
+
+            // The graph walk is synchronous and can block on a socket probe, so it
+            // runs on the blocking pool — the §Brief-63 lesson: a native blocking
+            // call on the async runtime starves the entire server, healthz included.
+            let summary = match tokio::task::spawn_blocking(move || {
+                sup.lock()
+                    .map(|mut g| g.tick().to_json())
+                    .unwrap_or(serde_json::Value::Null)
+            })
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(error = %e, "cognitive_io_tick_panicked");
+                    continue;
+                }
+            };
+            if summary.is_null() {
+                continue;
+            }
+
+            if let Ok(mut s) = state.lock() {
+                s.cognitive_io_last_tick = Some(summary);
+            }
+        }
+    });
+}
+
 use axum::response::sse::{Event, Sse};
 use futures::stream::Stream;
 use std::convert::Infallible;
@@ -28711,6 +28791,11 @@ pub fn run_serve(config: ServerConfig) -> i32 {
         // Spawn signal listener
         let signal_coord = coordinator.clone();
         tokio::spawn(crate::graceful_shutdown::listen_signals(signal_coord));
+
+        // §Fase 112.f — walk the declared Cognitive-I/O graph, continuously. Without
+        // this the supervisor only ever runs when someone POSTs to its endpoint, so
+        // an `immune` would never learn a baseline, never detect, and never fire.
+        spawn_cognitive_io_driver(shared_state.clone());
 
         // Serve with graceful shutdown
         let coord_for_shutdown = coordinator.clone();
