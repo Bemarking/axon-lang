@@ -2685,6 +2685,15 @@ pub struct IREmit {
     pub channel_ref: String,
     pub value_ref: String,
     pub value_is_channel: bool,
+    /// §Fase 114 (owed) — the σ-shield the target `channel` declares
+    /// (`channel C { … shield: S }`), RESOLVED here at lowering (Phase 0
+    /// pre-pass, like `IRPublish.sign`) so the runtime `run_emit` scans the
+    /// emitted value through S on EVERY dispatch path without re-deriving the
+    /// channel↔shield map. Empty ⇒ an unshielded channel (byte-identical to a
+    /// pre-§114 emit: `skip_serializing_if` elides it → zero IR-SHA drift for
+    /// programs whose channels declare no shield).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub shield_ref: String,
 }
 
 /// §Fase 92.a — compiled `credential` contract. The TTL is carried as

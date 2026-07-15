@@ -1062,6 +1062,7 @@ fn d1_catalog_totality_pin_45_variants() {
             channel_ref: String::new(),
             value_ref: String::new(),
             value_is_channel: false,
+            shield_ref: String::new(),
         }),
         IRFlowNode::Publish(IRPublish {
             node_type: "publish",

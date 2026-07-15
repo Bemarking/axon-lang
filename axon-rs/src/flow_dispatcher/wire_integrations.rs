@@ -438,6 +438,38 @@ pub async fn run_emit(
         .cloned()
         .unwrap_or_else(|| node.value_ref.clone());
 
+    // §Fase 114 (owed) — scan the egressing value through the channel's declared
+    // σ-shield (`channel C { … shield: S }`, resolved onto the emit node at
+    // lowering) BEFORE it leaves — on EVERY routing path below. Mirrors the shield
+    // STEP exactly: `Pass(redacted)` emits the possibly-redacted content;
+    // `Reject` FAILS CLOSED — the violating value never reaches the bus, the
+    // outbox, or the buffer. In OSS with no scanner registered for the name, this
+    // is an identity passthrough (the enterprise layer registers the real
+    // HIPAA/Legal/AML scanners), byte-identical to a pre-§114 emit for an
+    // unshielded channel or an OSS deployment. Before §114 the channel's `shield:`
+    // was declared, PCC-checked, and DEAD — `run_emit` never invoked the scanner.
+    let resolved_value = if node.shield_ref.is_empty() {
+        resolved_value
+    } else {
+        match crate::shield_registry::lookup_shield_scanner(&node.shield_ref) {
+            Some(scanner) => {
+                let scan_ctx =
+                    crate::shield_registry::ShieldScanContext::new(node.shield_ref.clone());
+                match scanner.scan(&resolved_value, &scan_ctx) {
+                    crate::shield_registry::ShieldVerdict::Pass(content) => content,
+                    crate::shield_registry::ShieldVerdict::Reject { code, reason } => {
+                        return Err(DispatchError::BackendError {
+                            name: format!("shield:{}", node.shield_ref),
+                            message: format!("[{code}] {reason}"),
+                        });
+                    }
+                }
+            }
+            // OSS identity passthrough — no scanner registered for this shield.
+            None => resolved_value,
+        }
+    };
+
     // §Fase 74 — `emit` routing, in precedence order:
     //   1. §74.c — a `persistent_axonstore` channel + an attached durable
     //      OUTBOX → APPEND (survives the consumer being down / a crash on
@@ -2432,6 +2464,7 @@ mod tests {
             channel_ref: "out_channel".into(),
             value_ref: "payload".into(),
             value_is_channel: false,
+            shield_ref: String::new(),
         };
         let outcome = run_emit(&node, &mut ctx).await.unwrap();
         match outcome {
@@ -2471,6 +2504,7 @@ mod tests {
             channel_ref: "HibCh".into(),
             value_ref: "payload".into(),
             value_is_channel: false,
+            shield_ref: String::new(),
         };
         run_emit(&node, &mut ctx).await.unwrap();
 
@@ -2510,6 +2544,7 @@ mod tests {
             channel_ref: "HibCh".into(),
             value_ref: "payload".into(),
             value_is_channel: false,
+            shield_ref: String::new(),
         };
         run_emit(&node, &mut ctx).await.unwrap();
 
@@ -2541,6 +2576,7 @@ mod tests {
             channel_ref: "HibCh".into(),
             value_ref: "payload".into(),
             value_is_channel: false,
+            shield_ref: String::new(),
         };
         run_emit(&node, &mut ctx).await.unwrap();
 
@@ -2570,6 +2606,7 @@ mod tests {
             channel_ref: "Tick".into(),
             value_ref: "payload".into(),
             value_is_channel: false,
+            shield_ref: String::new(),
         };
         run_emit(&node, &mut ctx).await.unwrap();
         assert_eq!(outbox.pending_total(), 0, "ephemeral does not touch the outbox");
@@ -2593,6 +2630,7 @@ mod tests {
             channel_ref: "unregistered".into(),
             value_ref: "payload".into(),
             value_is_channel: false,
+            shield_ref: String::new(),
         };
         run_emit(&node, &mut ctx).await.unwrap();
         assert_eq!(ctx.let_bindings.get("__channel_unregistered").unwrap(), "hello");
@@ -2982,6 +3020,7 @@ mod tests {
             channel_ref: "c".into(),
             value_ref: "v".into(),
             value_is_channel: false,
+            shield_ref: String::new(),
         };
         assert!(matches!(run_emit(&emit, &mut ctx).await, Err(DispatchError::UpstreamCancelled)));
 

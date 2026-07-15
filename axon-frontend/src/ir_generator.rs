@@ -80,6 +80,12 @@ pub struct IRGenerator {
     /// Only SIGNING shields are recorded (empty `sign:` shields are not
     /// egress-relevant).
     shield_signs: HashMap<String, String>,
+    /// §Fase 114 (owed) — channel name → the σ-shield it declares
+    /// (`channel C { … shield: S }`), pre-resolved in Phase 0 (order-independent,
+    /// like `shield_signs`) so an `emit C(v)` lowers with its channel's shield
+    /// regardless of whether the `channel` decl precedes or follows the flow.
+    /// Only channels with a non-empty `shield:` are recorded.
+    channel_shields: HashMap<String, String>,
 }
 
 impl IRGenerator {
@@ -96,6 +102,7 @@ impl IRGenerator {
             program_column: 1,
             channel_names: std::collections::HashSet::new(),
             shield_signs: HashMap::new(),
+            channel_shields: HashMap::new(),
         }
     }
 
@@ -109,6 +116,24 @@ impl IRGenerator {
                     self.shield_signs.insert(s.name.clone(), s.sign.clone());
                 }
                 Declaration::Epistemic(eb) => self.collect_shield_signs(&eb.body),
+                _ => {}
+            }
+        }
+    }
+
+    /// §Fase 114 (owed) — Phase 0 pre-pass mirroring [`collect_shield_signs`]:
+    /// record each `channel C { … shield: S }`'s shield so an `emit C(v)` lowers
+    /// carrying S regardless of declaration order. Only non-empty shields are
+    /// recorded (an unshielded channel leaves `IREmit.shield_ref` empty → the
+    /// pre-§114 emit shape).
+    fn collect_channel_shields(&mut self, decls: &[Declaration]) {
+        for decl in decls {
+            match decl {
+                Declaration::Channel(c) if !c.shield_ref.is_empty() => {
+                    self.channel_shields
+                        .insert(c.name.clone(), c.shield_ref.clone());
+                }
+                Declaration::Epistemic(eb) => self.collect_channel_shields(&eb.body),
                 _ => {}
             }
         }
@@ -170,6 +195,10 @@ impl IRGenerator {
         // shield in source; the incremental `channel_names` pattern would
         // miss it).
         self.collect_shield_signs(&program.declarations);
+        // §Fase 114 (owed) — same Phase 0 discipline for channel shields, so an
+        // `emit C(v)` lowers with C's declared σ-shield and the runtime scans the
+        // egressing value on every dispatch path.
+        self.collect_channel_shields(&program.declarations);
 
         // Phase 1: visit all declarations
         for decl in &program.declarations {
@@ -1142,6 +1171,14 @@ impl IRGenerator {
                 channel_ref: s.channel_ref.clone(),
                 value_ref: s.value_ref.clone(),
                 value_is_channel: self.channel_names.contains(&s.value_ref),
+                // §Fase 114 (owed) — the target channel's declared σ-shield
+                // (Phase 0 pre-pass; empty ⇒ unshielded channel). The runtime
+                // scans the emitted value through it before the value leaves.
+                shield_ref: self
+                    .channel_shields
+                    .get(&s.channel_ref)
+                    .cloned()
+                    .unwrap_or_default(),
             }),
             FlowStep::Publish(s) => IRFlowNode::Publish(IRPublish {
                 node_type: "publish",

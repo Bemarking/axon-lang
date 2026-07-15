@@ -477,6 +477,7 @@ fn emit_node() -> IRFlowNode {
         channel_ref: String::new(),
         value_ref: String::new(),
         value_is_channel: false,
+        shield_ref: String::new(),
     })
 }
 

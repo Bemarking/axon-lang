@@ -535,6 +535,7 @@ fn random_emit(lcg: &mut Lcg) -> IRFlowNode {
         channel_ref: lcg.ascii_with_random_len(8),
         value_ref: lcg.ascii_with_random_len(8),
         value_is_channel: lcg.bool(),
+        shield_ref: String::new(),
     })
 }
 
