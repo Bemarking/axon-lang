@@ -19446,6 +19446,19 @@ pub fn server_execute_streaming(
         resolve_backend_key(&s, &effective_backend).ok()
     };
 
+    // §Fase 114 — the per-deployment channel guards (`resource.capacity`
+    // semaphores + the `lease` decay guard), held on `ServerState` across
+    // requests and set at the deploy hook. Cloned here — under the SAME lock
+    // discipline as the API key, BEFORE `state` is dropped — and threaded into
+    // the dispatcher so the SSE tool path (`pure_shape`) enforces `capacity:`
+    // and breaches a post-expiry `lease` EXACTLY as the sync path does. Without
+    // this, the streaming ctx carried `None` and §114 was real on the sync path
+    // and inert on SSE — the "real-on-one-path" defect §111→§114 exists to end.
+    let (channel_semaphores, tool_leases) = {
+        let s = state.lock().unwrap();
+        (s.channel_semaphores.clone(), s.tool_leases.clone())
+    };
+
     // `state` is moved into the dispatcher spawn — the legacy
     // synchronous path (which needed `state` for `server_execute_full`)
     // is gone; only the runtime-warnings + step_audit + enforcement
@@ -19480,6 +19493,10 @@ pub fn server_execute_streaming(
             tool_base_url,
             // §Fase 65.C — per-tenant LLM API key.
             resolved_api_key,
+            // §Fase 114 — the channel semaphores + lease guard, so the SSE tool
+            // path governs `capacity:` / `lease` at parity with the sync path.
+            channel_semaphores,
+            tool_leases,
         )
         .await;
         exited_for_dispatcher.notify_waiters();

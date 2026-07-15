@@ -188,6 +188,16 @@ pub async fn run_streaming_via_dispatcher(
     // where the streaming path could only ever use the env key. `None` ⇒
     // env-key behavior, unchanged.
     api_key: Option<String>,
+    // §Fase 114 — the per-deployment channel guards (`resource.capacity`
+    // semaphores + the `lease` decay guard), resolved from `ServerState` by
+    // `server_execute_streaming`. Threaded onto the DispatchCtx so the SSE tool
+    // path (`pure_shape`) charges the lease + holds a concurrency permit for a
+    // resourced tool — parity with the sync `execute_server_flow` path. `None`
+    // (no `capacity`-bounded resource / no `lease`) ⇒ unbounded, as before.
+    channel_semaphores: Option<
+        std::sync::Arc<crate::channel_semaphore::ChannelSemaphores>,
+    >,
+    tool_leases: Option<std::sync::Arc<crate::resource_lease::ResourceLeaseGuard>>,
 ) {
     // Cancel-safety helper — mirrors the legacy path's `emit` closure.
     // Returns `Err(())` when the producer should exit early (cancel
@@ -549,6 +559,17 @@ pub async fn run_streaming_via_dispatcher(
     // §Fase 35.j — thread the request's held capabilities into the
     // dispatcher so the store handlers can re-check gated stores.
     ctx.held_capabilities = held_capabilities;
+    // §Fase 114 — the per-deployment channel guards, so the SSE tool path
+    // (`pure_shape`) enforces `resource.capacity` (a concurrency permit) and
+    // breaches a post-expiry `lease` — at parity with the sync path. Before
+    // this the SSE ctx carried `None` and a `capacity: N` tool invoked from a
+    // streaming endpoint ran unbounded (the "real-on-sync, inert-on-SSE" gap).
+    if let Some(sems) = channel_semaphores {
+        ctx = ctx.with_channel_semaphores(sems);
+    }
+    if let Some(leases) = tool_leases {
+        ctx = ctx.with_tool_leases(leases);
+    }
     // §Fase 91.b — the frame-level declared cognitive timezone (the program's
     // first `context` declaration's `now:` — the same first-context convention
     // `compose_system_prompt_public` uses). A step's own `now:` overrides it.
@@ -806,6 +827,8 @@ mod tests {
             std::collections::HashMap::new(),
             None, // §Fase 58.g — tool_base_url
             None, // §Fase 65.C — api_key (tests use the env/stub key)
+            None, // §Fase 114 — channel_semaphores (test: ungoverned)
+            None, // §Fase 114 — tool_leases (test: ungoverned)
         )
         .await;
 
@@ -864,6 +887,8 @@ mod tests {
             std::collections::HashMap::new(),
             None, // §Fase 58.g — tool_base_url
             None, // §Fase 65.C — api_key (tests use the env/stub key)
+            None, // §Fase 114 — channel_semaphores (test: ungoverned)
+            None, // §Fase 114 — tool_leases (test: ungoverned)
         )
         .await;
 
@@ -930,6 +955,8 @@ mod tests {
             std::collections::HashMap::new(),
             None, // §Fase 58.g — tool_base_url
             None, // §Fase 65.C — api_key (tests use the env/stub key)
+            None, // §Fase 114 — channel_semaphores (test: ungoverned)
+            None, // §Fase 114 — tool_leases (test: ungoverned)
         )
         .await;
 
@@ -978,6 +1005,8 @@ mod tests {
             std::collections::HashMap::new(),
             None, // §Fase 58.g — tool_base_url
             None, // §Fase 65.C — api_key (tests use the env/stub key)
+            None, // §Fase 114 — channel_semaphores (test: ungoverned)
+            None, // §Fase 114 — tool_leases (test: ungoverned)
         )
         .await;
 
