@@ -2007,7 +2007,7 @@ mod tests {
         axon_frontend::ir_generator::IRGenerator::new().generate(&prog)
     }
 
-    const BUDGETED_DAEMON: &str = "tool TelnyxCall { provider: telnyx timeout: 5s }\n\
+    const BUDGETED_DAEMON: &str = "tool TelnyxCall { provider: http timeout: 5s }\n\
          flow SendBatch() -> Unit { step S { ask: \"x\" output: Unit } }\n\
          daemon OutboundScheduler {\n\
            requires: [flow.execute]\n\
@@ -2998,7 +2998,7 @@ mod tests {
 
     #[test]
     fn non_technician_program_carries_no_technician_proof() {
-        let ir = ir_from_source("tool WebSearch { provider: brave max_results: 5 }\n");
+        let ir = ir_from_source("tool WebSearch { provider: http max_results: 5 }\n");
         assert!(
             super::generate::generate_technician_command_safety_proofs(&ir, "test").is_empty(),
             "no target-bound tool → no proof"

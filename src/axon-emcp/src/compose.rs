@@ -383,7 +383,7 @@ fn domain_metadata(d: Domain) -> &'static DomainMetadata {
             ],
             compliance_applied: &[],
             next_steps: &[
-                "Pin a streaming backend (`provider: openai` / `anthropic`).",
+                "Pin a streaming backend (an LLM-routed backend (omit `provider:`)).",
                 "Choose a backpressure policy (drop_oldest / pause_upstream / fail) on the tool.",
                 "Add a `socket` declaration if you need session-typed reconnection (Fase 41).",
                 "Tighten the persona's `tone:` for your product voice.",
@@ -532,7 +532,7 @@ fn domain_metadata(d: Domain) -> &'static DomainMetadata {
             compliance_applied: &[],
             next_steps: &[
                 "Pick the real tool providers (brave / tavily / serper / native_calculator / …).",
-                "Pin a streaming backend (`provider: openai`/`anthropic`).",
+                "Pin a streaming backend (an LLM-routed backend (omit `provider:`)).",
                 "Add a `shield` if the chat touches PII or regulated data.",
                 "Run `effort: strict` on the bound `run` to lock the tool surface in production.",
                 "Wire structured telemetry on tool-invocation outcomes (§Fase 8 preview).",

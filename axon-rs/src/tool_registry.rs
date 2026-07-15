@@ -690,7 +690,7 @@ mod tests {
         let mut reg = ToolRegistry::new();
         reg.register(ToolEntry {
             name: "WebSearch".to_string(),
-            provider: "brave".to_string(),
+            provider: "http".to_string(),
             timeout: "10s".to_string(),
             runtime: String::new(),
             sandbox: None,
@@ -710,7 +710,7 @@ mod tests {
         assert_eq!(reg.program_names(), vec!["WebSearch"]);
 
         let entry = reg.get("WebSearch").unwrap();
-        assert_eq!(entry.provider, "brave");
+        assert_eq!(entry.provider, "http");
         assert_eq!(entry.max_results, Some(5));
     }
 
@@ -723,7 +723,7 @@ mod tests {
                 source_line: 1,
                 source_column: 1,
                 name: "WebSearch".to_string(),
-                provider: "brave".to_string(),
+                provider: "http".to_string(),
                 max_results: Some(5),
                 filter_expr: String::new(),
                 timeout: "10s".to_string(),
@@ -823,7 +823,13 @@ mod tests {
         let mut reg = ToolRegistry::new();
         reg.register(ToolEntry {
             name: "WebSearch".to_string(),
-            provider: "brave".to_string(),
+            // §114.b — a genuinely unknown provider, registered PROGRAMMATICALLY
+            // (bypassing the type-checker). `axon-T948` now refuses an unknown
+            // provider at compile, so this path is no longer reachable from a
+            // compiled program — but the runtime keeps the defensive fallthrough
+            // for hot-reload / test registration, and this asserts it returns
+            // None (→ the caller routes to the LLM) rather than fabricating.
+            provider: "some_unregistered_vendor".to_string(),
             timeout: "10s".to_string(),
             runtime: String::new(),
             sandbox: None,
@@ -838,7 +844,7 @@ mod tests {
             scrape: None,
         });
 
-        // brave provider not handled locally → falls through to LLM
+        // §114.b — `http` provider (was `brave`, an invented slug; the closed catalog now refuses non-catalog providers at compile).
         assert!(reg.dispatch("WebSearch", "query").is_none());
     }
 

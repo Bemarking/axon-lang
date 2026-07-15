@@ -1213,7 +1213,7 @@ mod tests {
         // allows 1 TelnyxCall/hour: the first emission is granted, the second is
         // denied under the (default) `block` policy.
         let ir = ir_with_daemon(
-            "tool TelnyxCall { provider: telnyx timeout: 5s }\n\
+            "tool TelnyxCall { provider: http timeout: 5s }\n\
              flow SendBatch() -> Unit { step S { ask: \"x\" output: Unit } }\n\
              daemon OutboundScheduler {\n\
                requires: [flow.execute]\n\

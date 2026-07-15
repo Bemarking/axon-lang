@@ -139,7 +139,7 @@ fn tool_canonical_program_compiles() {
     // legacy primitive most likely to grow knobs) is locked in.
     let src = r#"
 tool WebSearch {
-    provider: brave
+    provider: http
     max_results: 5
     timeout: 10s
 }

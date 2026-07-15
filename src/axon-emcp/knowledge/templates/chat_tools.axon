@@ -40,20 +40,20 @@ anchor BeHonestAboutToolFailures {
 // ── Tools — closed catalogue ──────────────────────────────────────
 
 tool WebSearch {
-    provider:    brave
+    provider:    http
     max_results: 5
     timeout:     10s
     effects:     <network, stream:drop_oldest>
 }
 
 tool Calculator {
-    provider: native_calculator
+    provider: native
     timeout:  500ms
     effects:  <pure>
 }
 
 tool TimeAPI {
-    provider: time_service
+    provider: native
     timeout:  2s
     effects:  <network>
 }

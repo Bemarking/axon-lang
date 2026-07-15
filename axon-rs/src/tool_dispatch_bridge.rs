@@ -88,6 +88,19 @@ use futures::stream;
 /// regression the Fase 36.x.c terminator fix surfaced.
 pub fn resolve_streaming_tool(entry: &ToolEntry) -> Box<dyn Tool> {
     match entry.provider.trim() {
+        // §Fase 114.b — an EMPTY provider stays here, and that is correct.
+        //
+        // The census framed empty→stub as "a fabricated answer", and I nearly
+        // split it out. But an empty provider is an **LLM-routed** tool, and on
+        // the streaming path this arm is how it streams **against the configured
+        // backend** — which in a test is the stub backend, and in production is
+        // the real model. It is routing, not invention.
+        //
+        // The actual §112-shaped defect here was the **typo** — a *non-empty*
+        // unknown provider that silently reached a fallthrough and let the model
+        // fabricate. `axon-T948` now refuses that at COMPILE, so it can no longer
+        // reach any runtime arm. The empty case that remains is a declared intent
+        // (the tool IS the model), not a mistake.
         "" | "stub" | "stub_stream" => {
             Box::new(StubStreamingTool::new(entry.name.clone()))
         }

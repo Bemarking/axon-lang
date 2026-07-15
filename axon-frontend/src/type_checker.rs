@@ -140,6 +140,31 @@ const VALID_FORGE_MODES: &[&str] = &["combinatorial", "exploratory", "transforma
 /// (born Untrusted, D98.1) and is governed by the §98 scrape laws.
 const VALID_SCRAPE_PROVIDERS: &[&str] = &["scrape_http", "scrape_dom", "scrape_crawl", "scrape_enrich"];
 
+/// §Fase 114.b — the CLOSED `tool.provider` catalog.
+///
+/// Exactly the values the runtime dispatch tables actually handle — the union of
+/// `tool_registry::dispatch` and `tool_dispatch_bridge::resolve_streaming_tool`,
+/// plus `bash` (the §84 technician execve path, validated by `axon-T858`).
+///
+/// An **empty** provider is deliberately NOT in this list: an empty provider is a
+/// legitimate LLM-routed tool, and it is validated by its absence, not its
+/// presence. `axon-T948` refuses a *non-empty* provider outside this set.
+///
+/// The catalog is a promise: adding a value here without a dispatch arm behind it
+/// re-creates the very defect §114.b closes.
+pub const VALID_TOOL_PROVIDERS: &[&str] = &[
+    "native",
+    "stub",
+    "stub_stream",
+    "http",
+    "mcp",
+    "scrape_http",
+    "scrape_dom",
+    "scrape_crawl",
+    "scrape_enrich",
+    "bash",
+];
+
 /// §Fase 98.d — the closed `scrape.engine:` catalog. `impersonate` (HTTP-
 /// fingerprint stealth, the GA tier — OSS fallback is plain reqwest) |
 /// `browser` (headless-render sidecar, the gray/pilot tier, D98.6).
@@ -2873,6 +2898,41 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn check_tool(&mut self, node: &ToolDefinition) {
+        // ── §Fase 114.b — `provider:` is a CLOSED catalog ────────────────────
+        //
+        // Until §114 `provider:` was a **free string with no membership check**.
+        // The same disease `resource.kind` had — and worse here, because of what
+        // the runtime does with an unrecognised value:
+        //
+        //   - an EMPTY `provider:` silently resolved to the STUB on the streaming
+        //     path, returning a FABRICATED `[stub]` answer;
+        //   - a typo (`htpp`) reached a runtime fallthrough instead of failing.
+        //
+        // On the one primitive whose entire purpose is that an action's result is
+        // born with an honest epistemic status, a typo produced an invented one.
+        // *When the evidence is missing, substitute the belief and report
+        // agreement* — the §112 defect, on the tool surface.
+        //
+        // An EMPTY provider stays legitimate: it means **LLM-routed** (the tool
+        // IS the model — a `Summarize`, a `Classify`). That is a real, declared
+        // intent, not a typo. What is refused is a NON-EMPTY provider outside the
+        // catalog.
+        if !node.provider.is_empty() && !VALID_TOOL_PROVIDERS.contains(&node.provider.as_str()) {
+            self.emit(
+                format!(
+                    "axon-T948 tool '{}' declares `provider: {}`, which is not a known provider. \
+                     Expected one of: {} (or omit `provider:` for an LLM-routed tool). A provider \
+                     the runtime does not recognise used to reach a fabricating fallthrough — on \
+                     the primitive built so an action's result is born with an honest epistemic \
+                     status, a typo produced an invented one.",
+                    node.name,
+                    node.provider,
+                    VALID_TOOL_PROVIDERS.join(" | ")
+                ),
+                &node.loc,
+            );
+        }
+
         // §Fase 84.c — Remote Hands technician-command laws (T858–T862). Inert
         // for any tool that does not set `target:`/`risk:`/`argv:`.
         self.check_technician_tool(node);

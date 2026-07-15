@@ -36,7 +36,7 @@ type Risk {
 }
 
 tool WebSearch {
-  provider: brave
+  provider: http
   max_results: 5
   timeout: 10s
 }

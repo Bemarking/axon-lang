@@ -90,7 +90,7 @@ walks.
 - **Not a generic HTTP binding.** MCP is a typed JSON-RPC 2.0
   protocol with `initialize` handshake + capability
   declaration. For arbitrary HTTP egress, declare a `tool`
-  with `provider: http_fetch`.
+  with `provider: http`.
 - **Not free of compliance gating.** Outbound MCP calls cross
   a trust boundary. A `mcp` binding inside a HIPAA-tagged
   manifest requires the remote server to attest the same

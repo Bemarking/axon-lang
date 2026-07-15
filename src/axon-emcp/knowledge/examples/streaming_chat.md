@@ -24,7 +24,7 @@ persona ChatHost {
 }
 
 tool ChatBackend {
-    provider: openai
+    // LLM-routed: the tool IS the model. No `provider:` (§114.b).
     effects:  <network, stream:drop_oldest>
     timeout:  60s
 }

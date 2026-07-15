@@ -189,7 +189,7 @@ async fn explicit_json_transport_suppresses_sse_even_with_accept_sse() {
     let app = build_router(server_cfg());
     let app = deploy(
         app,
-        "tool Streamer { provider: local effects: <stream:drop_oldest> }\n\
+        "tool Streamer { provider: stub effects: <stream:drop_oldest> }\n\
          flow F() { step S { ask: \"hi\" } }\n\
          axonendpoint BatchOnly { public: true method: POST path: \"/b\" execute: F transport: json }\n",
     )
@@ -252,7 +252,7 @@ async fn stream_effect_via_tool_effect_with_accept_sse_promotes() {
     let app = build_router(server_cfg());
     let app = deploy(
         app,
-        "tool Streamer { provider: local effects: <stream:drop_oldest> }\n\
+        "tool Streamer { provider: stub effects: <stream:drop_oldest> }\n\
          flow F() { step S { ask: \"hi\" } }\n",
     )
     .await;
@@ -274,7 +274,7 @@ async fn stream_effect_via_each_of_4_policies_promotes() {
     for policy in ["drop_oldest", "degrade_quality", "pause_upstream", "fail"] {
         let app = build_router(server_cfg());
         let src = format!(
-            "tool T {{ provider: local effects: <stream:{policy}> }}\n\
+            "tool T {{ provider: stub effects: <stream:{policy}> }}\n\
              flow F() {{ step S {{ ask: \"hi\" }} }}\n"
         );
         let app = deploy(app, &src).await;
@@ -294,7 +294,7 @@ async fn stream_effect_flow_without_accept_stays_json() {
     let app = build_router(server_cfg());
     let app = deploy(
         app,
-        "tool Streamer { provider: local effects: <stream:drop_oldest> }\n\
+        "tool Streamer { provider: stub effects: <stream:drop_oldest> }\n\
          flow F() { step S { ask: \"hi\" } }\n",
     )
     .await;

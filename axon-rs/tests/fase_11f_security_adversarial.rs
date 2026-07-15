@@ -107,7 +107,7 @@ async fn t_11_01_replay_log_tokens_for_flow_cannot_cross_flows() {
 fn t_11_02_sensitive_without_legal_basis_fails_compilation() {
     let src = r#"
         tool process_health_record {
-          provider: local
+          provider: stub
           timeout: 10s
           effects: <sensitive:phi>
         }
@@ -127,13 +127,13 @@ fn t_11_02_legal_basis_in_different_tool_does_not_satisfy_same_tool_rule() {
     // tool A still fails even though B has a basis declared.
     let src = r#"
         tool handle_phi {
-          provider: local
+          provider: stub
           timeout: 10s
           effects: <sensitive:phi>
         }
 
         tool declare_compliance {
-          provider: local
+          provider: stub
           timeout: 10s
           effects: <legal:HIPAA.164_502>
         }
@@ -158,7 +158,7 @@ fn t_11_03_hipaa_plus_ffmpeg_always_rejected() {
         let src = format!(
             r#"
                 tool transcode_phi {{
-                  provider: local
+                  provider: stub
                   timeout: 30s
                   effects: <sensitive:{sensitive_cat}, legal:{hipaa_basis}, ots:transform:pcm16:mp3, ots:backend:ffmpeg>
                 }}
@@ -180,7 +180,7 @@ fn t_11_03_hipaa_plus_native_compiles_cleanly() {
     // OTS". Native pipelines keep HIPAA happy.
     let src = r#"
         tool decode_phi_audio {
-          provider: local
+          provider: stub
           timeout: 30s
           effects: <sensitive:phi, legal:HIPAA.164_502, ots:transform:mulaw8:pcm16, ots:backend:native>
         }
@@ -268,7 +268,7 @@ fn t_11_05_clone_of_tenant_buffer_preserves_tenant() {
 fn t_11_06_unknown_trust_proof_rejected() {
     let src = r#"
         tool verify_webhook {
-          provider: local
+          provider: stub
           timeout: 5s
           effects: <trust:md5>
         }
@@ -285,7 +285,7 @@ fn t_11_06_unknown_trust_proof_rejected() {
 fn t_11_06_unknown_legal_basis_rejected() {
     let src = r#"
         tool process_gdpr {
-          provider: local
+          provider: stub
           timeout: 10s
           effects: <sensitive:eu_data, legal:GDPR.MadeUp>
         }
@@ -325,7 +325,7 @@ fn t_11_07_stream_effect_without_qualifier_rejected() {
     // effect is bare (no qualifier) it fails the tool-level check.
     let src = r#"
         tool ingest_audio {
-          provider: local
+          provider: stub
           timeout: 30s
           effects: <stream>
         }

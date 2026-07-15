@@ -104,12 +104,12 @@ axpoint EchoAPI {
 fn daemon_canonical_program_compiles() {
     let src = r#"
 tool TicketDB {
-    provider: postgres
+    provider: http
     timeout:  3s
 }
 
 tool SlackNotifier {
-    provider: slack
+    provider: http
     timeout:  5s
 }
 

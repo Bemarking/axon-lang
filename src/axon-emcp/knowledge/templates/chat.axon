@@ -44,7 +44,7 @@ anchor StayOnTopic {
 // drop_oldest | degrade_quality | pause_upstream | fail.
 
 tool ChatBackend {
-    provider: openai
+    // LLM-routed: the tool IS the model. No `provider:` (§114.b). `openai` was not a real provider slug.
     effects:  <network, stream:drop_oldest>
     timeout:  60s
 }

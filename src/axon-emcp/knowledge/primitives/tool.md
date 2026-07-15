@@ -6,7 +6,7 @@ top_level: true
 since: v0.1.0 (initial language)
 grammar: |
   tool <Name> {
-      provider: <ident>               # required — provider slug (http, mcp, brave, code_interpreter, ...)
+      provider: <slug>                # optional — CLOSED catalog; omit = LLM-routed (T948)
       parameters: { k: Type, ... }    # optional (§Fase 58) — typed INPUT schema (the call contract)
       output_type: <Type>             # optional (§Fase 58) — declared OUTPUT type of the tool result
       max_results: <integer>          # optional — cap on returned items
@@ -42,14 +42,14 @@ a flow, a step, or a persona.
 
 ```axon
 tool WebSearch {
-    provider: brave
+    provider: http
     max_results: 5
     timeout: 10s
     effects: <network, io>
 }
 
 tool CodeInterpreter {
-    provider: code_interpreter
+    provider: native
     runtime: sandboxed
     sandbox: true
     timeout: 30s
@@ -59,23 +59,39 @@ tool CodeInterpreter {
 
 ## Fields
 
-### `provider:` (required)
+### `provider:` (optional — omit for an LLM-routed tool)
 
-A **single identifier** naming the provider slug. The runtime
-keeps a closed catalog (registered via the backend's
-`tool_registry` extension point); compile time validates that
-the slug parses as an identifier but does NOT validate it
-against the catalog — the binding is deployment-time so the
-same axon source can target multiple backends.
+A **single identifier** from a **closed catalog** (`axon-T948`, §114.b):
 
-Common slugs: `http` (REST endpoint dispatch), `mcp` (ℰMCP
-JSON-RPC transducer), `brave`, `tavily`, `exa`, `serper`, `bing`,
-`google_cse`, `code_interpreter`, `python_repl`, `bash`,
-`http_fetch`, `sql`, `vector_search`, `wikidata`. The `http` and
-`mcp` providers dispatch a **real** call to the tool-server (see
-*Calling a tool* below); other slugs that the runtime registry
-does not handle locally fall through to the model's tool-use
-surface.
+`native` · `stub` · `stub_stream` · `http` · `mcp` · `scrape_http` ·
+`scrape_dom` · `scrape_crawl` · `scrape_enrich` · `bash`.
+
+`http` (REST dispatch) and `mcp` (ℰMCP JSON-RPC transducer) make a **real**
+call to the tool-server (see *Calling a tool* below). `native` runs an
+in-process built-in; `scrape_*` are the §98 web-acquisition engines; `bash`
+is the §84 technician execve path; `stub` / `stub_stream` return synthetic
+output for tests.
+
+**Omit `provider:` for an LLM-routed tool** — a tool that *is* the model (a
+`Summarize`, a `Classify`). That is validated by the *absence* of a provider.
+
+> #### ⚠️ §Fase 114.b — this page used to say the opposite
+>
+> It read: *"compile time validates that the slug parses as an identifier but
+> does NOT validate it against the catalog"*, and listed a dozen slugs —
+> `tavily`, `exa`, `serper`, `bing`, `google_cse`, `python_repl`, `sql`,
+> `vector_search`, `wikidata`, `brave`, `code_interpreter` — **none of which
+> the runtime ever dispatched.** `provider:` was a free string, so the docs
+> accumulated an imaginary catalog, exactly as they did for `resource.kind`.
+>
+> And the closing line — *"other slugs that the runtime registry does not
+> handle locally fall through to the model's tool-use surface"* — described
+> the **fabrication path as a feature**: a typo'd provider silently handed the
+> call to the model, which invented the output. On the streaming path an
+> **empty** provider did the same, returning a canned `[stub]`. On the one
+> primitive built so an action's result is born with an honest epistemic
+> status, an unrecognised provider produced an invented one. §114.b closes it:
+> a non-empty provider outside the catalog is refused at compile.
 
 ### `parameters:` (optional, §Fase 58)
 

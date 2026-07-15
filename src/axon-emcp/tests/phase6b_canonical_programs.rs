@@ -99,12 +99,12 @@ fn agent_canonical_program_compiles() {
     // strategy (react), on_stuck (retry), shield, all four budgets.
     let src = r#"
 tool WebSearch {
-    provider: brave
+    provider: http
     timeout:  10s
 }
 
 tool CorpusQuery {
-    provider: chroma
+    provider: http
     timeout:  5s
 }
 

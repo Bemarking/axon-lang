@@ -25,13 +25,13 @@ persona Researcher {
 }
 
 tool WebSearch {
-    provider: openai
+    // LLM-routed: the tool IS the model. No `provider:` (§114.b).
     effects:  <network>
     timeout:  30s
 }
 
 tool Calculator {
-    provider: openai
+    // LLM-routed: the tool IS the model. No `provider:` (§114.b).
     effects:  <pure>
     timeout:  5s
 }

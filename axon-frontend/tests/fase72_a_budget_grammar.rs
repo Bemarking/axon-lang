@@ -20,7 +20,7 @@ fn errors(src: &str) -> Vec<String> {
     TypeChecker::new(&prog).check().into_iter().map(|e| e.message).collect()
 }
 
-const TOOL: &str = "tool TelnyxCall { provider: telnyx timeout: 5s }";
+const TOOL: &str = "tool TelnyxCall { provider: http timeout: 5s }";
 const FLOW: &str = "flow SendBatch() -> Unit { step S { ask: \"x\" output: Unit } }";
 
 fn program(daemon_body: &str) -> String {

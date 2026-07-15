@@ -21,7 +21,7 @@ fn any_error_mentions(errs: &[TypeError], needle: &str) -> bool {
 fn legal_effect_without_qualifier_is_rejected() {
     let src = r#"
         tool process_health_record {
-          provider: local
+          provider: stub
           timeout: 10s
           effects: <sensitive:health_data, legal>
         }
@@ -39,7 +39,7 @@ fn legal_effect_without_qualifier_is_rejected() {
 fn legal_effect_with_unknown_basis_is_rejected() {
     let src = r#"
         tool process_health_record {
-          provider: local
+          provider: stub
           timeout: 10s
           effects: <sensitive:health_data, legal:MADE_UP.Act42>
         }
@@ -56,7 +56,7 @@ fn legal_effect_with_unknown_basis_is_rejected() {
 fn sensitive_without_category_qualifier_is_rejected() {
     let src = r#"
         tool process_payment {
-          provider: local
+          provider: stub
           timeout: 10s
           effects: <sensitive, legal:PCI_DSS.v4_Req3>
         }
@@ -74,7 +74,7 @@ fn sensitive_without_category_qualifier_is_rejected() {
 fn sensitive_without_legal_basis_is_rejected() {
     let src = r#"
         tool process_health_record {
-          provider: local
+          provider: stub
           timeout: 10s
           effects: <sensitive:health_data>
         }
@@ -91,7 +91,7 @@ fn sensitive_without_legal_basis_is_rejected() {
 fn sensitive_with_matching_legal_basis_passes() {
     let src = r#"
         tool process_health_record {
-          provider: local
+          provider: stub
           timeout: 10s
           effects: <sensitive:health_data, legal:HIPAA.164_502>
         }
@@ -111,7 +111,7 @@ fn legal_without_sensitive_is_tolerated() {
     // data — some tools carry broad authorisations. Not an error.
     let src = r#"
         tool audit_log_writer {
-          provider: local
+          provider: stub
           timeout: 10s
           effects: <legal:SOX.404, io>
         }
@@ -153,7 +153,7 @@ fn all_legal_basis_slugs_compile() {
         let src = format!(
             r#"
                 tool t {{
-                  provider: local
+                  provider: stub
                   timeout: 10s
                   effects: <legal:{basis}>
                 }}
@@ -174,7 +174,7 @@ fn all_legal_basis_slugs_compile() {
 fn legal_basis_catalog_is_case_sensitive() {
     let src = r#"
         tool t {
-          provider: local
+          provider: stub
           timeout: 10s
           effects: <sensitive:phi, legal:hipaa.164_502>
         }

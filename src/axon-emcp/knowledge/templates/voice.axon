@@ -60,7 +60,7 @@ anchor SpeakClearly {
 // ── Tool — streaming backend ──────────────────────────────────────
 
 tool VoiceBackend {
-    provider: openai
+    // LLM-routed: the tool IS the model. No `provider:` (§114.b). `openai` was not a real provider slug.
     effects:  <network, stream:drop_oldest>
     timeout:  30s
 }

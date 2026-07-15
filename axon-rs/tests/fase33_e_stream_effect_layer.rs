@@ -200,7 +200,7 @@ async fn multi_step_flow_surfaces_per_step_policies_independently() {
     let src =
         "tool planner { effects: <stream:fail> }\n\
          tool chat_stream { effects: <stream:drop_oldest> }\n\
-         tool audit_tool { provider: \"axon\" }\n\
+         tool audit_tool { }\n\
          flow Pipeline() -> Unit {\n\
             step Plan { ask: \"plan\" apply: planner output: Stream<Token> }\n\
             step Generate { ask: \"do\" apply: chat_stream output: Stream<Token> }\n\

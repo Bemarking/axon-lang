@@ -40,7 +40,7 @@ anchor NoHallucinatedAPIs {
 // ── Tools — sandboxed execution ───────────────────────────────────
 
 tool CodeInterpreter {
-    provider: code_interpreter
+    provider: native
     runtime:  sandboxed
     sandbox:  true
     timeout:  30s
@@ -48,7 +48,7 @@ tool CodeInterpreter {
 }
 
 tool GitTool {
-    provider: git
+    provider: http
     runtime:  sandboxed
     sandbox:  true
     timeout:  10s
@@ -56,7 +56,7 @@ tool GitTool {
 }
 
 tool DocsLookup {
-    provider:    devdocs
+    provider: http
     max_results: 5
     timeout:     5s
     effects:     <network>

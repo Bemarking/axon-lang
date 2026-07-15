@@ -288,12 +288,16 @@ async fn unregistered_tool_falls_back_to_placeholder() {
 
 #[tokio::test]
 async fn llm_routed_provider_falls_back_to_placeholder() {
-    // Registered, but the provider intentionally falls through to the
-    // LLM (`dispatch` returns None for `brave`) → placeholder (D5).
+    // §114.b — an LLM-ROUTED tool: no provider (the tool IS the model). `dispatch`
+    // returns None → the caller uses the D5 placeholder. This used to be spelled
+    // `provider: "brave"` — a non-empty *unknown* provider that fell through to the
+    // LLM. Post-§114.b an unknown provider is refused at compile, and the honest
+    // way to say "route this to the model" is to OMIT the provider, validated by
+    // its absence.
     let mut reg = ToolRegistry::new();
     reg.register(ToolEntry {
         name: "WebSearch".to_string(),
-        provider: "brave".to_string(),
+        provider: String::new(),
         timeout: String::new(),
         runtime: String::new(),
         sandbox: None,

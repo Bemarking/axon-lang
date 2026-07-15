@@ -145,7 +145,7 @@ fn technician_fields_lower_into_ir() {
 fn ir_sha_invariance_no_technician_fields_elided() {
     // A plain tool (no technician fields) must serialise with NONE of the
     // three new keys — byte-identical to the pre-§84 IR.
-    let src = "tool WebSearch { provider: brave max_results: 5 timeout: 10s }";
+    let src = "tool WebSearch { provider: http max_results: 5 timeout: 10s }";
     let json = ir_json(src);
     assert!(!json.contains("\"target\""), "target leaked: {json}");
     assert!(!json.contains("\"risk\""), "risk leaked: {json}");
@@ -272,9 +272,9 @@ fn d84_13_unknown_field_in_target_bound_tool_is_parse_error() {
 fn legacy_tool_keeps_lenient_unknown_field_skip() {
     // A NON-technician tool (no target) keeps its pre-§84 lenient skip — an
     // unknown field is silently ignored, never a parse error (zero regression).
-    let src = "tool WebSearch { provider: brave banana: 3 max_results: 5 }";
+    let src = "tool WebSearch { provider: http banana: 3 max_results: 5 }";
     let prog = try_parse(src).expect("legacy tool must still parse with an unknown field");
     let t = first_tool(&prog);
-    assert_eq!(t.provider, "brave");
+    assert_eq!(t.provider, "http");
     assert!(t.target.is_none());
 }

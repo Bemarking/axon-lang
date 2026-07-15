@@ -115,7 +115,7 @@ fn schemaless_tool_still_parses_unchanged_back_compat() {
     let program = parse(
         r#"
 tool WebSearch {
-    provider: brave
+    provider: http
     max_results: 5
     timeout: 30s
 }
@@ -124,6 +124,6 @@ tool WebSearch {
     let t = tool(&program, "WebSearch");
     assert!(t.parameters.is_empty(), "no schema declared → empty");
     assert_eq!(t.output_type, None);
-    assert_eq!(t.provider, "brave");
+    assert_eq!(t.provider, "http");
     assert_eq!(t.max_results, Some(5));
 }

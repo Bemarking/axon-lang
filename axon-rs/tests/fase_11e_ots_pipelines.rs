@@ -80,7 +80,7 @@ fn pipeline_execute_end_to_end_mulaw_decode() {
 fn ots_effect_without_subkind_rejected() {
     let src = r#"
         tool transcode {
-          provider: local
+          provider: stub
           timeout: 10s
           effects: <ots>
         }
@@ -98,7 +98,7 @@ fn ots_effect_without_subkind_rejected() {
 fn ots_transform_without_from_to_rejected() {
     let src = r#"
         tool transcode {
-          provider: local
+          provider: stub
           timeout: 10s
           effects: <ots:transform:mulaw8>
         }
@@ -116,7 +116,7 @@ fn ots_transform_without_from_to_rejected() {
 fn ots_backend_unknown_qualifier_rejected() {
     let src = r#"
         tool transcode {
-          provider: local
+          provider: stub
           timeout: 10s
           effects: <ots:backend:gstreamer>
         }
@@ -135,7 +135,7 @@ fn ots_backend_native_and_ffmpeg_both_compile() {
         let src = format!(
             r#"
                 tool t {{
-                  provider: local
+                  provider: stub
                   timeout: 10s
                   effects: <ots:backend:{backend}>
                 }}
@@ -154,7 +154,7 @@ fn ots_backend_native_and_ffmpeg_both_compile() {
 fn ots_transform_with_valid_from_to_compiles() {
     let src = r#"
         tool transcode {
-          provider: local
+          provider: stub
           timeout: 10s
           effects: <ots:transform:mulaw8:pcm16, ots:backend:native>
         }
@@ -173,7 +173,7 @@ fn ots_transform_with_valid_from_to_compiles() {
 fn hipaa_plus_ffmpeg_is_rejected() {
     let src = r#"
         tool transcribe_phi {
-          provider: local
+          provider: stub
           timeout: 30s
           effects: <sensitive:phi, legal:HIPAA.164_502, ots:transform:pcm16:mp3, ots:backend:ffmpeg>
         }
@@ -191,7 +191,7 @@ fn hipaa_plus_ffmpeg_is_rejected() {
 fn hipaa_with_native_backend_compiles() {
     let src = r#"
         tool decode_phi_audio {
-          provider: local
+          provider: stub
           timeout: 30s
           effects: <sensitive:phi, legal:HIPAA.164_502, ots:transform:mulaw8:pcm16, ots:backend:native>
         }
@@ -212,7 +212,7 @@ fn gdpr_plus_ffmpeg_is_NOT_rejected() {
     // the checker doesn't infantilise them.
     let src = r#"
         tool transcode_eu_data {
-          provider: local
+          provider: stub
           timeout: 30s
           effects: <sensitive:eu_personal_data, legal:GDPR.Art6.Consent, ots:transform:mp3:wav, ots:backend:ffmpeg>
         }

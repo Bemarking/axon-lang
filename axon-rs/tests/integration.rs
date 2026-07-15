@@ -1476,7 +1476,7 @@ fn stdlib_tool_metadata() {
     let entry = stdlib::resolve("WebSearch").unwrap();
     if let StdlibEntry::Tool(t) = entry {
         assert!(t.requires_api_key);
-        assert_eq!(t.provider, "brave");
+        assert_eq!(t.provider, "http");
         assert_eq!(t.timeout, 10);
     } else {
         panic!("WebSearch should be a tool");
@@ -2762,7 +2762,7 @@ fn tool_registry_from_ir_specs() {
             source_line: 1,
             source_column: 1,
             name: "WebSearch".to_string(),
-            provider: "brave".to_string(),
+            provider: "some_unregistered_vendor".to_string(),
             max_results: Some(5),
             filter_expr: String::new(),
             timeout: "10s".to_string(),
@@ -2785,10 +2785,12 @@ fn tool_registry_from_ir_specs() {
 
     assert!(reg.contains("WebSearch"));
     let entry = reg.get("WebSearch").unwrap();
-    assert_eq!(entry.provider, "brave");
+    assert_eq!(entry.provider, "some_unregistered_vendor");
     assert_eq!(entry.max_results, Some(5));
 
-    // brave is not a handled provider → falls through to LLM
+    // §114.b — a genuinely unknown provider (registered programmatically, past the
+    // type-checker) falls through to None → the LLM. `axon-T948` refuses an
+    // unknown provider at COMPILE; this asserts the runtime's defensive fallthrough.
     assert!(reg.dispatch("WebSearch", "query").is_none());
 }
 
@@ -3008,7 +3010,7 @@ fn plan_export_with_units_and_tools() {
         program: vec![],
         registered: vec![PlanToolEntry {
             name: "WebSearch".into(),
-            provider: "brave".into(),
+            provider: "http".into(),
             source: "program".into(),
             output_schema: "JSON".into(),
             effect_row: vec!["network".into()],

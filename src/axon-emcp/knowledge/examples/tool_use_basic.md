@@ -29,7 +29,7 @@ persona Translator {
 }
 
 tool TranslationBackend {
-    provider: openai
+    // LLM-routed: the tool IS the model. No `provider:` (§114.b).
     effects:  <network>
     timeout:  30s
 }

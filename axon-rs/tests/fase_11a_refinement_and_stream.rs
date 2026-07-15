@@ -35,7 +35,7 @@ fn stream_effect_without_qualifier_is_rejected() {
     // an error; the catalogue name alone doesn't imply a policy.
     let src = r#"
         tool record_audio {
-          provider: local
+          provider: stub
           timeout: 30s
           effects: <stream>
         }
@@ -52,7 +52,7 @@ fn stream_effect_without_qualifier_is_rejected() {
 fn stream_effect_with_unknown_qualifier_is_rejected() {
     let src = r#"
         tool record_audio {
-          provider: local
+          provider: stub
           timeout: 30s
           effects: <stream:retry_forever>
         }
@@ -69,7 +69,7 @@ fn stream_effect_with_unknown_qualifier_is_rejected() {
 fn stream_effect_with_valid_qualifier_passes() {
     let src = r#"
         tool record_audio {
-          provider: local
+          provider: stub
           timeout: 30s
           effects: <stream:drop_oldest>
         }
@@ -87,7 +87,7 @@ fn stream_effect_with_valid_qualifier_passes() {
 fn trust_effect_without_qualifier_is_rejected() {
     let src = r#"
         tool verify_webhook {
-          provider: local
+          provider: stub
           timeout: 5s
           effects: <trust>
         }
@@ -104,7 +104,7 @@ fn trust_effect_without_qualifier_is_rejected() {
 fn trust_effect_with_unknown_qualifier_is_rejected() {
     let src = r#"
         tool verify_webhook {
-          provider: local
+          provider: stub
           timeout: 5s
           effects: <trust:crc32>
         }
@@ -124,7 +124,7 @@ fn trust_effect_with_all_catalog_proofs_passes() {
         let src = format!(
             r#"
                 tool verify_payload {{
-                  provider: local
+                  provider: stub
                   timeout: 5s
                   effects: <trust:{proof}>
                 }}
@@ -166,7 +166,7 @@ fn flow_with_stream_parameter_requires_backpressure_tool() {
 fn flow_with_stream_and_matching_tool_passes() {
     let src = r#"
         tool ingest_audio {
-          provider: local
+          provider: stub
           timeout: 30s
           effects: <stream:drop_oldest>
         }
@@ -210,7 +210,7 @@ fn flow_with_untrusted_parameter_requires_verifier_tool() {
 fn flow_with_untrusted_and_matching_verifier_tool_passes() {
     let src = r#"
         tool verify_signature {
-          provider: local
+          provider: stub
           timeout: 5s
           effects: <trust:hmac>
         }
@@ -258,7 +258,7 @@ fn backpressure_catalog_is_closed_to_typos() {
     // `is_valid` check accepted an unknown qualifier.
     let src = r#"
         tool x {
-          provider: local
+          provider: stub
           timeout: 5s
           effects: <stream:pauseupstream>
         }
@@ -275,7 +275,7 @@ fn backpressure_catalog_is_closed_to_typos() {
 fn trust_catalog_is_closed_to_case_variants() {
     let src = r#"
         tool x {
-          provider: local
+          provider: stub
           timeout: 5s
           effects: <trust:HMAC>
         }

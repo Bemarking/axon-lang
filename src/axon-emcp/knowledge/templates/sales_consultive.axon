@@ -60,13 +60,13 @@ shield SalesShield {
 // ── Tools — CRM + product-catalogue ───────────────────────────────
 
 tool CRMLogger {
-    provider: salesforce
+    provider: http
     timeout:  10s
     effects:  <network, storage>
 }
 
 tool ProductCatalogueLookup {
-    provider:    pgvector
+    provider: http
     max_results: 5
     timeout:     3s
     effects:     <network>

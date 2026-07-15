@@ -367,7 +367,7 @@ pub const TOOLS: &[StdlibTool] = &[
     StdlibTool {
         name: "WebSearch",
         description: "Live web search via Brave Search API.",
-        provider: "brave",
+        provider: "http",
         timeout: 10,
         requires_api_key: true,
         sandbox: false,

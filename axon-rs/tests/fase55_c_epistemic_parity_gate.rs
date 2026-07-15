@@ -28,7 +28,7 @@ use axon::wire_format::{select_adapter, CompleteEnvelope};
 
 const SOURCE: &str = "\
 tool WebSearch {
-  provider: brave
+  provider: http
   effects: <network, epistemic:speculate>
 }
 tool ExactLookup {
@@ -206,7 +206,7 @@ fn sync_and_streaming_wire_arrays_are_byte_identical() {
 #[test]
 fn a_flow_with_no_epistemic_tool_yields_empty_on_both_paths() {
     let src = "\
-tool PlainHttp { provider: brave effects: <network> }
+tool PlainHttp { provider: http effects: <network> }
 type R { x: String }
 flow Plain(q: String) -> R {
   use PlainHttp on \"${q}\"

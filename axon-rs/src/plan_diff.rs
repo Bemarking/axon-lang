@@ -765,7 +765,7 @@ mod tests {
         let old = simple_plan();
         let mut new = simple_plan();
         new["tools"]["registered"].as_array_mut().unwrap().push(json!({
-            "name": "WebSearch", "provider": "brave", "source": "program"
+            "name": "WebSearch", "provider": "http", "source": "program"
         }));
         new["tools"]["total"] = json!(3);
 
