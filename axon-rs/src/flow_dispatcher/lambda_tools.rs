@@ -288,14 +288,16 @@ pub async fn run_use_tool(
 /// runtime would panic, so the dispatch runs on the blocking pool via
 /// `spawn_blocking` (D6). The request-scoped registry is `Arc`-cloned
 /// into the task — never a shared mutable global (D10).
-/// §Fase 114.f — charge the tool's channel lease. Returns `Some(breach_message)`
-/// when the lease over the tool's resource has expired (the CT-2 Anchor Breach) —
-/// the caller must NOT make the call. `None` ⇒ no lease governs this channel, or
-/// it is live.
-fn charge_tool_lease(node: &IRUseToolStep, ctx: &DispatchCtx) -> Option<String> {
+/// §Fase 114.f — charge a tool's channel lease by tool NAME, so BOTH the
+/// canonical `use Tool(…)` path and the streaming step-tool path share it.
+///
+/// Returns `Some(breach_message)` when the lease over the tool's resource has
+/// expired (the CT-2 Anchor Breach) — the caller must NOT make the call. `None` ⇒
+/// no lease governs this channel, or it is live.
+pub fn charge_tool_lease_by_name(tool_name: &str, ctx: &DispatchCtx) -> Option<String> {
     let leases = ctx.tool_leases.as_ref()?;
     let registry = ctx.tool_registry.as_ref()?;
-    let entry = registry.get(&node.tool_name)?;
+    let entry = registry.get(tool_name)?;
     if entry.resource_ref.is_empty() {
         // An un-resourced tool is ineligible for lease governance — you cannot
         // govern what you did not declare (§113's ratified posture).
@@ -307,16 +309,20 @@ fn charge_tool_lease(node: &IRUseToolStep, ctx: &DispatchCtx) -> Option<String> 
     }
 }
 
-/// §Fase 114.e — acquire a concurrency permit for the tool's channel, if it has
-/// one. The returned guard bounds simultaneous calls while it lives; `None` ⇒ the
-/// tool names no capacity-bounded resource and the call is unbounded (pre-§114).
-async fn acquire_channel_permit(
-    node: &IRUseToolStep,
+fn charge_tool_lease(node: &IRUseToolStep, ctx: &DispatchCtx) -> Option<String> {
+    charge_tool_lease_by_name(&node.tool_name, ctx)
+}
+
+/// §Fase 114.e — acquire a concurrency permit for a tool's channel by NAME, so
+/// both tool paths share it. The returned guard bounds simultaneous calls while it
+/// lives; `None` ⇒ the tool names no capacity-bounded resource (unbounded, pre-§114).
+pub async fn acquire_channel_permit_by_name(
+    tool_name: &str,
     ctx: &DispatchCtx,
 ) -> Option<tokio::sync::OwnedSemaphorePermit> {
     let sems = ctx.channel_semaphores.as_ref()?;
     let registry = ctx.tool_registry.as_ref()?;
-    let entry = registry.get(&node.tool_name)?;
+    let entry = registry.get(tool_name)?;
     if entry.resource_ref.is_empty() {
         return None;
     }
@@ -324,6 +330,13 @@ async fn acquire_channel_permit(
     // `acquire_owned` waits if the channel is at capacity — which is exactly the
     // bound: the N+1th concurrent call parks until one of the N in flight returns.
     sem.acquire_owned().await.ok()
+}
+
+async fn acquire_channel_permit(
+    node: &IRUseToolStep,
+    ctx: &DispatchCtx,
+) -> Option<tokio::sync::OwnedSemaphorePermit> {
+    acquire_channel_permit_by_name(&node.tool_name, ctx).await
 }
 
 async fn dispatch_use_tool_real(

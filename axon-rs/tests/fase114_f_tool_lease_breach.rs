@@ -143,3 +143,60 @@ fn no_leases_means_no_guard() {
     let g = ResourceLeaseGuard::from_ir(&[], &[resource("SearchApi", "affine")]).unwrap();
     assert!(g.is_none());
 }
+
+// ── §114.f — the STREAMING path enforces it too ──────────────────────────────
+
+/// 🔴 **Both tool dispatch paths charge the lease.**
+///
+/// §114.f wired `charge_tool_lease` into the canonical `use Tool(…)` path AND the
+/// streaming step-tool path (`pure_shape`). Governing one but not the other would
+/// be the "real-on-one-path, dead-on-the-other" defect §111 exists to end. This
+/// pins that the shared charge point is reachable by name — the seam both paths
+/// call.
+#[test]
+fn the_lease_charge_is_shared_by_both_tool_paths() {
+    use axon::cancel_token::CancellationFlag;
+    use axon::flow_dispatcher::lambda_tools::charge_tool_lease_by_name;
+    use axon::flow_dispatcher::DispatchCtx;
+
+    // Compile a program: a resourced tool + an EXPIRED lease over its resource.
+    let src = "resource Api { kind: https  endpoint: vendor.base  lifetime: affine }\n\
+               tool Search { provider: http  resource: Api  runtime: search }\n\
+               lease Gone { resource: Api  duration: 1h  on_expire: anchor_breach }\n";
+    let tokens = axon_frontend::lexer::Lexer::new(src, "<t>").tokenize().unwrap();
+    let prog = axon_frontend::parser::Parser::new(tokens).parse().unwrap();
+    let ir = axon_frontend::ir_generator::IRGenerator::new().generate(&prog);
+
+    // Build a registry + a lease guard acquired NOW, then advance the clock past τ
+    // so the charge sees an expired lease.
+    let mut reg = axon::tool_registry::ToolRegistry::new();
+    reg.register_from_ir(&ir.tools);
+    let now = Arc::new(Mutex::new(chrono::Utc::now()));
+    let c = now.clone();
+    let guard = ResourceLeaseGuard::from_ir_with_clock(
+        &ir.leases,
+        &ir.resources,
+        Box::new(move || *c.lock().unwrap()),
+    )
+    .unwrap()
+    .unwrap();
+    // An hour and a second later — the lease has expired.
+    *now.lock().unwrap() += chrono::Duration::seconds(3601);
+
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let ctx = DispatchCtx::new("F", "stub", "", CancellationFlag::new(), tx)
+        .with_tool_leases(Arc::new(guard));
+    let ctx = {
+        let mut c = ctx;
+        c.tool_registry = Some(Arc::new(reg));
+        c
+    };
+
+    // The shared charge point — the one BOTH paths call — reports the breach.
+    let breach = charge_tool_lease_by_name("Search", &ctx)
+        .expect("a post-expiry vendor call must breach on the shared path");
+    assert!(breach.contains("ANCHOR BREACH"), "got: {breach}");
+
+    // A tool with no resource is ungoverned on the same shared path.
+    assert!(charge_tool_lease_by_name("Nonexistent", &ctx).is_none());
+}

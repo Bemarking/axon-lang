@@ -395,6 +395,39 @@ async fn run_step_streaming_tool(
     // errors (`EffectDeferred` / `EffectQuotaExhausted`) and the `?` above
     // propagates them. One law, one place.
 
+    // §Fase 114.f — charge the channel LEASE on the streaming path too. Governing
+    // the canonical `use Tool(…)` path but not this one would be the exact
+    // "real-on-one-path, dead-on-the-other" defect §111 exists to end.
+    if let Some(breach) =
+        crate::flow_dispatcher::lambda_tools::charge_tool_lease_by_name(&entry.name, ctx)
+    {
+        ctx.tx
+            .send(FlowExecutionEvent::StepComplete {
+                step_name: step_name.clone(),
+                step_index,
+                success: false,
+                full_output: breach.clone(),
+                tokens_input: 0,
+                tokens_output: 0,
+                branch_path: ctx.branch_path_string(),
+                timestamp_ms: now_ms(),
+            })
+            .map_err(|_| DispatchError::ChannelClosed)?;
+        ctx.let_bindings.insert(step_name.clone(), breach.clone());
+        return Ok(NodeOutcome::Completed {
+            output: breach,
+            tokens_emitted: 0,
+            step_index,
+        });
+    }
+
+    // §Fase 114.e — hold a channel CONCURRENCY permit across the stream drain, so
+    // a streaming vendor tool is bounded by `resource.capacity` exactly as the
+    // synchronous path is. Held to the end of this function (across the drain).
+    let _channel_permit =
+        crate::flow_dispatcher::lambda_tools::acquire_channel_permit_by_name(&entry.name, ctx)
+            .await;
+
     // 7. Invoke tool.stream() + route through the unified handler.
     //    The handler applies the declared policy at chunk
     //    granularity (real enforcement, not just slug-capture-in-
