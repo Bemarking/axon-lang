@@ -28,11 +28,21 @@
 //! impossible to omit: [`status_of`] has **no default arm**, so a name the README
 //! advertises with no entry here is a **build failure**.
 //!
-//! # The three laws
+//! # The four laws
 //!
 //! 1. **The README is parsed at test time.** Every `<code>` badge in its header
 //!    block must have an entry here. The public promise is not a document that
 //!    drifts from the code — it is an *input to the build*.
+//! 1b. **(§114.z) The registry is the enumeration source.** Every
+//!    `PRIMITIVE_REGISTRY` entry with `is_advertised: true` must have an entry
+//!    here AND a `<code>` badge in the README. The §111 gate enumerated only
+//!    the badges, so a primitive DISCUSSED but never BADGED escaped
+//!    classification entirely — `budget` appeared in the README seventeen
+//!    times, was badged zero, and its dead runtime (§114.a) survived every
+//!    green build. **A gate that guards only the badges guards the
+//!    packaging.** Conversely, an `is_advertised: false` primitive must be
+//!    neither badged nor classified: hiding a primitive from the promise is a
+//!    deliberate, pinned act.
 //! 2. **Nothing advertised may be [`RuntimeStatus::NotImplemented`]** … except
 //!    what is written down in [`KNOWN_DEBT`], which is a **ratchet**: it may only
 //!    shrink. A *new* unimplemented promise is a red build. That is the whole
@@ -196,6 +206,47 @@ pub const ADVERTISED: &[(&str, RuntimeStatus)] = &[
     ("branch {ℓᵢ:…}", Real { proof: "session.rs Branch — labelled external choice" }),
     ("backpressure: credit(k)", Real { proof: "session_runtime credit window + the PCC credit-positivity witness" }),
     ("reconnect: cognitive_state", Unaudited),
+    // ── §Fase 114.z — the classifications the badge-only gate never asked for.
+    //
+    // Twenty-two primitives were part of the public promise (registered,
+    // corpus-documented, or discussed in the README at length — `step` 136
+    // mentions, `type` 79, `document` 25, `budget` 16) and had NO entry here,
+    // because the old gate enumerated only the README's `<code>` badges. A
+    // gate that guards only the badges guards the packaging. The registry is
+    // the enumeration source now (`is_advertised`), and every one of these is
+    // classified with §111's own discipline: Real only with a citable gate,
+    // Partial only with a named gap, Unaudited where nobody has looked — an
+    // unchecked box is not a passing one.
+    //
+    // The language core — exercised by essentially every gate in both repos.
+    ("step", Real { proof: "flow_dispatcher::pure_shape — the step executor every flow runs through (the same shared seam §114's channel guards read)" }),
+    ("run", Real { proof: "§65 unified executor — runner + execute_server_flow bind flow+persona+context and execute; every fase gate that runs a program runs through it" }),
+    ("type", Real { proof: "type_checker (structural + refinement validation) + store_schema (§38 — declared shapes pinned to SQL column types)" }),
+    ("json", Real { proof: "tests/fase73_c_json_accessors.rs + tests/fase73_e_json_lens.rs (§73 — total navigation; honest fail-closed accessor semantics pinned in axon-rs orchestration tests)" }),
+    // The audit chain + π-calc channel family.
+    ("ledger", Unaudited),
+    ("channel", Partial { gap: "§114.z — durable persistence (§74 outbox) and the σ-shield egress gate (§114, tests/fase114_channel_shield_egress.rs) are proven; `qos:`/`lifetime:` enforcement is unaudited" }),
+    ("emit", Real { proof: "tests/fase114_channel_shield_egress.rs (§114 — the channel's shield scans on EVERY path by IR-resolution; Reject fails closed before any routing) + §74 durable outbox delivery" }),
+    ("publish", Unaudited),
+    ("discover", Unaudited),
+    // Governance operators.
+    ("budget", Real { proof: "tests/fase114_a_budget_governs_the_canonical_path.rs (§114.a — the ceiling binds on the canonical `use Tool(…)` path; before, the field was README prose that governed nothing)" }),
+    ("window", Unaudited),
+    ("cors", Unaudited),
+    // The governed-egress trio (§105 · §99/§106 · §110) — none was ever badged.
+    ("document", Real { proof: "axon-T916 (§99 — compile-time-validated, byte-deterministic OOXML synthesis; the assertion-laundering barrier refuses a sub-believe value in an assertive slot)" }),
+    ("deliver", Real { proof: "delivery.rs + axon-T920 (§105 — provenance travels or the delivery refuses; first top-level egress integrated in the executor, D105.7(B))" }),
+    ("notify", Real { proof: "notification.rs + axon-T933/T934/T935 (§110 — carried lineage or refusal; at-most-once-per-window attention ledger across replicas, ENT mig 033)" }),
+    // Credentials + custody verbs.
+    ("credential", Real { proof: "tests/fase92_mint_runtime.rs (§92 — grants ⊆ minter, TTL ≤ 24h; axon-T893–T896)" }),
+    ("mint", Real { proof: "tests/fase92_mint_runtime.rs (§92 — fail-closed without a minter port; the raw bearer is shown once and never persisted, axon-T896)" }),
+    ("rotate", Real { proof: "tests/fase94_custody_runtime.rs (§94 — rotation_without_revelation: ENUMERATE+ROTATE(CAS)+USE; no term evaluates to a secret value)" }),
+    // Session types + quantum bridge.
+    ("upstream", Real { proof: "tests/fase80_d_upstream_e2e.rs (§80 — config-resolved dial, declared auth, credit flow-control against a real WS server)" }),
+    ("quant", Real { proof: "tests/fase111_d_quant_wired.rs (§111.d — E = ⟨ψ|M|ψ⟩ by real arithmetic; the body RUNS; `depth:` is refused rather than fabricating the physics)" }),
+    ("observable", Real { proof: "tests/fase111_d_quant_wired.rs (§111.d — the DECLARED observable is resolved and measured; no resolvable M ⇒ refusal, because an expectation without an observable is a category error)" }),
+    // Symbolic differentiation.
+    ("grad", Real { proof: "tests/fase109_grad_runtime.rs (§109 — SYMBOLIC differentiation at compile time; the gradient IS IR under the PCC GradientSoundness witness; the runtime only evaluates)" }),
 ];
 
 /// **The ratchet.** Every advertised name whose runtime is
@@ -332,6 +383,76 @@ mod tests {
         );
     }
 
+    /// **LAW 1b (§114.z) — the registry is the enumeration source.**
+    ///
+    /// Every `PRIMITIVE_REGISTRY` entry with `is_advertised: true` must be
+    /// classified here. This is the law the badge-only gate lacked: `budget`
+    /// was discussed in the README seventeen times, badged zero, tracked in NO
+    /// table — and its dead runtime (§114.a) survived every green build.
+    #[test]
+    fn every_advertised_registry_primitive_is_classified() {
+        let missing: Vec<&str> = crate::primitive_registry::PRIMITIVE_REGISTRY
+            .iter()
+            .filter(|i| i.is_advertised)
+            .map(|i| i.name)
+            .filter(|n| status_of(n).is_none())
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "{} registry primitive(s) are `is_advertised` with NO entry in `ADVERTISED`:\n  {}\n\n\
+             The registry is the enumeration source (§114.z). A primitive that is part of \
+             the public promise cannot exist without someone stating, on the record, what \
+             its runtime does. That omission is exactly how `budget` (§114.a) happened.",
+            missing.len(),
+            missing.join("\n  ")
+        );
+    }
+
+    /// **LAW 1b, visibility half (§114.z)** — an advertised primitive must be
+    /// VISIBLE in the promise: every `is_advertised` registry entry carries a
+    /// `<code>` badge in the README's header block. Classification without
+    /// visibility would let the promise live only inside this file.
+    #[test]
+    fn every_advertised_registry_primitive_is_badged() {
+        let badges: HashSet<String> = readme_advertised().into_iter().collect();
+        let unbadged: Vec<&str> = crate::primitive_registry::PRIMITIVE_REGISTRY
+            .iter()
+            .filter(|i| i.is_advertised)
+            .map(|i| i.name)
+            .filter(|n| !badges.contains(*n))
+            .collect();
+        assert!(
+            unbadged.is_empty(),
+            "these `is_advertised` registry primitives have NO `<code>` badge in the README: \
+             {unbadged:?}\nAdd the badge (and its classification) or flip `is_advertised` — \
+             deliberately, in the same PR."
+        );
+    }
+
+    /// **LAW 1b, negative half (§114.z)** — an `is_advertised: false` registry
+    /// primitive must be neither badged nor classified. If either exists, the
+    /// polarity flag is lying about the promise.
+    #[test]
+    fn non_advertised_registry_primitives_are_neither_badged_nor_classified() {
+        let badges: HashSet<String> = readme_advertised().into_iter().collect();
+        for info in crate::primitive_registry::PRIMITIVE_REGISTRY {
+            if info.is_advertised {
+                continue;
+            }
+            assert!(
+                !badges.contains(info.name),
+                "`{}` is `is_advertised: false` but carries a README badge — the flag lies",
+                info.name
+            );
+            assert!(
+                status_of(info.name).is_none(),
+                "`{}` is `is_advertised: false` but is classified in ADVERTISED — \
+                 either advertise it deliberately or remove the classification",
+                info.name
+            );
+        }
+    }
+
     /// The reverse: no zombie entries. If a name leaves the README (retracted),
     /// it must leave this table too — otherwise the table slowly becomes a
     /// museum and stops describing the promise.
@@ -449,6 +570,15 @@ mod tests {
     /// The unaudited population is pinned. §111 could not reach everything, and
     /// says so; but the number may only go down. An unchecked box is not a
     /// passing one.
+    ///
+    /// §114.z RE-BASELINED this pin 18 → 23 — not because auditing went
+    /// backwards, but because the DENOMINATOR grew: the census forced a
+    /// classification for 22 primitives the badge-only gate never asked about,
+    /// and five of them (`ledger` · `publish` · `discover` · `window` ·
+    /// `cors`) are honestly Unaudited — their existing gates pin grammar/IR,
+    /// not runtime behaviour, and claiming more without looking would be the
+    /// exact lie this file exists to prevent. From 23, the only direction is
+    /// down.
     #[test]
     fn the_unaudited_population_only_shrinks() {
         let n = ADVERTISED
@@ -456,8 +586,9 @@ mod tests {
             .filter(|(_, s)| matches!(s, Unaudited))
             .count();
         assert!(
-            n <= 18,
-            "the Unaudited population grew to {n} — §111 left 18. Auditing is the only direction."
+            n <= 23,
+            "the Unaudited population grew to {n} — §111 left 18, §114.z's census widening \
+             re-baselined at 23. Auditing is the only direction."
         );
     }
 }

@@ -9,17 +9,21 @@
 
 <p align="center">
   <!-- Cognition primitives -->
-  <code>persona</code> · <code>intent</code> · <code>flow</code> · <code>reason</code> · <code>anchor</code> · <code>refine</code> · <code>memory</code> · <code>tool</code> · <code>probe</code> · <code>weave</code> · <code>validate</code> · <code>context</code><br>
+  <code>persona</code> · <code>intent</code> · <code>flow</code> · <code>reason</code> · <code>anchor</code> · <code>refine</code> · <code>memory</code> · <code>tool</code> · <code>probe</code> · <code>weave</code> · <code>validate</code> · <code>context</code> · <code>step</code> · <code>run</code><br>
   <code>know</code> · <code>believe</code> · <code>speculate</code> · <code>doubt</code> · <code>par</code> · <code>hibernate</code><br>
   <code>dataspace</code> · <code>ingest</code> · <code>focus</code> · <code>associate</code> · <code>aggregate</code> · <code>explore</code><br>
+  <code>type</code> · <code>json</code> · <code>ledger</code><br>
   <code>deliberate</code> · <code>consensus</code> · <code>forge</code> · <code>agent</code> · <code>shield</code><br>
   <code>savant</code> · <code>synth</code> · <code>warden</code> · <code>scope</code><br>
   <code>stream</code> · <code>effects</code> · <code>@contract_tool</code> · <code>@csp_tool</code><br>
   <code>pix</code> · <code>navigate</code> · <code>drill</code> · <code>trail</code> · <code>corpus</code><br>
   <code>psyche</code> · <code>ots</code><br>
   <code>mcp</code> · <code>mandate</code> · <code>lambda</code><br>
-  <code>compute</code><br>
+  <code>budget</code> · <code>window</code> · <code>cors</code> · <code>document</code> · <code>deliver</code> · <code>notify</code><br>
+  <code>credential</code> · <code>mint</code> · <code>rotate</code><br>
+  <code>compute</code> · <code>grad</code> · <code>quant</code> · <code>observable</code><br>
   <code>daemon</code> · <code>listen</code><br>
+  <code>channel</code> · <code>emit</code> · <code>publish</code> · <code>discover</code><br>
   <code>axonendpoint</code> · <code>axpoint</code> · <code>axonstore</code><br>
   <!-- Cognitive I/O & compliance (λ-L-E calculus, Phases 1–9) -->
   <strong>Cognitive I/O:</strong>
@@ -33,7 +37,7 @@
   <code>cache</code> · <code>voice</code> · <code>shell</code> · <code>path rewrite</code> · <code>PASETO</code><br>
   <!-- NEW — Session-typed WebSocket dialogue (Fase 41, v2.3.0) -->
   <strong>Session types (v2.3.0):</strong>
-  <code>socket</code> · <code>send T</code> · <code>receive T</code> · <code>select {ℓᵢ:…}</code> · <code>branch {ℓᵢ:…}</code> · <code>backpressure: credit(k)</code> · <code>reconnect: cognitive_state</code>
+  <code>socket</code> · <code>upstream</code> · <code>send T</code> · <code>receive T</code> · <code>select {ℓᵢ:…}</code> · <code>branch {ℓᵢ:…}</code> · <code>backpressure: credit(k)</code> · <code>reconnect: cognitive_state</code>
 </p>
 
 <p align="center">

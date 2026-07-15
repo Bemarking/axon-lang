@@ -1256,7 +1256,12 @@ Body prose.
         // body was never lowered into the IR, and nothing was rolled back. A
         // retracted primitive leaves the closed set and its corpus doc is
         // deleted, so the coverage gate stays in lockstep on both sides.
-        assert_eq!(s.total, 66);
+        // §Fase 114.z: 66 → 91 — the CENSUS BACKFILL. Twenty-five constructs
+        // with live parser productions (sharpest: `budget`, tracked in NO
+        // table while its dead runtime survived every green build) enter the
+        // registry as `Pending`; the Documented set — and therefore this
+        // corpus — is unchanged at 66. Their docs are a tier of their own.
+        assert_eq!(s.total, 91);
     }
 
     /// §Phase 5 — every MCP prompt shipped under

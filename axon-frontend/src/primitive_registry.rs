@@ -74,6 +74,26 @@ pub struct PrimitiveInfo {
     /// doc in tiers (6.b, 6.c, 6.d); entries flip from `Pending` to
     /// `Documented` as their `.md` lands.
     pub doc_status: DocStatus,
+    /// §Fase 114.z — whether this primitive is part of the PUBLIC
+    /// PROMISE. `true` ⇒ the anti-drift gate (`advertised.rs`) REQUIRES
+    /// a `RuntimeStatus` classification for it AND a `<code>` badge in
+    /// the public README — a primitive cannot be part of the promise
+    /// without someone stating, on the record, what its runtime does.
+    ///
+    /// Why this field exists: the §111 gate was 100% README-badge-driven,
+    /// so a primitive DISCUSSED but never BADGED escaped classification
+    /// entirely — `budget` appeared in the README seventeen times, was
+    /// badged zero, and its dead runtime survived every green build until
+    /// §114.a. **A gate that guards only the badges guards the
+    /// packaging.** The registry is the enumeration source now; the
+    /// badges are a projection of it, not the other way around.
+    ///
+    /// `false` is for primitives the parser accepts that are deliberately
+    /// NOT promised (internal mechanisms, or constructs whose public
+    /// claims are gated on other doctrine — see `witness`). A `false`
+    /// entry must be neither badged nor classified; the gate enforces
+    /// both directions.
+    pub is_advertised: bool,
 }
 
 /// Coverage status for one primitive's documentation. The coverage
@@ -109,22 +129,15 @@ impl DocStatus {
     }
 }
 
-/// The closed catalogue — **56 primitives**, ordered by category
-/// for readability. Consumers must not depend on declaration order;
-/// they iterate and filter.
+/// The closed catalogue — **91 primitives** (66 Documented + the 25
+/// `Pending` entries of the §114.z census backfill), ordered by
+/// category for readability. Consumers must not depend on declaration
+/// order; they iterate and filter.
 ///
-/// Section breakdown:
-/// - Cognition (15) — what an LLM does.
-/// - Cognitive I/O (10) — resources + reconciliation + self-defence.
-/// - Data plane (7) — typed persistence + provenance.
-/// - Session types (4) — §Fase 41 algebra (+ §80 upstream/voice).
-/// - Wire (6) — actor + transport surfaces.
-/// - Operators (10) — specialised cognitive transforms (incl. §51 quant/observable).
-///
-/// Tier 0 — Documented as of §Fase 5 (7): `persona`, `flow`, `step`,
-/// `anchor`, `tool`, `reason`, `socket`.
-///
-/// Tier 1 / 2 / 3 — Pending (40), landing in §Fase 6.b / 6.c / 6.d.
+/// §Fase 114.z made this table the ENUMERATION SOURCE of the
+/// anti-drift gate (`advertised.rs`): every `is_advertised` entry must
+/// carry a `RuntimeStatus` classification and a README badge. See the
+/// census section at the bottom for what was missing and why.
 pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
     // ── Cognition ─────────────────────────────────────────────────────
     PrimitiveInfo {
@@ -134,6 +147,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "v0.1.0",
         summary: "Declares the identity, expertise, and refusal posture an agent adopts when executing a flow.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "context",
@@ -142,6 +156,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "v0.1.0",
         summary: "Declares the conversational frame — memory scope, depth, max tokens, temperature — a flow operates within.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "flow",
@@ -150,6 +165,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "v0.1.0",
         summary: "The orchestration primitive — a typed, ordered composition of cognitive steps with parameters and a return type.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "anchor",
@@ -158,6 +174,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "v0.1.0",
         summary: "A typed grounding constraint — declares the conditions a flow's outputs MUST satisfy, with a structured violation policy.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "tool",
@@ -166,6 +183,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "v0.1.0",
         summary: "A declarative binding for an external capability (search, web fetch, code interpreter, …) callable from within a flow.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "intent",
@@ -174,6 +192,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "v0.1.0",
         summary: "A declarative target outcome — what the flow is trying to achieve, separately from how it gets there.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "memory",
@@ -182,6 +201,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "v0.1.0",
         summary: "Declares a typed memory store — session, persistent, vector — for cross-step state with retrieval + decay semantics.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "agent",
@@ -190,6 +210,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 18",
         summary: "An orchestrated cognitive entity — composes personas, tools, contexts under a coordination strategy.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "run",
@@ -198,6 +219,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "v0.1.0",
         summary: "Binds a flow to a persona, context, and anchors — the statement that EXECUTES a declared flow.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "step",
@@ -206,6 +228,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "v0.1.0",
         summary: "A single cognitive operation inside a flow — typed input (given), prompt (ask), and typed output.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "reason",
@@ -214,6 +237,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "v0.1.0",
         summary: "An explicit-reasoning operation — declares HOW the model should think (chain-of-thought, debate, …).",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "probe",
@@ -222,6 +246,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "v0.1.0",
         summary: "A diagnostic / probing operation inside a step — emits observations without changing the trajectory.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "validate",
@@ -230,6 +255,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "v0.1.0",
         summary: "Enforces a typed invariant on a step's output before subsequent steps consume it.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "refine",
@@ -238,6 +264,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "v0.1.0",
         summary: "Iteratively improves a candidate output via a declared refinement strategy.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "weave",
@@ -246,6 +273,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "v0.1.0",
         summary: "Multi-thread reasoning braid — composes multiple sub-derivations into a unified conclusion.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     // ── Cognitive I/O ─────────────────────────────────────────────────
     PrimitiveInfo {
@@ -255,6 +283,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 6",
         summary: "Declares an external compute/storage resource (database, S3, ML endpoint) consumable by a flow.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "fabric",
@@ -263,6 +292,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 6",
         summary: "The cloud-substrate declaration — provider, region, zones, ephemerality, bound shield.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "manifest",
@@ -271,6 +301,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 6",
         summary: "Bundles resources + fabric + compliance tags into a deployable, audit-tracked unit.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "observe",
@@ -279,6 +310,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 6",
         summary: "Declares an observability surface — sources, quorum, timeout, certainty floor, partition policy.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "reconcile",
@@ -287,6 +319,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 6",
         summary: "A typed reconciliation loop — observes drift against a manifest and applies bounded corrections.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "lease",
@@ -295,6 +328,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 6",
         summary: "Time-bounded resource acquisition with typed expiry, renewal, and revocation semantics.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "ensemble",
@@ -303,6 +337,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 6",
         summary: "Coordinates multiple cognitive entities under a consensus or quorum protocol with structured tie-breaking.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "immune",
@@ -311,6 +346,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 19",
         summary: "Continuous-monitoring agent that learns a baseline + emits epistemic-level signals on anomalies.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "reflex",
@@ -319,6 +355,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 19",
         summary: "An automatic-response trigger bound to an immune system's level — fires structured actions on threshold breach.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "heal",
@@ -327,6 +364,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 19",
         summary: "A recovery routine bound to an immune system's level — runs scoped repairs, often human-in-the-loop.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     // ── Data plane ────────────────────────────────────────────────────
     PrimitiveInfo {
@@ -336,6 +374,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "v0.1.0",
         summary: "Declares a structured data type with optional refinements, ranges, where clauses, and compliance tags.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "json",
@@ -344,6 +383,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 73",
         summary: "The open, semi-structured value type — a totally-navigable JSON document, refinable by an optional `Json<T>` shape lens, total and honest always.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "axonstore",
@@ -352,6 +392,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 36",
         summary: "A typed, audit-chained data store — relational backend, isolation level, encryption, retention, on-breach policy.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "dataspace",
@@ -360,6 +401,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 36",
         summary: "A declared analytical data container — the deterministic data plane's store (§108). Typed columnar schema (`column <name>: <Type>` over the closed 6-type catalog, axon-T928), instantiated in the columnar engine at deploy; governed `ingest` (§108.c) + the relational query verbs (§108.d) land next.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "corpus",
@@ -368,6 +410,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 36",
         summary: "A retrieval-ready collection of documents — backs RAG and grounded retrieval with citation provenance.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "pix",
@@ -376,6 +419,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 19",
         summary: "PIX retrieval navigator — an embeddings-free structural index navigated by conditional-mutual-information descent (no vector store). Consumed by navigate/drill/trail.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "ledger",
@@ -384,6 +428,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 62",
         summary: "Audit chain — an append-only, hash-linked record of every state transition over a bound surface, tamper-evident by construction (formerly the Provenance-Index reading of pix).",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     // §Fase 111 — `transact` REMOVED (retracted, axon-T938).
     //
@@ -409,6 +454,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 41.a (v2.3.0)",
         summary: "Declares the typed bidirectional dialogue protocol a socket carries — §41 algebra (send/receive/select/branch/loop/end).",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "socket",
@@ -417,6 +463,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 41.b (v2.3.0)",
         summary: "Session-typed WebSocket transport with credit-refined backpressure, typed reconnection, and SSE-as-fragment projection.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "upstream",
@@ -425,6 +472,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 80.b (v2.37.0)",
         summary: "Outbound vendor connection (the client dual of socket): config-resolved dial, declared auth, and a compile-time-total wire↔session projection — a new vendor is a declaration, not new code.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "voice",
@@ -433,6 +481,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 80.g (v2.37.0)",
         summary: "The voice-agent simplicity layer: macro-expands (inspectable via axon desugar) to ots codecs + a carrier session/socket + upstream vendor legs — a blessed-preset phone agent in under 20 lines.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     // ── Wire ──────────────────────────────────────────────────────────
     PrimitiveInfo {
@@ -442,6 +491,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 32",
         summary: "HTTP REST primitive — exposes a flow on a typed route with body/output schemas, transport classification, and compliance.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "axpoint",
@@ -450,6 +500,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 32",
         summary: "Lightweight axonendpoint — for simple request/response flows without the full request-binding schema scaffolding.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "daemon",
@@ -458,6 +509,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 16",
         summary: "A long-lived, supervised cognitive process — reacts to events on declared listeners with structured restart semantics.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "mcp",
@@ -466,6 +518,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 33+",
         summary: "Declares an outbound MCP server binding — turns axon into an MCP client of another server.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     // §Fase 6.c — `taint` was registered in 6.a as a wire primitive
     // but has no parser production (the lexer recognises the
@@ -483,6 +536,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 16",
         summary: "A flow/daemon-body listener — binds to an event source and dispatches typed messages downstream.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     // §Fase 77 — the π-calc channel quartet, undocumented since Fase 13
     // (Kivi brief #51 §B.2: `axon.primitive_doc` answered *unknown
@@ -495,6 +549,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 13",
         summary: "A typed π-calculus channel — message type, qos, lifetime, persistence, and shield gate for in-process delivery and signed external egress.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "emit",
@@ -503,6 +558,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 13",
         summary: "The π-calculus output prefix — emits a typed value onto a channel; durable channels append to the at-least-once outbox.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "publish",
@@ -511,6 +567,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 13",
         summary: "Capability extrusion — publishes a shield-gated channel for discovery; under a signing shield it declares the channel for signed webhook egress.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "discover",
@@ -519,6 +576,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 13",
         summary: "The dual of publish — imports a previously published channel capability under a local alias.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     // ── Operators ─────────────────────────────────────────────────────
     PrimitiveInfo {
@@ -528,6 +586,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 20",
         summary: "A composable defence layer — scans inputs/outputs for declared threats with a structured on-breach policy.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "window",
@@ -536,6 +595,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 71",
         summary: "A timezone-aware temporal execution guard — gates a scheduled daemon's ticks to allowed day/hour spans (minus holiday dates) with a skip/warn/defer policy.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "cors",
@@ -544,6 +604,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 83 (v2.38.0)",
         summary: "A named, referenced browser-origin policy — `axonendpoint.cors:` resolves it dynamically per tenant at the enterprise HTTP edge, secure by default when absent.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "cache",
@@ -552,6 +613,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 85 (v2.40.0)",
         summary: "A named, referenced result-memoization policy — cacheability derives from the type system's `effects: pure` proof; `tool.cache:` / `retrieve.cache:` opt in, a single `default: true` auto-covers every pure tool, and a non-pure cache must carry a finite `ttl:`.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "document",
@@ -560,6 +622,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 99 (v2.53.0)",
         summary: "Native Document Synthesis — a declarative, compile-time-validated DOCX/PPTX/XLSX structure. The egress boundary where a value LEAVES the epistemic lattice into a human artifact: the assertion-laundering barrier refuses a flow value below `believe` in an assertive slot without `attribute:` or a shield. Byte-deterministic output; provenance travels inside the artifact.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "deliver",
@@ -568,6 +631,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 105 (v2.60.0)",
         summary: "Governed CRM Delivery — the egress-dual of acquisition. A declarative, compile-time-validated write of assertions into a system of record (a CRM): idempotent operations (`upsert_contact`/`create_deal`/`add_note`), per-tenant credentials via §94 custody, `web` effect. The provenance-stripping barrier (T920) refuses a `provenance: cleared` delivery of an unshielded flow value — a vendor guess must arrive in the CRM labeled as a guess, not laundered into a fact.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "mandate",
@@ -576,6 +640,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 21",
         summary: "A typed approval requirement — gates a flow's execution on a capability check + optional segregation of duties.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "compute",
@@ -584,6 +649,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 17",
         summary: "Binds a flow to a specific compute backend — model selection, effort hint, parallelism, deterministic seed.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "lambda",
@@ -592,6 +658,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 15",
         summary: "An anonymous, typed function bound to a flow's data plane — supports lambda apply semantics for inline composition.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "forge",
@@ -600,6 +667,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 18 (stub); Fase 86 (v2.41.0)",
         summary: "Directed Creative Synthesis — a flow-body block running the Poincaré-Hadamard four-phase creative process under a measured, fail-closed novelty guarantee (NCD), so an LLM can genuinely CREATE, not just interpolate.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "ots",
@@ -608,6 +676,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 11",
         summary: "One-shot transform — a closed-catalogue media transformation (audio, image, format) with native/ffmpeg backend dispatch.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "psyche",
@@ -616,6 +685,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 14",
         summary: "Declares the psychological model a persona enacts — beliefs, desires, traits, behavioural disposition.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "observable",
@@ -624,6 +694,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 51 (v2.19.0)",
         summary: "Declares a Hermitian observable — a Pauli-sum M = Σ cₖ Pₖ — measured by a quant block to collapse a Hilbert-space state back to a classical expectation.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "quant",
@@ -632,6 +703,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 51 (v2.19.0)",
         summary: "A flow-body block that lifts a continuous carrier tensor into a finite Hilbert space, evolves it, and yields the expectation of a declared observable (the cognitive↔quantum bridge; OSS simulator capped at n≤10).",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "savant",
@@ -640,6 +712,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 87",
         summary: "The long-horizon autonomous research primitive — a governed ORCHESTRATOR that composes memory/corpus, budget, quant, forge and daemon into a budget-bounded, interruptible, fail-closed, provenance-witnessed research loop. Enterprise-exclusive at scale; the keyword + type discipline + PCC live in OSS.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "synth",
@@ -648,6 +721,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 87",
         summary: "A dynamic tool-synthesis policy — the safety envelope (risk ceiling, source language, mandatory WASM zero-trust sandbox, Coder/Reviewer consensus) under which a savant may synthesise and run a tool at runtime. OSS disciplines the policy and ships a deny-by-default backend; the Extism executor is enterprise.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "warden",
@@ -656,6 +730,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 88",
         summary: "An adversarial security-analysis flow-body block — `warden(<target>) within <Scope>` audits a target under a paraconsistent adversarial framing (abduction over authorized evidence), emitting attested `Vulnerability` findings (a witness, not LLM prose). Authorization-native: the `within <Scope>` clause is mandatory (fail-closed). The active auditor of a TARGET, distinct from `shield` (the passive I/O firewall of the AGENT).",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "scope",
@@ -664,6 +739,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 88",
         summary: "A named authorization scope — the signed envelope (`targets` allowlist + `depth` ceiling + `approver`) a `warden` analysis MUST run `within`. The load-bearing safety construct that makes adversarial analysis a governed, auditable, fail-closed capability rather than an unscoped weapon.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "credential",
@@ -672,6 +748,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 92",
         summary: "A named ephemeral-credential contract — `ttl:` (≤ 24h, axon-T894) + `grants:` (dotted capability slugs, axon-T893). `mint <Name> as <binding>` mints a TTL-bounded bearer carrying exactly the grants, admitted only when grants ⊆ capabilities(minter) — `authority_only_attenuates`, the delegation dual of the enterprise service account.",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "mint",
@@ -680,6 +757,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 92",
         summary: "The credential-minting flow verb — `mint <Credential> as <binding>` mints a declared ephemeral contract at runtime (fail-closed without a minter port) and binds the raw bearer, shown once and never persisted (axon-T896).",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     PrimitiveInfo {
         name: "rotate",
@@ -688,6 +766,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         since: "Fase 94",
         summary: "The mediated secret-renewal flow verb — `rotate <SecretsStore> [where \"<filter>\"] with <Tool> as <binding>` renews every custody entry of a `backend: secrets` store's class matching the §67 filter through ONE runtime-mediated exchange per key (reveal → tool renews → CAS commit at version+1), binding the metadata-only summary. `rotation_without_revelation`: no term evaluates to a secret value; fail-closed without a custody port. Target must be a secrets store (axon-T898), the tool declared (axon-T899).",
         doc_status: DocStatus::Documented,
+        is_advertised: true,
     },
     // §Fase 6.d — `logic` was registered in 6.a as an operators
     // primitive but has NO parser production (the lexer recognises
@@ -698,6 +777,267 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
     // one-to-one. We remove `logic` here; if a future Fase
     // introduces `logic <Name> { … }`, re-add the entry with
     // that Fase's `since:` tag.
+    //
+    // ══ §Fase 114.z — THE CENSUS BACKFILL ═══════════════════════════════
+    //
+    // The registry claimed to be "the single source of truth for the
+    // closed set of primitive names" while **25 named constructs with
+    // live parser productions were tracked NOWHERE** — most sharply
+    // `budget`, which was in neither this registry nor the `ADVERTISED`
+    // table, appeared in the README seventeen times with zero badges,
+    // and whose dead runtime (§114.a) therefore survived every green
+    // build. A single-source-of-truth that lacks entries is not one yet;
+    // §114.z audits parser dispatch (`parse_declaration` +
+    // `parse_flow_step`) against this table and closes the census.
+    //
+    // Entries are `DocStatus::Pending` — the state this file's header
+    // DESIGNED for parser realities whose corpus doc has not landed.
+    // Their summaries are verified against the runtime as of §114.z
+    // (several honestly state a refusal or a KNOWN_DEBT gap: a summary
+    // the runtime does not honour lies, §111's widened rule). Writing
+    // 25 corpus docs is its own tier — documenting behaviour without
+    // verifying it is exactly the §112.f defect.
+    //
+    // DELIBERATELY EXCLUDED from the census, with reasons:
+    //   - usage-verbs of registered primitives — `use` (tool),
+    //     `remember`/`recall` (memory), `persist`/`retrieve`/`mutate`/
+    //     `purge` (axonstore), `yield` (quant), and the apply-forms
+    //     (`shield`/`ots`/`mandate`/`compute` on a target, `run` as a
+    //     flow-step): their doc home is the parent primitive's `.md`.
+    //   - structural control flow — `if`/`for`/`let`/`return`/`break`/
+    //     `continue`/`import`: syntax, not primitives.
+    //   - retracted constructs — `transact` (axon-T938) and
+    //     `corroborate`: they parse only so the checker can teach the
+    //     retraction; a retracted primitive is not an exposed one.
+    //
+    // ── §114.z census — top-level declarations ──────────────────────────
+    PrimitiveInfo {
+        name: "budget",
+        category: "operators",
+        top_level: true,
+        since: "Fase 72 (daemon-attached); top-level Fase 114.a (v2.69.0)",
+        summary: "A declared spend ceiling over cognition and tool use — enforced on the canonical `use Tool(…)` path (§114.a); attachable to a daemon or declared top-level.",
+        doc_status: DocStatus::Pending,
+        is_advertised: true,
+    },
+    PrimitiveInfo {
+        name: "notify",
+        category: "operators",
+        top_level: true,
+        since: "Fase 110 (v2.66.0)",
+        summary: "Governed human notification — the third egress dual (deliver §105 · document §106 · notify §110): spends HUMAN ATTENTION, carries lineage or refuses, at-most-once-per-window across replicas.",
+        doc_status: DocStatus::Pending,
+        is_advertised: true,
+    },
+    PrimitiveInfo {
+        name: "topology",
+        category: "session_types",
+        top_level: true,
+        since: "λ-L-E Fase 4",
+        summary: "Declares a process-graph topology whose liveness is checked by a genuine DFS cycle detector (Honda liveness — a narrow sufficient condition, honestly scoped).",
+        doc_status: DocStatus::Pending,
+        is_advertised: true,
+    },
+    PrimitiveInfo {
+        name: "component",
+        category: "wire",
+        top_level: true,
+        since: "λ-L-E Fase 9",
+        summary: "A compliance-bound UI component — the compile-time shield-coverage law over regulated κ IS enforced (a real set difference); rendering is deferred (§111).",
+        doc_status: DocStatus::Pending,
+        is_advertised: true,
+    },
+    PrimitiveInfo {
+        name: "view",
+        category: "wire",
+        top_level: true,
+        since: "λ-L-E Fase 9",
+        summary: "A UI view declaration — referential integrity is checked; route dispatch and session-typed reactivity are deferred (§111).",
+        doc_status: DocStatus::Pending,
+        is_advertised: true,
+    },
+    PrimitiveInfo {
+        name: "witness",
+        category: "operators",
+        top_level: true,
+        since: "Fase 69.a",
+        summary: "The advantage-witness declaration (§69) — INTERNAL: benchmark and advantage claims wait for the Sandbox (§101), so this is deliberately NOT part of the advertised surface.",
+        doc_status: DocStatus::Pending,
+        is_advertised: false,
+    },
+    PrimitiveInfo {
+        name: "extension",
+        category: "operators",
+        top_level: true,
+        since: "Brief #15 → Fase 53",
+        summary: "The closed-catalog extension mechanism (#15→§53) — an internal composition mechanism, deliberately not advertised as a primitive.",
+        doc_status: DocStatus::Pending,
+        is_advertised: false,
+    },
+    // ── §114.z census — the epistemic lattice scopes ────────────────────
+    PrimitiveInfo {
+        name: "know",
+        category: "cognition",
+        top_level: true,
+        since: "v0.1.0 (epistemic lattice)",
+        summary: "Epistemic scope — stamps its block's derivations with the `know` level of the uncertainty lattice (the strongest claim).",
+        doc_status: DocStatus::Pending,
+        is_advertised: true,
+    },
+    PrimitiveInfo {
+        name: "believe",
+        category: "cognition",
+        top_level: true,
+        since: "v0.1.0 (epistemic lattice)",
+        summary: "Epistemic scope — stamps its block's derivations with the `believe` level of the uncertainty lattice (the egress floor for assertive slots, §99).",
+        doc_status: DocStatus::Pending,
+        is_advertised: true,
+    },
+    PrimitiveInfo {
+        name: "speculate",
+        category: "cognition",
+        top_level: true,
+        since: "v0.1.0 (epistemic lattice)",
+        summary: "Epistemic scope — stamps its block's derivations with the `speculate` level of the uncertainty lattice.",
+        doc_status: DocStatus::Pending,
+        is_advertised: true,
+    },
+    PrimitiveInfo {
+        name: "doubt",
+        category: "cognition",
+        top_level: true,
+        since: "v0.1.0 (epistemic lattice)",
+        summary: "Epistemic scope — stamps its block's derivations with the `doubt` level of the uncertainty lattice (the weakest claim).",
+        doc_status: DocStatus::Pending,
+        is_advertised: true,
+    },
+    // ── §114.z census — flow-body cognitive verbs ───────────────────────
+    PrimitiveInfo {
+        name: "par",
+        category: "cognition",
+        top_level: false,
+        since: "pre-§65; real fan-out Fase 65",
+        summary: "Concurrent fan-out — executes its branches in parallel (a real `join_all`, §65) and joins their results; branch tool calls ride the §114.e channel semaphore.",
+        doc_status: DocStatus::Pending,
+        is_advertised: true,
+    },
+    PrimitiveInfo {
+        name: "hibernate",
+        category: "cognition",
+        top_level: false,
+        since: "pre-§111 (introduction unrecorded)",
+        summary: "Suspend-until — ADVERTISED BUT NOT IMPLEMENTED (§111 F20, KNOWN_DEBT): returns a placeholder synchronously; no CPS suspend, no resume, timeout not honored.",
+        doc_status: DocStatus::Pending,
+        is_advertised: true,
+    },
+    PrimitiveInfo {
+        name: "deliberate",
+        category: "cognition",
+        top_level: false,
+        since: "pre-§111 (introduction unrecorded)",
+        summary: "Budget-bounded deliberation — FAILS CLOSED (axon-T939, §111): refused at check time rather than silently discarded; no budget was ever controlled by the old placeholder.",
+        doc_status: DocStatus::Pending,
+        is_advertised: true,
+    },
+    PrimitiveInfo {
+        name: "consensus",
+        category: "cognition",
+        top_level: false,
+        since: "pre-§111 (introduction unrecorded)",
+        summary: "Multi-candidate consensus — FAILS CLOSED (axon-T940, §111): refused at check time; no votes, no aggregation, no candidates in the old placeholder.",
+        doc_status: DocStatus::Pending,
+        is_advertised: true,
+    },
+    PrimitiveInfo {
+        name: "stream",
+        category: "operators",
+        top_level: false,
+        since: "pre-§111; body executed since Fase 111.e",
+        summary: "Algebraic-effects stream block — the body is parsed, lowered and EXECUTED over the Free-Monad CPS handler runtime (§111.e; it used to be discarded at parse time).",
+        doc_status: DocStatus::Pending,
+        is_advertised: true,
+    },
+    PrimitiveInfo {
+        name: "grad",
+        category: "operators",
+        top_level: false,
+        since: "Fase 109 (v2.65.0)",
+        summary: "The proof-carrying derivative — SYMBOLIC differentiation over the §70 expression language at compile time; the gradient IS IR (PCC GradientSoundness) and the runtime only evaluates.",
+        doc_status: DocStatus::Pending,
+        is_advertised: true,
+    },
+    PrimitiveInfo {
+        name: "navigate",
+        category: "data_plane",
+        top_level: false,
+        since: "Fases 62–65 (PIX·MDN program)",
+        summary: "Knowledge navigation — three REAL deterministic engines (MDN store-sourced, MDN in-memory, PIX); with no indexable source in scope it falls back to an LLM prompt (§111 F11, the named gap).",
+        doc_status: DocStatus::Pending,
+        is_advertised: true,
+    },
+    PrimitiveInfo {
+        name: "drill",
+        category: "data_plane",
+        top_level: false,
+        since: "Fases 62–65 (PIX·MDN program)",
+        summary: "Subtree descent under a prior navigate — real navigation when a source is in scope; degrades to a placeholder otherwise (§111).",
+        doc_status: DocStatus::Pending,
+        is_advertised: true,
+    },
+    PrimitiveInfo {
+        name: "trail",
+        category: "data_plane",
+        top_level: false,
+        since: "Fases 62–65 (PIX·MDN program)",
+        summary: "Reads the breadcrumb a navigate seeded — a real provenance trail when navigation was deterministic; inherits §111 F11 on the LLM fallback path.",
+        doc_status: DocStatus::Pending,
+        is_advertised: true,
+    },
+    PrimitiveInfo {
+        name: "ingest",
+        category: "data_plane",
+        top_level: false,
+        since: "pre-§108; made real Fase 108.c (v2.63.0)",
+        summary: "Governed ingestion into a dataspace — bounds-BEFORE-parse, sha256 provenance, born-Untrusted taint (§108.c; the pre-§108 placeholder hallucinated success).",
+        doc_status: DocStatus::Pending,
+        is_advertised: true,
+    },
+    PrimitiveInfo {
+        name: "focus",
+        category: "data_plane",
+        top_level: false,
+        since: "Fase 108.d (v2.63.0)",
+        summary: "The dataspace selection-projection verb (σ∘π) over the first-party columnar engine (§108.d).",
+        doc_status: DocStatus::Pending,
+        is_advertised: true,
+    },
+    PrimitiveInfo {
+        name: "associate",
+        category: "data_plane",
+        top_level: false,
+        since: "Fase 108.d (v2.63.0)",
+        summary: "The dataspace join verb (⋈) — a hash equi-join over the columnar engine that REFUSES a keyless join (§108.d).",
+        doc_status: DocStatus::Pending,
+        is_advertised: true,
+    },
+    PrimitiveInfo {
+        name: "aggregate",
+        category: "data_plane",
+        top_level: false,
+        since: "Fase 108.d (v2.63.0)",
+        summary: "The dataspace aggregation verb (γ) over the first-party columnar engine (§108.d).",
+        doc_status: DocStatus::Pending,
+        is_advertised: true,
+    },
+    PrimitiveInfo {
+        name: "explore",
+        category: "data_plane",
+        top_level: false,
+        since: "Fase 108.d (v2.63.0)",
+        summary: "The dataspace profiling verb — zone-map statistics over declared columns (§108.d).",
+        doc_status: DocStatus::Pending,
+        is_advertised: true,
+    },
 ];
 
 /// Lookup one primitive by canonical name. O(n) over the 54-entry
@@ -806,10 +1146,42 @@ mod tests {
         // §Fase 99 added `document` (Native Document Synthesis) → 65→66.
         // §Fase 105 added `deliver` (Governed CRM Delivery, egress-dual) → 66→67.
         // §Fase 111 RETRACTED `transact` (it never opened a transaction) → 67→66.
+        // §Fase 114.z CENSUS BACKFILL → 66→91: twenty-five constructs with
+        // live parser productions were tracked NOWHERE (sharpest: `budget`,
+        // whose dead runtime survived every green build because no table
+        // knew it existed). All 25 enter as `Pending`; see the census
+        // section's exclusion list for what deliberately stays out.
         assert_eq!(
             PRIMITIVE_REGISTRY.len(),
-            66,
+            91,
             "PRIMITIVE_REGISTRY count drift — add/remove the primitive intentionally + update this assertion"
+        );
+    }
+
+    /// §Fase 114.z — the advertised polarity is pinned. `is_advertised:
+    /// false` is an EXCEPTIONAL state (an internal mechanism, or a
+    /// construct whose public claims are gated on other doctrine); every
+    /// new primitive is part of the promise unless this list is
+    /// deliberately grown in the same PR.
+    #[test]
+    fn non_advertised_entries_are_exactly_the_deliberate_exceptions() {
+        let hidden: HashSet<&str> = PRIMITIVE_REGISTRY
+            .iter()
+            .filter(|i| !i.is_advertised)
+            .map(|i| i.name)
+            .collect();
+        let expected: HashSet<&str> = [
+            // §69 — benchmark/advantage claims wait for the Sandbox (§101).
+            "witness",
+            // #15→§53 — internal composition mechanism, not a promised primitive.
+            "extension",
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            hidden, expected,
+            "is_advertised polarity drift — hiding a primitive from the promise \
+             (or promising a hidden one) is a deliberate act; update this pin in the same PR"
         );
     }
 
@@ -949,14 +1321,16 @@ mod tests {
         // §Fase 99: 65 → 66 with `document` (Native Document Synthesis).
         // §Fase 105: 66 → 67 with `deliver` (Governed CRM Delivery).
         // §Fase 111: 67 → 66 — `transact` retracted (axon-T938).
-        assert_eq!(s.total, 66);
+        // §Fase 114.z: 66 → 91 — the census backfill. The 25 new entries
+        // are Pending: they are parser realities that predate this fase,
+        // and their corpus docs are a tier of their own (writing 25 docs
+        // without verifying each behaviour would be the §112.f defect in
+        // bulk). Documented stays 66 — the §6.d baseline holds; a DROP in
+        // documented is still a regression.
+        assert_eq!(s.total, 91);
         assert_eq!(s.documented + s.pending, s.total);
-        // §Fase 6.d achieves **100% coverage** — every entry in the
-        // registry has a `.md` and a passing drift-gated canonical
-        // program. Pending count is 0; any future drop is a
-        // regression the gate catches.
         assert_eq!(s.documented, 66);
-        assert_eq!(s.pending, 0);
+        assert_eq!(s.pending, 25);
     }
 
     #[test]
@@ -983,7 +1357,11 @@ mod tests {
         for nested in ["step", "reason", "probe", "validate", "refine", "weave",
                        "listen", "forge", "quant",
                        // §Fase 77 — the channel quartet's nested members.
-                       "emit", "publish", "discover"] {
+                       "emit", "publish", "discover",
+                       // §Fase 114.z census — flow-body cognitive verbs.
+                       "par", "hibernate", "deliberate", "consensus", "stream",
+                       "grad", "navigate", "drill", "trail", "ingest",
+                       "focus", "associate", "aggregate", "explore"] {
             let info = find(nested).expect("must be in registry");
             assert!(
                 !info.top_level,
