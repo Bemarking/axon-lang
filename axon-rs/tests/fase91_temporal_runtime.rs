@@ -24,7 +24,10 @@ fn run(source: &str, flow: &str) -> axon::runner::ServerRunnerMetrics {
     let empty = std::collections::HashMap::new();
     execute_server_flow(
         &ir, flow, "stub", "", "<fase91-test>", None, None, &empty, &empty, None, None, None,
-        None, None, None,
+        None, // budget
+        None, // §Fase 114.e channel semaphores
+        None, // event_outbox
+        None, // credential minter
         None, // §Fase 94.d — secret custody (test: none)
         None, // §Fase 108.b dataspace_engine (tests: fail closed)
         None, // §Fase 102 scrape_overrides

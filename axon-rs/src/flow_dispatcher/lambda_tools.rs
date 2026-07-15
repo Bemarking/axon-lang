@@ -213,6 +213,16 @@ pub async fn run_use_tool(
         }
     }
 
+    // §Fase 114.e — hold a channel permit ACROSS the call, so at most
+    // `resource.capacity` calls are in flight against this tool's channel at once.
+    //
+    // §114.d derived the capacity; this is what turns the number into a bound.
+    // Acquired BEFORE the dispatch and held (the guard lives to the end of the
+    // scope) until the call returns — a bound applied after the call bounds
+    // nothing, the vendor was already hit. A tool whose resource has no capacity
+    // (or no resource) acquires nothing and proceeds unbounded, as before.
+    let _channel_permit = acquire_channel_permit(node, ctx).await;
+
     // §Fase 58.f.2 — attempt a real dispatch; honor cancel observed
     // while the (potentially blocking, network-bound) call ran.
     let (result, success) = match dispatch_use_tool_real(node, ctx).await {
@@ -259,6 +269,25 @@ pub async fn run_use_tool(
 /// runtime would panic, so the dispatch runs on the blocking pool via
 /// `spawn_blocking` (D6). The request-scoped registry is `Arc`-cloned
 /// into the task — never a shared mutable global (D10).
+/// §Fase 114.e — acquire a concurrency permit for the tool's channel, if it has
+/// one. The returned guard bounds simultaneous calls while it lives; `None` ⇒ the
+/// tool names no capacity-bounded resource and the call is unbounded (pre-§114).
+async fn acquire_channel_permit(
+    node: &IRUseToolStep,
+    ctx: &DispatchCtx,
+) -> Option<tokio::sync::OwnedSemaphorePermit> {
+    let sems = ctx.channel_semaphores.as_ref()?;
+    let registry = ctx.tool_registry.as_ref()?;
+    let entry = registry.get(&node.tool_name)?;
+    if entry.resource_ref.is_empty() {
+        return None;
+    }
+    let sem = sems.for_resource(&entry.resource_ref)?;
+    // `acquire_owned` waits if the channel is at capacity — which is exactly the
+    // bound: the N+1th concurrent call parks until one of the N in flight returns.
+    sem.acquire_owned().await.ok()
+}
+
 async fn dispatch_use_tool_real(
     node: &IRUseToolStep,
     ctx: &DispatchCtx,

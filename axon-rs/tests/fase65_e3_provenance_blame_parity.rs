@@ -76,6 +76,7 @@ fn run() -> ServerRunnerMetrics {
         None, // §Fase 24.g.2 — llm_base_url
         None, // §Fase 24.g.2 — llm_chat_path
             None, // §Fase 72.c — budget (test: unbudgeted)
+            None, // §Fase 114.e — channel semaphores (test: none)
         None, // §Fase 74.f — event_outbox (test: in-process emit)
         None, // §Fase 92.c — credential minter (test: none)
         None, // §Fase 94.d — secret custody (test: none)

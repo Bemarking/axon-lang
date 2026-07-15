@@ -103,6 +103,7 @@ fn run_enumerate_with_tenant(tenant: &str) -> Vec<String> {
         None,
         None,
         None, // budget
+        None, // §Fase 114.e channel semaphores
         None, // outbox
         None, // minter
         Some(custody as Arc<dyn SecretCustody>),

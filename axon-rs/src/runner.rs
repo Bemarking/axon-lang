@@ -3392,6 +3392,9 @@ async fn collect_via_dispatcher(
     // §Fase 72.c — the active `budget { … }` gate when a budgeted daemon runs
     // this flow. `None` ⇒ unbudgeted (tool dispatch unconditional, pre-§72).
     budget: Option<std::sync::Arc<std::sync::Mutex<crate::runtime::budget_kernel::BudgetGate>>>,
+    // §Fase 114.e — the per-channel concurrency semaphores (`resource.capacity`),
+    // held on ServerState across requests. `None` ⇒ no channel is bounded.
+    channel_semaphores: Option<std::sync::Arc<crate::channel_semaphore::ChannelSemaphores>>,
     // §Fase 74.f — the typed event BUS (built from the program's `channel`
     // definitions) + the durable event OUTBOX (the §74.c `EventOutbox` seam),
     // attached as a pair on the daemon path. The bus carries each channel's
@@ -3475,6 +3478,12 @@ async fn collect_via_dispatcher(
     // §Fase 72.c — attach the linear-effect budget gate (daemon path only).
     if let Some(gate) = budget {
         ctx = ctx.with_budget(gate);
+    }
+    // §Fase 114.e — attach the cross-request channel semaphores so `capacity:`
+    // bounds simultaneous in-flight calls (§114.d derived the number; this makes
+    // it a bound).
+    if let Some(sems) = channel_semaphores {
+        ctx = ctx.with_channel_semaphores(sems);
     }
     // §Fase 74.f — attach the typed event bus + durable outbox as a pair (daemon
     // path only). The bus supplies the channel's `persistence` so `run_emit`
@@ -3716,6 +3725,9 @@ pub fn execute_server_flow(
     // compiled budget). `None` for every other caller (HTTP, CLI, tests) — tool
     // dispatch is then unconditional, byte-identical to pre-§72.
     budget: Option<std::sync::Arc<std::sync::Mutex<crate::runtime::budget_kernel::BudgetGate>>>,
+    // §Fase 114.e — the per-channel concurrency semaphores (`resource.capacity`),
+    // held on ServerState across requests. `None` for every non-server caller.
+    channel_semaphores: Option<std::sync::Arc<crate::channel_semaphore::ChannelSemaphores>>,
     // §Fase 74.f — the durable event outbox (the §74.c `EventOutbox` seam). `Some`
     // only when a `daemon` runs this flow AND the deployment configures a durable
     // channel sink (the enterprise supervisor passes its per-tenant Postgres
@@ -4089,6 +4101,7 @@ pub fn execute_server_flow(
                     &param_bindings,
                     pinned,
                     budget.clone(),
+                    channel_semaphores.clone(),
                     // §Fase 74.f — when a durable outbox is injected (the
                     // enterprise daemon path), build the typed event bus from the
                     // program's `channel` definitions so `run_emit` knows each
@@ -5181,6 +5194,7 @@ flow Recall(q: Text) -> Text {
             None,
             None,
             None, // §Fase 72.c — budget (test: unbudgeted)
+            None, // §Fase 114.e — channel semaphores (test: none)
             None, // §Fase 74.f — event outbox (test: no durable sink)
             None, // §Fase 92.c — credential minter (test: none)
             None, // §Fase 94.d — secret custody (test: none)
@@ -5267,6 +5281,7 @@ flow Recall(q: Text) -> Text {
             &pb,
             std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             None, // §Fase 72.c — budget (test: unbudgeted)
+            None, // §Fase 114.e — channel semaphores (test: none)
             None, // §Fase 74.f — event bus (test: no durable sink)
             None, // §Fase 74.f — event outbox (test: no durable sink)
             std::sync::Arc::new(std::collections::HashMap::new()), // §Fase 92.c — credentials
@@ -5306,18 +5321,19 @@ flow Lead() -> Text {
             "stub",
             "acme",
             "lead.axon",
-            None,
-            None,
-            &std::collections::HashMap::new(),
-            &std::collections::HashMap::new(),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            None,                                 // api_key_override
+            None,                                 // request_body
+            &std::collections::HashMap::new(),    // request_path
+            &std::collections::HashMap::new(),    // request_query
+            None,                                 // tool_base_url
+            None,                                 // llm_base_url
+            None,                                 // llm_chat_path
+            None,                                 // budget
+            None,                                 // §Fase 114.e channel semaphores
+            None,                                 // event_outbox
+            None,                                 // credential_minter
+            None,                                 // secret_custody
+            None,                                 // (schemas / etc.)
             None, // §Fase 108.b dataspace_engine (tests: fail closed)
         )
         .expect("flow runs");
@@ -5365,6 +5381,7 @@ flow Echo(p: Text) -> Text {
             None,
             None,
             None, // budget
+            None, // §Fase 114.e — channel semaphores (test: none)
             None, // outbox
             None, // §Fase 92.c — credential minter (test: none)
             None, // §Fase 94.d — secret custody (test: none)
@@ -5404,7 +5421,12 @@ flow Learn(tenant_id: Text, session_id_generic: Text) -> Text {
         let metrics = execute_server_flow(
             &ir, "Learn", "stub", "acme", "learn.axon", None, Some(&payload),
             &std::collections::HashMap::new(), &std::collections::HashMap::new(),
-            None, None, None, None, None,
+            None, // tool_base_url
+            None, // llm_base_url
+            None, // llm_chat_path
+            None, // budget
+            None, // §Fase 114.e channel semaphores
+            None, // event_outbox
             None, // §Fase 92.c — credential minter (test: none)
             None, // §Fase 94.d — secret custody (test: none)
                 None, // §Fase 108.b dataspace_engine (tests: fail closed)
@@ -5459,6 +5481,7 @@ flow Producer(tenant_id: Text) -> Text {
             None,
             None,
             None, // §Fase 72.c — budget (unbudgeted)
+            None, // §Fase 114.e — channel semaphores (test: none)
             // §Fase 74.f — inject the durable outbox (the enterprise daemon path).
             Some(probe.clone() as std::sync::Arc<dyn EventOutbox>),
             None, // §Fase 92.c — credential minter (test: none)

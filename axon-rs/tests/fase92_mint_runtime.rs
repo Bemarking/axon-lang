@@ -130,7 +130,10 @@ fn e2e_mint_without_a_port_fails_the_flow_loudly() {
     let empty = std::collections::HashMap::new();
     let m = axon::runner::execute_server_flow(
         &ir, "Bootstrap", "stub", "", "<fase92>", None, None, &empty, &empty, None, None, None,
-        None, None, None,
+        None, // budget
+        None, // §Fase 114.e channel semaphores
+        None, // event_outbox
+        None, // §Fase 92.c credential minter
         None, // §Fase 94.d — secret custody (test: none)
         None, // §Fase 108.b dataspace_engine (tests: fail closed)
         None, // §Fase 102 scrape_overrides

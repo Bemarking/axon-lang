@@ -226,6 +226,10 @@ pub fn execute_listener_body(
                 None,
                 // §Fase 72.c — the daemon's effect budget gate.
                 budget.clone(),
+                // §Fase 114.e — the daemon path carries no channel semaphores (the
+                // HTTP vendor-concurrency case is the server path's; a daemon's tool
+                // calls are single-threaded per tick). Owed if daemons ever fan out.
+                None,
                 // §Fase 74.f — the OSS single-node daemon keeps `emit` in-process;
                 // the durable per-tenant outbox is the enterprise supervisor path.
                 None,
@@ -285,6 +289,8 @@ pub fn deliver_typed_event(
                     None,
                     None,
                     budget.clone(),
+                    // §Fase 114.e — daemon path: no channel semaphores (server path's concern).
+                    None,
                     // §Fase 74.f — OSS single-node delivery stays in-process.
                     None,
                     None, // §Fase 92.c — no minter on the OSS daemon path (mint fails closed)
@@ -441,6 +447,8 @@ pub fn deliver_typed_event_reliable(
                         None,
                         None,
                         budget.clone(),
+                        // §Fase 114.e — daemon path: no channel semaphores (server path's concern).
+                        None,
                         // §Fase 74.f — OSS single-node delivery stays in-process.
                         None,
                         None, // §Fase 92.c — no minter on the OSS daemon path (mint fails closed)

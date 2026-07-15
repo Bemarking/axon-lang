@@ -567,6 +567,12 @@ pub struct DispatchCtx {
     pub budget: Option<
         std::sync::Arc<std::sync::Mutex<crate::runtime::budget_kernel::BudgetGate>>,
     >,
+    /// §Fase 114.e — the per-channel concurrency semaphores (`resource.capacity`),
+    /// held across requests so `capacity: 8` bounds simultaneous in-flight calls.
+    /// `None` (the `DispatchCtx::new` default) ⇒ no channel is bounded, byte-
+    /// identical to pre-§114. Attached on the server path via
+    /// [`DispatchCtx::with_channel_semaphores`].
+    pub channel_semaphores: Option<std::sync::Arc<crate::channel_semaphore::ChannelSemaphores>>,
     /// §Fase 74.a — the shared typed-channel event bus a flow's `emit`
     /// routes to (the producer side of durable event delivery). `None`
     /// (the `DispatchCtx::new` default — HTTP / CLI / test paths) ⇒ `emit`
@@ -678,6 +684,7 @@ impl DispatchCtx {
             // §Fase 72.c — no budget by default (unbudgeted dispatch). The daemon
             // path attaches one via `with_budget`.
             budget: None,
+            channel_semaphores: None,
             // §Fase 74.a — no event bus by default; `emit` uses the legacy
             // per-flow buffer. The daemon supervisor attaches the shared bus
             // via `with_event_bus` so `emit` delivers to `listen`ers.
@@ -808,6 +815,15 @@ impl DispatchCtx {
         budget: std::sync::Arc<std::sync::Mutex<crate::runtime::budget_kernel::BudgetGate>>,
     ) -> Self {
         self.budget = Some(budget);
+        self
+    }
+
+    /// §Fase 114.e — attach the cross-request channel semaphores.
+    pub fn with_channel_semaphores(
+        mut self,
+        sems: std::sync::Arc<crate::channel_semaphore::ChannelSemaphores>,
+    ) -> Self {
+        self.channel_semaphores = Some(sems);
         self
     }
 

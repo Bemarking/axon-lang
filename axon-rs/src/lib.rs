@@ -342,6 +342,7 @@ pub mod stream_effect_dispatcher;
 // early instead of running the flow to completion against a dropped
 // channel.
 pub mod cancel_token;
+pub mod channel_semaphore;
 // §Fase 33.z.k (v1.28.0) — Wire-format adapter framework.
 // `wire_format` defines the WireFormatAdapter trait + per-dialect
 // adapters (axon / openai / anthropic). The SSE producer in
