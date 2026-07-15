@@ -50,6 +50,12 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 /// mis-declared `max_pages: 0` (unbounded sentinel) can never run away.
 pub const CRAWL_HARD_PAGE_CAP: usize = 10_000;
 
+/// §Fase 114 (owed) — hard ceiling on in-flight fetches for a single crawl,
+/// regardless of the declared `concurrency`. Politeness first: a `concurrency:
+/// 1000` can never open a thousand sockets to a vendor. The declared value is
+/// clamped to `[1, CRAWL_MAX_CONCURRENCY]`; `1` is the pre-§114 sequential crawl.
+pub const CRAWL_MAX_CONCURRENCY: usize = 32;
+
 // ════════════════════════════════════════════════════════════════════════════
 //  RawPage — the typed acquisition result the grammar names
 // ════════════════════════════════════════════════════════════════════════════
@@ -1198,43 +1204,81 @@ impl Tool for ScrapeStreamingTool {
                 return;
             }
 
-            // BFS frontier of (url, depth); in-memory visited set (OSS: not
-            // resumable — the enterprise checkpoint store is §98.h).
+            // §Fase 114 (owed) — the crawl is BOUNDED-CONCURRENT: up to
+            // `concurrency` fetches in flight at once, the declaration
+            // `scrape.concurrency` at last enforced (it was parsed + type-checked
+            // + documented as honored, but the loop fetched one page at a time —
+            // a documented behavior the code did not have). Clamped to
+            // `[1, CRAWL_MAX_CONCURRENCY]`; `1` reproduces the prior sequential
+            // crawl byte-for-byte (one in flight, awaited before the next).
+            //
+            // Correctness: the driver task alone owns `frontier` + `visited` +
+            // `succeeded` (single-threaded — the concurrency is in the fetch
+            // FUTURES, which return an owned `RawPage` and touch no shared state),
+            // so no lock is needed. A URL is marked `visited` when it is LAUNCHED,
+            // so two in-flight fetches never target the same URL. The success
+            // budget holds with N in flight: a fetch is launched only while
+            // `succeeded + in_flight < budget`, so at most `budget` pages are ever
+            // emitted. Pages are emitted in ARRIVAL order (whichever fetch
+            // finishes first) — the streaming contract is "each page AS it
+            // arrives"; the BFS frontier still governs link EXPANSION order.
+            let concurrency =
+                (cfg.concurrency.max(1) as usize).min(CRAWL_MAX_CONCURRENCY);
+
             let mut frontier: std::collections::VecDeque<(String, usize)> =
                 std::collections::VecDeque::new();
             let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
             frontier.push_back((seed, 0));
-            let mut fetched = 0usize;
+            let mut succeeded = 0usize;
+            let mut in_flight = futures::stream::FuturesUnordered::new();
 
-            while let Some((url, depth)) = frontier.pop_front() {
-                if fetched >= budget {
-                    break;
-                }
+            loop {
                 if cancel.is_cancelled() {
                     send_term(ToolFinishReason::Cancelled);
                     return;
                 }
-                if !visited.insert(url.clone()) {
-                    continue;
+
+                // Fill the in-flight set up to `concurrency`, without launching
+                // more fetches than could still reach the success budget.
+                while in_flight.len() < concurrency && succeeded + in_flight.len() < budget {
+                    let Some((url, depth)) = frontier.pop_front() else {
+                        break; // frontier drained — let the in-flight set finish
+                    };
+                    if !visited.insert(url.clone()) {
+                        continue; // already crawled — skip without consuming a slot
+                    }
+                    let req = FetchRequest {
+                        url,
+                        engine: cfg.effective_engine().to_string(),
+                        impersonate: cfg.impersonate.clone(),
+                        proxy: cfg.proxy.clone(),
+                        respect_robots: cfg.respect_robots,
+                        render_wait: cfg.render_wait.clone(),
+                        timeout,
+                        body_limit: DEFAULT_BODY_LIMIT,
+                        // §Fase 103.e-1 — carry the tenant into each crawl fetch.
+                        tenant: cfg.tenant.clone(),
+                    };
+                    // Blocking fetch on the blocking pool; carry `depth` so the
+                    // completion can expand links at the right level.
+                    let handle = tokio::task::spawn_blocking(move || fetch_page(&req));
+                    in_flight.push(async move { (depth, handle.await) });
                 }
 
-                let req = FetchRequest {
-                    url: url.clone(),
-                    engine: cfg.effective_engine().to_string(),
-                    impersonate: cfg.impersonate.clone(),
-                    proxy: cfg.proxy.clone(),
-                    respect_robots: cfg.respect_robots,
-                    render_wait: cfg.render_wait.clone(),
-                    timeout,
-                    body_limit: DEFAULT_BODY_LIMIT,
-                    // §Fase 103.e-1 — carry the tenant into each crawl fetch.
-                    tenant: cfg.tenant.clone(),
+                // Nothing running and nothing launchable → the crawl is done.
+                if in_flight.is_empty() {
+                    break;
+                }
+
+                // Await the next completed fetch (arrival order).
+                let Some((depth, joined)) =
+                    futures::StreamExt::next(&mut in_flight).await
+                else {
+                    break;
                 };
-                // Blocking fetch on the blocking pool.
-                let fetch = tokio::task::spawn_blocking(move || fetch_page(&req)).await;
-                match fetch {
+                match joined {
                     Ok(Ok(page)) => {
-                        fetched += 1;
+                        succeeded += 1;
                         // Expand links (bounded by depth) before emitting.
                         if follow && depth < max_depth {
                             for link in extract_links(&page.body, &page.final_url) {
