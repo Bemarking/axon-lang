@@ -86,6 +86,18 @@ pub struct IRGenerator {
     /// regardless of whether the `channel` decl precedes or follows the flow.
     /// Only channels with a non-empty `shield:` are recorded.
     channel_shields: HashMap<String, String>,
+    /// §Fase 114.u — resource name → (endpoint config key, capacity),
+    /// pre-resolved in Phase 0 (order-independent, like `shield_signs`) so an
+    /// `upstream X { resource: R }` derives its dial address and its instance
+    /// bound at LOWERING regardless of declaration order. Stamping the
+    /// derivation into the artifact is the §114 shield-egress discipline:
+    /// every dial path reads `IRUpstream.resolve` — none can forget the wire.
+    resource_channels: HashMap<String, (String, Option<i64>)>,
+    /// §Fase 114.w — shield name → its compiled breach policy (only shields
+    /// with a non-empty `on_breach:` are recorded), pre-resolved in Phase 0 so
+    /// the policy rides `IRShieldApplyStep` / `IREmit` regardless of
+    /// declaration order.
+    shield_policies: HashMap<String, crate::ir_nodes::IRBreachPolicy>,
 }
 
 impl IRGenerator {
@@ -103,6 +115,8 @@ impl IRGenerator {
             channel_names: std::collections::HashSet::new(),
             shield_signs: HashMap::new(),
             channel_shields: HashMap::new(),
+            resource_channels: HashMap::new(),
+            shield_policies: HashMap::new(),
         }
     }
 
@@ -134,6 +148,46 @@ impl IRGenerator {
                         .insert(c.name.clone(), c.shield_ref.clone());
                 }
                 Declaration::Epistemic(eb) => self.collect_channel_shields(&eb.body),
+                _ => {}
+            }
+        }
+    }
+
+    /// §Fase 114.u (Phase 0) — record every declared resource's channel facts
+    /// (endpoint config key + capacity) so `visit_upstream` can derive the
+    /// dial address and the instance bound regardless of declaration order.
+    fn collect_resource_channels(&mut self, decls: &[Declaration]) {
+        for decl in decls {
+            match decl {
+                Declaration::Resource(r) => {
+                    self.resource_channels
+                        .insert(r.name.clone(), (r.endpoint.clone(), r.capacity));
+                }
+                Declaration::Epistemic(eb) => self.collect_resource_channels(&eb.body),
+                _ => {}
+            }
+        }
+    }
+
+    /// §Fase 114.w (Phase 0) — record every declared shield's breach policy so
+    /// the enforcement nodes carry it. A shield with no `on_breach:` records
+    /// nothing (halt is the fail-closed default the runtime applies anyway).
+    fn collect_shield_policies(&mut self, decls: &[Declaration]) {
+        for decl in decls {
+            match decl {
+                Declaration::Shield(sh) if !sh.on_breach.is_empty() => {
+                    self.shield_policies.insert(
+                        sh.name.clone(),
+                        crate::ir_nodes::IRBreachPolicy {
+                            on_breach: sh.on_breach.clone(),
+                            quarantine: sh.quarantine.clone(),
+                            deflect_message: sh.deflect_message.clone(),
+                            redact: sh.redact.clone(),
+                            max_retries: sh.max_retries.unwrap_or(3),
+                        },
+                    );
+                }
+                Declaration::Epistemic(eb) => self.collect_shield_policies(&eb.body),
                 _ => {}
             }
         }
@@ -199,6 +253,13 @@ impl IRGenerator {
         // `emit C(v)` lowers with C's declared σ-shield and the runtime scans the
         // egressing value on every dispatch path.
         self.collect_channel_shields(&program.declarations);
+        // §Fase 114.u — same Phase 0 discipline for resource channels, so an
+        // `upstream { resource: R }` derives address + instance bound at
+        // lowering (the artifact carries the wire; no dial site can miss it).
+        self.collect_resource_channels(&program.declarations);
+        // §Fase 114.w — and shield breach policies, so `on_breach:` rides the
+        // enforcement nodes on every dispatch path by construction.
+        self.collect_shield_policies(&program.declarations);
 
         // Phase 1: visit all declarations
         for decl in &program.declarations {
@@ -1094,6 +1155,8 @@ impl IRGenerator {
                 shield_name: s.shield_name.clone(),
                 target: s.target.clone(),
                 output_type: s.output_type.clone(),
+                // §Fase 114.w — the shield's breach policy rides the step.
+                breach_policy: self.shield_policies.get(&s.shield_name).cloned(),
             }),
             FlowStep::Stream(s) => IRFlowNode::Stream(IRStreamBlock {
                 node_type: "stream",
@@ -1164,22 +1227,32 @@ impl IRGenerator {
             }),
             FlowStep::Listen(s) => IRFlowNode::Listen(self.lower_listen(s)),
             // §λ-L-E Fase 13 — Mobile typed channel reductions.
-            FlowStep::Emit(s) => IRFlowNode::Emit(IREmit {
-                node_type: "emit",
-                source_line: s.loc.line,
-                source_column: s.loc.column,
-                channel_ref: s.channel_ref.clone(),
-                value_ref: s.value_ref.clone(),
-                value_is_channel: self.channel_names.contains(&s.value_ref),
+            FlowStep::Emit(s) => {
                 // §Fase 114 (owed) — the target channel's declared σ-shield
                 // (Phase 0 pre-pass; empty ⇒ unshielded channel). The runtime
                 // scans the emitted value through it before the value leaves.
-                shield_ref: self
+                let shield_ref = self
                     .channel_shields
                     .get(&s.channel_ref)
                     .cloned()
-                    .unwrap_or_default(),
-            }),
+                    .unwrap_or_default();
+                // §Fase 114.w — and the shield's breach policy rides beside it.
+                let breach_policy = if shield_ref.is_empty() {
+                    None
+                } else {
+                    self.shield_policies.get(&shield_ref).cloned()
+                };
+                IRFlowNode::Emit(IREmit {
+                    node_type: "emit",
+                    source_line: s.loc.line,
+                    source_column: s.loc.column,
+                    channel_ref: s.channel_ref.clone(),
+                    value_ref: s.value_ref.clone(),
+                    value_is_channel: self.channel_names.contains(&s.value_ref),
+                    shield_ref,
+                    breach_policy,
+                })
+            }
             FlowStep::Publish(s) => IRFlowNode::Publish(IRPublish {
                 node_type: "publish",
                 source_line: s.loc.line,
@@ -2376,7 +2449,31 @@ impl IRGenerator {
             transport: n.transport.clone(),
             protocol: n.protocol.clone(),
             role: n.role.clone(),
-            resolve: n.resolve.clone(),
+            // §Fase 114.u — a resourced upstream DERIVES its dial address from
+            // the resource's `endpoint` (a per-tenant config key, axon-T944).
+            // The derivation happens HERE, at lowering, so every dial path —
+            // OSS voice legs, enterprise session legs, tests — reads the same
+            // stamped `resolve` by construction (the §114 multi-path lesson).
+            resolve: if n.resource_ref.is_empty() {
+                n.resolve.clone()
+            } else {
+                self.resource_channels
+                    .get(&n.resource_ref)
+                    .map(|(endpoint, _)| endpoint.clone())
+                    .unwrap_or_default()
+            },
+            resource_ref: n.resource_ref.clone(),
+            // §Fase 114.u — max concurrent connection INSTANCES, from
+            // `resource.capacity`. None for an un-resourced upstream (and for
+            // a resource with no declared capacity): unbounded, the pre-114.u
+            // behaviour, honestly unchanged.
+            capacity: if n.resource_ref.is_empty() {
+                None
+            } else {
+                self.resource_channels
+                    .get(&n.resource_ref)
+                    .and_then(|(_, cap)| *cap)
+            },
             secret: n.secret.clone(),
             auth_kind: n.auth_kind.clone(),
             auth_name: n.auth_name.clone(),

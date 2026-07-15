@@ -1,0 +1,39 @@
+---
+name: notify
+summary: "Governed human notification — the third egress dual (deliver §105 · document §106 · notify §110): spends HUMAN ATTENTION, carries lineage or refuses, at-most-once-per-window across replicas."
+category: operators
+top_level: true
+since: Fase 110 (v2.66.0)
+grammar: |
+  notify <Name> {
+      channel: <provider-slug>
+      to: <config key>
+      # + the governed-egress clauses (attribute/shield, per §110)
+  }
+---
+
+# `notify`
+
+`notify` is the **third egress dual**: where `deliver` writes assertions
+into a system of record and `document` synthesizes a human artifact,
+`notify` **spends human attention** — the scarcest resource an agent
+can consume.
+
+## What the runtime actually does (§110)
+
+- **Carried lineage or refusal** (axon-T933/T934/T935): a notification
+  whose content cannot carry its provenance is refused, never sent.
+- **At-most-once-per-window** across replicas — the attention ledger
+  (enterprise migration 033) deduplicates: an alert storm is a defect,
+  not a feature.
+- The legal flag defaults **OFF, fail-closed** (the §103/§104 posture).
+
+## Proof
+
+`axon-rs/src/notification.rs` (axon-T933/T934/T935 unit gates) +
+`axon-frontend/tests/fase110_notify_grammar.rs`.
+
+## See also
+
+- `axon://primitives/deliver` — the CRM egress dual.
+- `axon://primitives/document` — the artifact egress dual.

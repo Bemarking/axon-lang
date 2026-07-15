@@ -112,6 +112,8 @@ async fn fuzz_shield_apply_never_panics() {
             shield_name: lcg.ascii_with_random_len(15),
             target: lcg.ascii_with_random_len(20),
             output_type: lcg.ascii_with_random_len(15),
+        
+            breach_policy: None,
         });
         let outcome = dispatch_node(&node, &mut ctx).await;
         assert_no_panic(&format!("shield iter={iter}"), &outcome);
@@ -237,6 +239,8 @@ async fn fuzz_cancel_propagation_across_algebraic_handlers() {
                 shield_name: "s".into(),
                 target: "t".into(),
                 output_type: "o".into(),
+            
+                breach_policy: None,
             }),
             1 => IRFlowNode::OtsApply(IROtsApplyStep {
                 node_type: "ots_apply",
@@ -306,6 +310,8 @@ async fn fuzz_algebraic_nested_inside_orchestration() {
                 shield_name: "h".into(),
                 target: "input".into(),
                 output_type: format!("out_{iter}"),
+            
+                breach_policy: None,
             }),
             1 => IRFlowNode::OtsApply(IROtsApplyStep {
                 node_type: "ots_apply",

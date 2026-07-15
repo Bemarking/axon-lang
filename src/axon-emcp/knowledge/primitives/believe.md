@@ -1,0 +1,31 @@
+---
+name: believe
+summary: "Epistemic scope — stamps its block's derivations with the `believe` level of the uncertainty lattice."
+category: cognition
+top_level: true
+since: v0.1.0 (epistemic lattice)
+grammar: |
+  believe {
+      # declarations / flow steps whose derivations carry the `believe` level
+  }
+---
+
+# `believe`
+
+`believe` is one of the four **epistemic scopes** (`know` > `believe` >
+`speculate` > `doubt`): a block form that stamps every derivation
+inside it with its level of the uncertainty lattice.
+
+## Semantics
+
+the working level — and the EGRESS FLOOR: an assertive slot in a `document` refuses content below `believe` without `attribute:` or a shield (§99).
+
+The lattice is load-bearing at the EGRESS boundaries: `document` (§99)
+and `deliver` (§105) read the level to decide whether content may leave
+as an assertion, must carry `attribute:`, or is refused — the
+assertion-laundering barrier.
+
+## See also
+
+- `axon://primitives/document` — where the lattice gates egress.
+- The other scopes: `know` · `believe` · `speculate` · `doubt`.

@@ -99,6 +99,7 @@ to Req 3.2.
 shield PanTokenizer
     strategy: pattern
     on_breach: sanitize_and_retry
+    redact: [pan, cvv]
     compliance: [PCI_DSS]
 
 axonendpoint AcceptPayment {

@@ -106,6 +106,7 @@ fn emit_node(shield: &str) -> IREmit {
         value_ref: "payload".to_string(),
         value_is_channel: false,
         shield_ref: shield.to_string(),
+        breach_policy: None,
     }
 }
 

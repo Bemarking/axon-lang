@@ -94,6 +94,8 @@ fn stt_spec(auth_kind: &str, auth_name: Option<&str>, auth_prefix: Option<&str>,
         protocol: "SttDialogue".into(),
         role: "axon".into(),
         resolve: "upstream.test.url".into(),
+        resource_ref: String::new(),
+        capacity: None,
         secret: "upstream.test.api_key".into(),
         auth_kind: auth_kind.into(),
         auth_name: auth_name.map(Into::into),
@@ -177,7 +179,7 @@ async fn dials_with_query_auth_and_transcodes_both_directions() {
     let resolver = FixedResolver { url: format!("ws://{addr}/v1/listen?model=nova"), secret: "sk-test".into() };
     let witness = RecordingWitness::new(false);
 
-    let mut handle = dial_upstream(&spec, &resolver, witness.clone()).await.expect("dial");
+    let mut handle = dial_upstream(&spec, &resolver, witness.clone(), None).await.expect("dial");
     handle
         .send("AudioChunk", OutboundPayload::Bytes(vec![0u8; 320]))
         .await
@@ -210,7 +212,7 @@ async fn dials_with_header_auth_prefix() {
     let (addr, captured, _) = spawn_vendor(None).await;
     let spec = stt_spec("header", Some("Authorization"), Some("Token "), 0);
     let resolver = FixedResolver { url: format!("ws://{addr}/v1"), secret: "dg-key".into() };
-    let handle = dial_upstream(&spec, &resolver, RecordingWitness::new(false)).await.expect("dial");
+    let handle = dial_upstream(&spec, &resolver, RecordingWitness::new(false), None).await.expect("dial");
     // Handshake already completed ⇒ headers captured.
     let cap = captured.lock().unwrap().join("\n");
     assert!(cap.contains("authorization=Token dg-key"), "captured: {cap}");
@@ -226,7 +228,7 @@ async fn unclassifiable_vendor_frame_is_an_explicit_unmapped_event() {
     poke.tag = Some("violate".into());
     spec.map.push(poke);
     let resolver = FixedResolver { url: format!("ws://{addr}/v1?sig=ok"), secret: String::new() };
-    let mut handle = dial_upstream(&spec, &resolver, RecordingWitness::new(false)).await.expect("dial");
+    let mut handle = dial_upstream(&spec, &resolver, RecordingWitness::new(false), None).await.expect("dial");
 
     // Poke the vendor: our projected envelope carries the "violate" tag,
     // and the vendor replies "Metadata" — a frame no receive rule matches.
@@ -249,7 +251,7 @@ async fn reconnects_after_vendor_drop_and_witnesses_it() {
     let spec = stt_spec("query", Some("token"), None, 5);
     let resolver = FixedResolver { url: format!("ws://{addr}/v1"), secret: "k".into() };
     let witness = RecordingWitness::new(false);
-    let mut handle = dial_upstream(&spec, &resolver, witness.clone()).await.expect("dial");
+    let mut handle = dial_upstream(&spec, &resolver, witness.clone(), None).await.expect("dial");
 
     handle.send("AudioChunk", OutboundPayload::Bytes(vec![1, 2])).await.expect("send 1");
     // First transcript arrives, then the vendor crashes the connection.
@@ -293,7 +295,7 @@ async fn exhausted_budget_is_a_terminal_witnessed_event() {
     let spec = stt_spec("query", Some("token"), None, 2);
     let resolver = FixedResolver { url: format!("ws://{addr}/v1"), secret: "k".into() };
     let witness = RecordingWitness::new(false);
-    let mut handle = dial_upstream(&spec, &resolver, witness.clone()).await.expect("dial");
+    let mut handle = dial_upstream(&spec, &resolver, witness.clone(), None).await.expect("dial");
     handle.send("AudioChunk", OutboundPayload::Bytes(vec![9])).await.expect("send");
     server.await.unwrap();
 
@@ -320,7 +322,7 @@ async fn refused_witness_blocks_the_dial_fail_closed() {
     // No server needed — the refusal must abort BEFORE any connection.
     let spec = stt_spec("query", Some("token"), None, 0);
     let resolver = FixedResolver { url: "ws://127.0.0.1:9/v1".into(), secret: "k".into() };
-    let err = dial_upstream(&spec, &resolver, RecordingWitness::new(true)).await.expect_err("must refuse");
+    let err = dial_upstream(&spec, &resolver, RecordingWitness::new(true), None).await.expect_err("must refuse");
     assert!(
         matches!(err, UpstreamError::UnwitnessedLifecycle { .. }),
         "an upstream that cannot witness its own lifecycle refuses to dial, got: {err}"
@@ -339,6 +341,6 @@ async fn missing_config_and_secret_are_immediate_errors() {
         }
     }
     let spec = stt_spec("query", Some("token"), None, 0);
-    let err = dial_upstream(&spec, &EmptyResolver, Arc::new(TracingLifecycleWitness)).await.expect_err("no url");
+    let err = dial_upstream(&spec, &EmptyResolver, Arc::new(TracingLifecycleWitness), None).await.expect_err("no url");
     assert!(matches!(err, UpstreamError::MissingConfig { .. }), "got: {err}");
 }

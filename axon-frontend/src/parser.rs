@@ -7724,6 +7724,10 @@ impl Parser {
                 "protocol" => node.protocol = self.consume_any_ident_or_kw()?.value,
                 "role" => node.role = self.consume_any_ident_or_kw()?.value,
                 "resolve" => node.resolve = self.parse_dotted_identifier()?,
+                // §Fase 114.u — the upstream's channel rides a declared
+                // `resource`; the address + instance bound DERIVE from it.
+                // XOR with `resolve:` is axon-T951 (type-checker territory).
+                "resource" => node.resource_ref = self.consume_any_ident_or_kw()?.value,
                 "secret" => node.secret = self.parse_dotted_identifier()?,
                 "auth" => {
                     // `header("Name")` | `header("Name", "Prefix ")` |

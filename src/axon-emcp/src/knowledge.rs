@@ -1258,9 +1258,11 @@ Body prose.
         // deleted, so the coverage gate stays in lockstep on both sides.
         // §Fase 114.z: 66 → 91 — the CENSUS BACKFILL. Twenty-five constructs
         // with live parser productions (sharpest: `budget`, tracked in NO
-        // table while its dead runtime survived every green build) enter the
-        // registry as `Pending`; the Documented set — and therefore this
-        // corpus — is unchanged at 66. Their docs are a tier of their own.
+        // table while its dead runtime survived every green build) entered
+        // the registry as `Pending`; the §114.z docs-tier then landed all 25
+        // corpus docs (verified against the runtime audit — several honestly
+        // document a refusal or a KNOWN_DEBT gap), restoring 100% coverage
+        // at the new, honest denominator of 91.
         assert_eq!(s.total, 91);
     }
 

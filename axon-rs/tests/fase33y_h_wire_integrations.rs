@@ -49,6 +49,8 @@ fn emit_node(channel: &str, value: &str) -> IRFlowNode {
         value_ref: value.into(),
         value_is_channel: false,
         shield_ref: String::new(),
+    
+        breach_policy: None,
     })
 }
 

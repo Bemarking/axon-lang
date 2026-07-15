@@ -120,6 +120,7 @@ flow IngestLabResult(lr: LabResult) {
 shield PhiRedactor
     strategy: pattern
     on_breach: sanitize_and_retry
+    redact: [ssn, dob, mrn]
     compliance: [HIPAA]
 
 axonendpoint PatientSummary {

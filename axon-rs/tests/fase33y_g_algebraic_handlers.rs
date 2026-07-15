@@ -52,6 +52,8 @@ fn shield_apply(shield_name: &str, target: &str, output_type: &str) -> IRFlowNod
         shield_name: shield_name.into(),
         target: target.into(),
         output_type: output_type.into(),
+    
+        breach_policy: None,
     })
 }
 

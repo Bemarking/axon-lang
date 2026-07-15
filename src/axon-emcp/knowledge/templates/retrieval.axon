@@ -42,6 +42,9 @@ shield RetrievalShield {
     scan:       [prompt_injection, hallucination, data_exfil]
     on_breach:  sanitize_and_retry
     severity:   high
+    // §114.w (axon-T952): `sanitize_and_retry` must name what it masks —
+    // a retry that re-scans the same bytes is not sanitization.
+    redact:     [text, citations]
     compliance: [SOC2]
 }
 

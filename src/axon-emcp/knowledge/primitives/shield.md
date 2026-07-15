@@ -127,10 +127,20 @@ A **single identifier** from the closed on-breach catalogue
 | Value | Behaviour |
 |---|---|
 | `halt` | Stop execution; surface a typed error. |
-| `quarantine` | Route the candidate to the quarantine sink. |
-| `deflect` | Emit the `deflect_message:` instead of the candidate. |
-| `sanitize_and_retry` | Apply `redact:` + retry up to `max_retries:`. |
-| `escalate` | Hand off to the escalation queue. |
+| `quarantine` | Route the candidate to the quarantine sink, then refuse the emission (recoverable, never delivered). Requires a `quarantine:` sink name (`axon-W012` warns otherwise; an unmounted sink halts with a diagnostic). |
+| `deflect` | Emit the `deflect_message:` instead of the candidate (`axon-T952` requires the message). |
+| `sanitize_and_retry` | Mask the `redact:` fields, re-scan, up to `max_retries:`; only a now-passing candidate proceeds (`axon-T952` requires `redact:`; a non-JSON candidate halts). |
+| `escalate` | Hand off to the escalation queue, then refuse the emission (a human decides). |
+
+**Since §114.w every policy above RUNS** — at both enforcement
+sites (the shield step and `emit`'s σ-gate), via the breach policy
+resolved onto the IR nodes at lowering. Before §114.w the catalog
+was documented, parsed, type-checked — and the runtime always
+halted. The quarantine/escalation destinations are registry-backed
+(`shield_registry::{register_breach_sink, set_escalation_queue}`);
+OSS mounts none (enterprise mounts the DLQ under the audit hash
+chain), and an unmounted destination halts loudly — never a
+phantom guardrail. Gate: `fase114_w_on_breach_catalog` (9/9).
 
 ### `severity:` (optional)
 

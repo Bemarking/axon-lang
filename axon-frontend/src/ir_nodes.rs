@@ -1500,6 +1500,30 @@ pub struct IRIngestStep {
     pub max_rows: Option<u64>,
 }
 
+/// §Fase 114.w — a shield's compiled BREACH POLICY, resolved onto the nodes
+/// that enforce it (`IRShieldApplyStep` / `IREmit`) at LOWERING — the same
+/// discipline as `IREmit.shield_ref`: the policy rides the artifact, so every
+/// dispatch path honors it by construction (no per-ctx shield map a forgotten
+/// site could miss). Before §114.w the whole `on_breach:` catalog
+/// (`halt|sanitize_and_retry|escalate|quarantine|deflect`) was documented,
+/// parsed, type-checked — and the runtime always `halt`ed.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRBreachPolicy {
+    /// The declared policy (validated against `VALID_ON_BREACH_POLICIES`).
+    pub on_breach: String,
+    /// The quarantine SINK name (`on_breach: quarantine` requires it, axon-T952).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub quarantine: String,
+    /// The canned safe reply (`on_breach: deflect` requires it, axon-T952).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub deflect_message: String,
+    /// Fields masked by `sanitize_and_retry` (requires ≥ 1, axon-T952).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub redact: Vec<String>,
+    /// Re-scan budget for `sanitize_and_retry` (parser default: 3).
+    pub max_retries: i64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct IRShieldApplyStep {
     pub node_type: &'static str,
@@ -1508,6 +1532,11 @@ pub struct IRShieldApplyStep {
     pub shield_name: String,
     pub target: String,
     pub output_type: String,
+    /// §Fase 114.w — the named shield's breach policy, resolved at lowering.
+    /// `None` ⇒ the shield declares no `on_breach:` (halt, the fail-closed
+    /// default) — and every pre-§114.w program serializes byte-identically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub breach_policy: Option<IRBreachPolicy>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2570,6 +2599,21 @@ pub struct IRUpstream {
     pub protocol: String,
     pub role: String,
     pub resolve: String,
+    /// §Fase 114.u — the `resource` this upstream's channel rides. When set,
+    /// `resolve` above was DERIVED from the resource's `endpoint` at LOWERING
+    /// (the §114 shield-egress discipline: derivation stamped into the
+    /// artifact reaches every dial path by construction — no per-site wiring
+    /// to forget) and `capacity` below carries the resource's bound. Elided
+    /// when empty — every pre-§114.u upstream serializes byte-identically.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub resource_ref: String,
+    /// §Fase 114.u — **max concurrent connection INSTANCES** of this upstream
+    /// (from `resource.capacity`). Frames are already flow-controlled by
+    /// `backpressure_credit`; this bounds CONNECTIONS. The runtime holds a
+    /// per-process semaphore permit for the life of each dialed handle —
+    /// the same in-memory/per-process bound §114.e documented for tools.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capacity: Option<i64>,
     pub secret: String,
     pub auth_kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2694,6 +2738,11 @@ pub struct IREmit {
     /// programs whose channels declare no shield).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub shield_ref: String,
+    /// §Fase 114.w — the σ-shield's breach policy, resolved at lowering beside
+    /// `shield_ref` (same Phase 0 pre-pass). `None` ⇒ no `on_breach:` declared
+    /// (halt, the fail-closed default); elided → zero IR-SHA drift.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub breach_policy: Option<IRBreachPolicy>,
 }
 
 /// §Fase 92.a — compiled `credential` contract. The TTL is carried as

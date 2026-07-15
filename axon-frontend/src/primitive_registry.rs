@@ -129,10 +129,11 @@ impl DocStatus {
     }
 }
 
-/// The closed catalogue — **91 primitives** (66 Documented + the 25
-/// `Pending` entries of the §114.z census backfill), ordered by
-/// category for readability. Consumers must not depend on declaration
-/// order; they iterate and filter.
+/// The closed catalogue — **91 primitives, all Documented** (§6.d reached
+/// 100% at 66; the §114.z census backfilled 25 parser realities and its
+/// docs-tier paid their corpus docs, restoring 100% at the new, honest
+/// denominator). Ordered by category for readability. Consumers must not
+/// depend on declaration order; they iterate and filter.
 ///
 /// §Fase 114.z made this table the ENUMERATION SOURCE of the
 /// anti-drift gate (`advertised.rs`): every `is_advertised` entry must
@@ -790,13 +791,12 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
     // §114.z audits parser dispatch (`parse_declaration` +
     // `parse_flow_step`) against this table and closes the census.
     //
-    // Entries are `DocStatus::Pending` — the state this file's header
-    // DESIGNED for parser realities whose corpus doc has not landed.
-    // Their summaries are verified against the runtime as of §114.z
-    // (several honestly state a refusal or a KNOWN_DEBT gap: a summary
-    // the runtime does not honour lies, §111's widened rule). Writing
-    // 25 corpus docs is its own tier — documenting behaviour without
-    // verifying it is exactly the §112.f defect.
+    // Entries landed as `DocStatus::Pending` in the census and were flipped
+    // to `Documented` by the §114.z docs-tier: every one of the 25 now has a
+    // corpus doc whose body is verified against the runtime audit (several
+    // honestly document a refusal — deliberate/consensus FailsClosed — or a
+    // KNOWN_DEBT gap — hibernate; a doc that overclaims is the §112.f
+    // defect, and these were written not to).
     //
     // DELIBERATELY EXCLUDED from the census, with reasons:
     //   - usage-verbs of registered primitives — `use` (tool),
@@ -817,7 +817,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: true,
         since: "Fase 72 (daemon-attached); top-level Fase 114.a (v2.69.0)",
         summary: "A declared spend ceiling over cognition and tool use — enforced on the canonical `use Tool(…)` path (§114.a); attachable to a daemon or declared top-level.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
         is_advertised: true,
     },
     PrimitiveInfo {
@@ -826,7 +826,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: true,
         since: "Fase 110 (v2.66.0)",
         summary: "Governed human notification — the third egress dual (deliver §105 · document §106 · notify §110): spends HUMAN ATTENTION, carries lineage or refuses, at-most-once-per-window across replicas.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
         is_advertised: true,
     },
     PrimitiveInfo {
@@ -835,7 +835,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: true,
         since: "λ-L-E Fase 4",
         summary: "Declares a process-graph topology whose liveness is checked by a genuine DFS cycle detector (Honda liveness — a narrow sufficient condition, honestly scoped).",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
         is_advertised: true,
     },
     PrimitiveInfo {
@@ -844,7 +844,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: true,
         since: "λ-L-E Fase 9",
         summary: "A compliance-bound UI component — the compile-time shield-coverage law over regulated κ IS enforced (a real set difference); rendering is deferred (§111).",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
         is_advertised: true,
     },
     PrimitiveInfo {
@@ -853,7 +853,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: true,
         since: "λ-L-E Fase 9",
         summary: "A UI view declaration — referential integrity is checked; route dispatch and session-typed reactivity are deferred (§111).",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
         is_advertised: true,
     },
     PrimitiveInfo {
@@ -862,7 +862,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: true,
         since: "Fase 69.a",
         summary: "The advantage-witness declaration (§69) — INTERNAL: benchmark and advantage claims wait for the Sandbox (§101), so this is deliberately NOT part of the advertised surface.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
         is_advertised: false,
     },
     PrimitiveInfo {
@@ -871,7 +871,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: true,
         since: "Brief #15 → Fase 53",
         summary: "The closed-catalog extension mechanism (#15→§53) — an internal composition mechanism, deliberately not advertised as a primitive.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
         is_advertised: false,
     },
     // ── §114.z census — the epistemic lattice scopes ────────────────────
@@ -881,7 +881,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: true,
         since: "v0.1.0 (epistemic lattice)",
         summary: "Epistemic scope — stamps its block's derivations with the `know` level of the uncertainty lattice (the strongest claim).",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
         is_advertised: true,
     },
     PrimitiveInfo {
@@ -890,7 +890,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: true,
         since: "v0.1.0 (epistemic lattice)",
         summary: "Epistemic scope — stamps its block's derivations with the `believe` level of the uncertainty lattice (the egress floor for assertive slots, §99).",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
         is_advertised: true,
     },
     PrimitiveInfo {
@@ -899,7 +899,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: true,
         since: "v0.1.0 (epistemic lattice)",
         summary: "Epistemic scope — stamps its block's derivations with the `speculate` level of the uncertainty lattice.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
         is_advertised: true,
     },
     PrimitiveInfo {
@@ -908,7 +908,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: true,
         since: "v0.1.0 (epistemic lattice)",
         summary: "Epistemic scope — stamps its block's derivations with the `doubt` level of the uncertainty lattice (the weakest claim).",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
         is_advertised: true,
     },
     // ── §114.z census — flow-body cognitive verbs ───────────────────────
@@ -918,7 +918,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: false,
         since: "pre-§65; real fan-out Fase 65",
         summary: "Concurrent fan-out — executes its branches in parallel (a real `join_all`, §65) and joins their results; branch tool calls ride the §114.e channel semaphore.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
         is_advertised: true,
     },
     PrimitiveInfo {
@@ -927,7 +927,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: false,
         since: "pre-§111 (introduction unrecorded)",
         summary: "Suspend-until — ADVERTISED BUT NOT IMPLEMENTED (§111 F20, KNOWN_DEBT): returns a placeholder synchronously; no CPS suspend, no resume, timeout not honored.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
         is_advertised: true,
     },
     PrimitiveInfo {
@@ -936,7 +936,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: false,
         since: "pre-§111 (introduction unrecorded)",
         summary: "Budget-bounded deliberation — FAILS CLOSED (axon-T939, §111): refused at check time rather than silently discarded; no budget was ever controlled by the old placeholder.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
         is_advertised: true,
     },
     PrimitiveInfo {
@@ -945,7 +945,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: false,
         since: "pre-§111 (introduction unrecorded)",
         summary: "Multi-candidate consensus — FAILS CLOSED (axon-T940, §111): refused at check time; no votes, no aggregation, no candidates in the old placeholder.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
         is_advertised: true,
     },
     PrimitiveInfo {
@@ -954,7 +954,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: false,
         since: "pre-§111; body executed since Fase 111.e",
         summary: "Algebraic-effects stream block — the body is parsed, lowered and EXECUTED over the Free-Monad CPS handler runtime (§111.e; it used to be discarded at parse time).",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
         is_advertised: true,
     },
     PrimitiveInfo {
@@ -963,7 +963,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: false,
         since: "Fase 109 (v2.65.0)",
         summary: "The proof-carrying derivative — SYMBOLIC differentiation over the §70 expression language at compile time; the gradient IS IR (PCC GradientSoundness) and the runtime only evaluates.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
         is_advertised: true,
     },
     PrimitiveInfo {
@@ -972,7 +972,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: false,
         since: "Fases 62–65 (PIX·MDN program)",
         summary: "Knowledge navigation — three REAL deterministic engines (MDN store-sourced, MDN in-memory, PIX); with no indexable source in scope it falls back to an LLM prompt (§111 F11, the named gap).",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
         is_advertised: true,
     },
     PrimitiveInfo {
@@ -981,7 +981,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: false,
         since: "Fases 62–65 (PIX·MDN program)",
         summary: "Subtree descent under a prior navigate — real navigation when a source is in scope; degrades to a placeholder otherwise (§111).",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
         is_advertised: true,
     },
     PrimitiveInfo {
@@ -990,7 +990,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: false,
         since: "Fases 62–65 (PIX·MDN program)",
         summary: "Reads the breadcrumb a navigate seeded — a real provenance trail when navigation was deterministic; inherits §111 F11 on the LLM fallback path.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
         is_advertised: true,
     },
     PrimitiveInfo {
@@ -999,7 +999,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: false,
         since: "pre-§108; made real Fase 108.c (v2.63.0)",
         summary: "Governed ingestion into a dataspace — bounds-BEFORE-parse, sha256 provenance, born-Untrusted taint (§108.c; the pre-§108 placeholder hallucinated success).",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
         is_advertised: true,
     },
     PrimitiveInfo {
@@ -1008,7 +1008,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: false,
         since: "Fase 108.d (v2.63.0)",
         summary: "The dataspace selection-projection verb (σ∘π) over the first-party columnar engine (§108.d).",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
         is_advertised: true,
     },
     PrimitiveInfo {
@@ -1017,7 +1017,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: false,
         since: "Fase 108.d (v2.63.0)",
         summary: "The dataspace join verb (⋈) — a hash equi-join over the columnar engine that REFUSES a keyless join (§108.d).",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
         is_advertised: true,
     },
     PrimitiveInfo {
@@ -1026,7 +1026,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: false,
         since: "Fase 108.d (v2.63.0)",
         summary: "The dataspace aggregation verb (γ) over the first-party columnar engine (§108.d).",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
         is_advertised: true,
     },
     PrimitiveInfo {
@@ -1035,7 +1035,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: false,
         since: "Fase 108.d (v2.63.0)",
         summary: "The dataspace profiling verb — zone-map statistics over declared columns (§108.d).",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
         is_advertised: true,
     },
 ];
@@ -1293,6 +1293,14 @@ mod tests {
             "credential", "mint",
             // §Fase 94 — the mediated secret-renewal verb.
             "rotate",
+            // §Fase 114.z census + docs-tier — the 25 backfilled entries,
+            // each documented against the runtime audit (not aspiration).
+            "budget", "notify", "topology", "component", "view",
+            "witness", "extension",
+            "know", "believe", "speculate", "doubt",
+            "par", "hibernate", "deliberate", "consensus", "stream",
+            "grad", "navigate", "drill", "trail",
+            "ingest", "focus", "associate", "aggregate", "explore",
         ]
         .into_iter()
         .collect();
@@ -1321,16 +1329,15 @@ mod tests {
         // §Fase 99: 65 → 66 with `document` (Native Document Synthesis).
         // §Fase 105: 66 → 67 with `deliver` (Governed CRM Delivery).
         // §Fase 111: 67 → 66 — `transact` retracted (axon-T938).
-        // §Fase 114.z: 66 → 91 — the census backfill. The 25 new entries
-        // are Pending: they are parser realities that predate this fase,
-        // and their corpus docs are a tier of their own (writing 25 docs
-        // without verifying each behaviour would be the §112.f defect in
-        // bulk). Documented stays 66 — the §6.d baseline holds; a DROP in
-        // documented is still a regression.
+        // §Fase 114.z: 66 → 91 — the census backfill (entered Pending).
+        // The §114.z docs-tier then paid the debt: all 25 census docs
+        // landed (verified against the runtime audit), restoring 100%
+        // coverage at the NEW, honest denominator. A future drop is a
+        // regression the gate catches.
         assert_eq!(s.total, 91);
         assert_eq!(s.documented + s.pending, s.total);
-        assert_eq!(s.documented, 66);
-        assert_eq!(s.pending, 25);
+        assert_eq!(s.documented, 91);
+        assert_eq!(s.pending, 0);
     }
 
     #[test]

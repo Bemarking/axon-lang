@@ -51,7 +51,7 @@ use std::time::Duration;
 use axon_frontend::ir_nodes::{IRUpstream, IRUpstreamMapRule};
 use futures::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, Mutex, Notify};
+use tokio::sync::{mpsc, Mutex, Notify, OwnedSemaphorePermit, Semaphore};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::Message;
@@ -83,6 +83,10 @@ pub enum UpstreamError {
     Exhausted { upstream: String, attempts: u32 },
     /// The handle is closed (driver task ended).
     Closed { upstream: String },
+    /// §Fase 114.u — the lease over this upstream's resource is no longer
+    /// held: a dial is a USE of the channel, and a post-expiry use is the
+    /// CT-2 Anchor Breach (the §113.d/§114.f law, now on the client leg).
+    LeaseBreach { upstream: String, detail: String },
 }
 
 impl fmt::Display for UpstreamError {
@@ -109,6 +113,9 @@ impl fmt::Display for UpstreamError {
                 write!(f, "upstream '{upstream}': reconnect budget exhausted after {attempts} attempts (on_exhausted: fail)")
             }
             UpstreamError::Closed { upstream } => write!(f, "upstream '{upstream}': connection closed"),
+            UpstreamError::LeaseBreach { upstream, detail } => {
+                write!(f, "upstream '{upstream}': {detail}")
+            }
         }
     }
 }
@@ -480,6 +487,12 @@ pub struct UpstreamHandle {
     queue: Arc<OverflowQueue>,
     events: mpsc::Receiver<UpstreamEvent>,
     driver: tokio::task::JoinHandle<()>,
+    /// §Fase 114.u — the instance permit under the resource's `capacity`
+    /// bound. Held for the LIFE of the handle (reconnects re-dial the same
+    /// instance, they do not mint a new one); dropping the handle releases
+    /// the slot. `None` for un-resourced upstreams — unbounded, the
+    /// pre-114.u behaviour.
+    _instance_permit: Option<OwnedSemaphorePermit>,
 }
 
 impl fmt::Debug for UpstreamHandle {
@@ -527,6 +540,37 @@ impl UpstreamHandle {
 
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
+// ── §Fase 114.u — the connection-INSTANCE bound ─────────────────────────────
+//
+// `upstream X { resource: R }` + `resource R { capacity: N }` ⇒ at most N
+// concurrently-dialed instances of X in this process. Frames are already
+// flow-controlled by `backpressure_credit`; capacity bounds CONNECTIONS —
+// making it frames would state one fact twice (founder-ratified, §114.u).
+//
+// Same documented limit as §114.e: the semaphore is in-memory / per-process.
+// Across horizontally-scaled replicas `capacity: N` is a per-process bound; a
+// true global bound needs a distributed semaphore (future fase).
+static INSTANCE_BOUNDS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, (i64, Arc<Semaphore>)>>,
+> = std::sync::OnceLock::new();
+
+/// The per-upstream instance semaphore under `capacity`. Keyed by upstream
+/// name; a REDEPLOY that changes the capacity replaces the semaphore (new
+/// dials ride the new bound; outstanding permits release into the old one,
+/// which `Arc` keeps alive until they drop).
+fn instance_semaphore(upstream: &str, capacity: i64) -> Arc<Semaphore> {
+    let map = INSTANCE_BOUNDS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let mut map = map.lock().unwrap_or_else(|p| p.into_inner());
+    match map.get(upstream) {
+        Some((cap, sem)) if *cap == capacity => Arc::clone(sem),
+        _ => {
+            let sem = Arc::new(Semaphore::new(usize::try_from(capacity).unwrap_or(0).max(0)));
+            map.insert(upstream.to_string(), (capacity, Arc::clone(&sem)));
+            sem
+        }
+    }
+}
+
 /// Dial an upstream from its compiled declaration. Resolves `resolve:` +
 /// `secret:` through the bound resolver, witnesses `Connected` (fail-closed),
 /// then spawns the driver (pump + reconnect loop) and returns the handle.
@@ -538,8 +582,27 @@ pub async fn dial_upstream(
     spec: &IRUpstream,
     resolver: &dyn UpstreamConfigResolver,
     witness: Arc<dyn UpstreamLifecycleWitness>,
+    lease: Option<&crate::resource_lease::ResourceLeaseGuard>,
 ) -> Result<UpstreamHandle, UpstreamError> {
     let name = spec.name.clone();
+
+    // §Fase 114.u — a DIAL is a USE of the channel's resource. When a lease
+    // guard governs it, charge BEFORE anything else: a post-expiry dial is
+    // the CT-2 Anchor Breach, fail-closed (the §113.d/§114.f law on the
+    // client leg). `None` for every caller without lease governance — the
+    // pre-114.u behaviour, and the same signature convention as §114.e's
+    // channel semaphores.
+    if let Some(guard) = lease {
+        if !spec.resource_ref.is_empty() {
+            if let Err(breach) = guard.charge(&spec.resource_ref) {
+                return Err(UpstreamError::LeaseBreach {
+                    upstream: name.clone(),
+                    detail: breach.to_string(),
+                });
+            }
+        }
+    }
+
     let url = resolver.resolve(&spec.resolve).ok_or_else(|| UpstreamError::MissingConfig {
         upstream: name.clone(),
         key: spec.resolve.clone(),
@@ -551,6 +614,21 @@ pub async fn dial_upstream(
             upstream: name.clone(),
             key: spec.secret.clone(),
         })?
+    };
+
+    // §Fase 114.u — acquire the connection-INSTANCE permit under the
+    // resource's `capacity`. The N+1th dial WAITS for a slot (the §114.e
+    // held-across-requests semantics: a bound that queues, not one that
+    // lies by refusing). Config holes fail BEFORE this point so a
+    // misconfigured upstream never queues.
+    let instance_permit = match spec.capacity {
+        Some(n) if !spec.resource_ref.is_empty() && n > 0 => Some(
+            instance_semaphore(&name, n)
+                .acquire_owned()
+                .await
+                .map_err(|_| UpstreamError::Closed { upstream: name.clone() })?,
+        ),
+        _ => None,
     };
 
     // Fail-closed witness BEFORE the first dial: the durable audit append
@@ -601,7 +679,7 @@ pub async fn dial_upstream(
         witness,
     ));
 
-    Ok(UpstreamHandle { name, rules, queue, events: event_rx, driver })
+    Ok(UpstreamHandle { name, rules, queue, events: event_rx, driver, _instance_permit: instance_permit })
 }
 
 /// Everything the reconnect loop needs to re-dial without re-resolving

@@ -710,6 +710,18 @@ pub struct UpstreamDefinition {
     /// Per-tenant config key holding the vendor URL (dot-separated,
     /// `SecretKeyPolicy`-shaped — never a URL literal).
     pub resolve: String,
+    /// §Fase 114.u — the `resource` this upstream's channel runs on
+    /// (`upstream X { resource: Api }`). When present, the upstream DERIVES
+    /// its dial address from `resource.endpoint` (a per-tenant config key,
+    /// axon-T944) and its **max concurrent connection INSTANCES** from
+    /// `resource.capacity` — frames are already governed by
+    /// `backpressure_credit`, so capacity bounds CONNECTIONS, never frames
+    /// (making it frames would state one fact twice). Mutually exclusive
+    /// with `resolve:` (axon-T951): `resource:` beside a `resolve:` would
+    /// declare the channel's address twice — the §113 islands defect.
+    /// Authority attenuation: the resource encapsulates its own address
+    /// resolution; the upstream only names WHICH channel it rides.
+    pub resource_ref: String,
     /// Per-tenant secret binding for the vendor credential (same charset).
     pub secret: String,
     /// Auth handshake kind: `header` | `query` | `signed_url`.

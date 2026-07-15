@@ -245,6 +245,225 @@ pub fn check_extension_scan_coverage(ir: &crate::ir_nodes::IRProgram) -> Result<
     ))
 }
 
+// ────────────────────────────────────────────────────────────────────────
+//  §Fase 114.w — the `on_breach:` catalog, HONORED
+// ────────────────────────────────────────────────────────────────────────
+//
+// The shield doc has promised five policies since Fase 20:
+//
+// | `halt`               | stop; surface a typed error                    |
+// | `quarantine`         | route the candidate to the `quarantine:` sink |
+// | `deflect`            | emit the `deflect_message:` instead           |
+// | `sanitize_and_retry` | apply `redact:` + re-scan, ≤ `max_retries:`   |
+// | `escalate`           | hand off to the escalation queue              |
+//
+// …and the runtime ALWAYS halted. §114.w gives each policy its documented
+// meaning. Two seams stay registry-backed, mirroring the scanner model:
+// the quarantine SINKS (named — enterprise mounts the DLQ under the audit
+// hash chain) and the ESCALATION queue (one per process). A policy whose
+// destination is not mounted HALTS with a diagnostic naming the hole —
+// fail-closed, never a phantom guardrail (the §53.e doctrine).
+
+/// A breach destination: where `quarantine` routes and `escalate` hands off.
+/// OSS ships **no** implementations (charter: framework here, verticals in
+/// enterprise — the DLQ-under-hash-chain sink is enterprise R&D).
+pub trait BreachSink: Send + Sync {
+    /// Persist the rejected candidate for later handling. An `Err` aborts
+    /// into halt — a quarantine that cannot record must not pretend it did.
+    fn route(&self, shield_name: &str, code: &str, reason: &str, candidate: &str)
+        -> Result<(), String>;
+}
+
+static BREACH_SINKS: LazyLock<RwLock<HashMap<String, Arc<dyn BreachSink>>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+static ESCALATION_QUEUE: LazyLock<RwLock<Option<Arc<dyn BreachSink>>>> =
+    LazyLock::new(|| RwLock::new(None));
+
+/// Register a quarantine sink under its declared name (`shield … {
+/// quarantine: <name> }`). Last-wins, like the scanner registry.
+pub fn register_breach_sink(
+    sink_name: impl Into<String>,
+    sink: Arc<dyn BreachSink>,
+) -> Option<Arc<dyn BreachSink>> {
+    BREACH_SINKS
+        .write()
+        .expect("breach sink registry RwLock poisoned")
+        .insert(sink_name.into(), sink)
+}
+
+/// Look up a quarantine sink by name.
+pub fn lookup_breach_sink(sink_name: &str) -> Option<Arc<dyn BreachSink>> {
+    BREACH_SINKS
+        .read()
+        .expect("breach sink registry RwLock poisoned")
+        .get(sink_name)
+        .cloned()
+}
+
+/// Remove a quarantine sink (hot-swap + tests).
+pub fn unregister_breach_sink(sink_name: &str) -> Option<Arc<dyn BreachSink>> {
+    BREACH_SINKS
+        .write()
+        .expect("breach sink registry RwLock poisoned")
+        .remove(sink_name)
+}
+
+/// Install the process escalation queue (`on_breach: escalate` hands off
+/// here). `None` uninstalls (tests / shutdown).
+pub fn set_escalation_queue(queue: Option<Arc<dyn BreachSink>>) {
+    *ESCALATION_QUEUE
+        .write()
+        .expect("escalation queue RwLock poisoned") = queue;
+}
+
+fn escalation_queue() -> Option<Arc<dyn BreachSink>> {
+    ESCALATION_QUEUE
+        .read()
+        .expect("escalation queue RwLock poisoned")
+        .clone()
+}
+
+/// What the enforcement site does after the policy ran.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BreachDisposition {
+    /// Fail closed with this message (halt / routed-then-refused /
+    /// exhausted retries / missing destination).
+    Halt { message: String },
+    /// Continue with this content INSTEAD of the candidate — `deflect`'s
+    /// canned reply, or `sanitize_and_retry`'s masked-and-now-passing value.
+    Proceed { content: String },
+}
+
+/// Recursively mask every field named in `redact` (case-sensitive, the
+/// declared spelling) anywhere in the JSON tree.
+fn mask_fields(value: &mut serde_json::Value, redact: &[String]) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (k, v) in map.iter_mut() {
+                if redact.iter().any(|r| r == k) {
+                    *v = serde_json::Value::String("[REDACTED]".to_string());
+                } else {
+                    mask_fields(v, redact);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for v in items.iter_mut() {
+                mask_fields(v, redact);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// §Fase 114.w — run the shield's declared `on_breach:` policy over a
+/// REJECTED candidate. Called by BOTH enforcement sites (the shield STEP and
+/// `run_emit`'s σ-gate) — the policy arrives ON THE NODE (`IRBreachPolicy`,
+/// resolved at lowering), so every dispatch path honors it by construction.
+///
+/// `None` policy ⇒ `halt` (the fail-closed default, byte-identical to the
+/// pre-§114.w behaviour).
+pub fn apply_on_breach(
+    shield_name: &str,
+    policy: Option<&crate::ir_nodes::IRBreachPolicy>,
+    scanner: &Arc<dyn ShieldScanner>,
+    candidate: &str,
+    code: &str,
+    reason: &str,
+) -> BreachDisposition {
+    let halt = |message: String| BreachDisposition::Halt { message };
+    let base = format!("[{code}] {reason}");
+    let Some(policy) = policy else {
+        return halt(base);
+    };
+
+    match policy.on_breach.as_str() {
+        // Route the candidate to the named sink, then REFUSE. Quarantine
+        // differs from halt by making the candidate RECOVERABLE (the DLQ
+        // reading), never by letting it through.
+        "quarantine" if policy.quarantine.is_empty() => halt(format!(
+            "{base} — `on_breach: quarantine` declares NO sink (axon-W012 warned at              compile); halting (fail-closed, the pre-114.w behaviour)"
+        )),
+        "quarantine" => match lookup_breach_sink(&policy.quarantine) {
+            Some(sink) => match sink.route(shield_name, code, reason, candidate) {
+                Ok(()) => halt(format!(
+                    "{base} — candidate quarantined to sink '{}' (recoverable; the \
+                     emission itself is refused)",
+                    policy.quarantine
+                )),
+                Err(e) => halt(format!(
+                    "{base} — quarantine sink '{}' FAILED to record the candidate \
+                     ({e}); halting (a quarantine that cannot record must not \
+                     pretend it did)",
+                    policy.quarantine
+                )),
+            },
+            None => halt(format!(
+                "{base} — `on_breach: quarantine` names sink '{}', which is NOT \
+                 mounted in this process; halting (fail-closed — a phantom \
+                 quarantine would be a false sense of recovery)",
+                policy.quarantine
+            )),
+        },
+        // Hand off to the escalation queue, then REFUSE (a human decides).
+        "escalate" => match escalation_queue() {
+            Some(queue) => match queue.route(shield_name, code, reason, candidate) {
+                Ok(()) => halt(format!(
+                    "{base} — escalated to the escalation queue (a human decides; \
+                     the emission itself is refused)"
+                )),
+                Err(e) => halt(format!(
+                    "{base} — escalation queue FAILED to record ({e}); halting"
+                )),
+            },
+            None => halt(format!(
+                "{base} — `on_breach: escalate` but NO escalation queue is mounted \
+                 in this process; halting (fail-closed)"
+            )),
+        },
+        // Emit the canned safe reply INSTEAD of the candidate — the only
+        // policy that proceeds, and it proceeds with DECLARED content, never
+        // with any part of the rejected value. axon-T952 guarantees the
+        // message is non-empty at compile time.
+        "deflect" => BreachDisposition::Proceed {
+            content: policy.deflect_message.clone(),
+        },
+        // Mask the declared `redact:` fields and RE-SCAN, up to
+        // `max_retries:`. Only a candidate the scanner now PASSES proceeds;
+        // a non-JSON candidate cannot be field-masked and halts (fail-closed
+        // beats guessing at a sanitization the adopter never declared).
+        "sanitize_and_retry" => {
+            let Ok(mut value) = serde_json::from_str::<serde_json::Value>(candidate) else {
+                return halt(format!(
+                    "{base} — `on_breach: sanitize_and_retry` but the candidate is \
+                     not JSON, so the declared `redact:` fields cannot be masked; \
+                     halting (fail-closed)"
+                ));
+            };
+            mask_fields(&mut value, &policy.redact);
+            let masked = value.to_string();
+            let budget = policy.max_retries.max(1);
+            let ctx = ShieldScanContext::new(shield_name.to_string());
+            for _attempt in 0..budget {
+                match scanner.scan(&masked, &ctx) {
+                    ShieldVerdict::Pass(content) => {
+                        return BreachDisposition::Proceed { content };
+                    }
+                    ShieldVerdict::Reject { .. } => continue,
+                }
+            }
+            halt(format!(
+                "{base} — sanitize_and_retry exhausted {budget} attempt(s): the \
+                 scanner still rejects after masking {:?}; halting",
+                policy.redact
+            ))
+        }
+        // `halt` and anything unrecognized (the checker forbids the latter,
+        // defence in depth here): fail closed.
+        _ => halt(base),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

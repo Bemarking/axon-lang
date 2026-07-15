@@ -413,6 +413,8 @@ fn random_shield_apply(lcg: &mut Lcg) -> IRFlowNode {
         shield_name: lcg.ascii_with_random_len(8),
         target: lcg.ascii_with_random_len(12),
         output_type: lcg.ascii_with_random_len(8),
+    
+        breach_policy: None,
     })
 }
 
@@ -536,6 +538,8 @@ fn random_emit(lcg: &mut Lcg) -> IRFlowNode {
         value_ref: lcg.ascii_with_random_len(8),
         value_is_channel: lcg.bool(),
         shield_ref: String::new(),
+    
+        breach_policy: None,
     })
 }
 

@@ -550,6 +550,8 @@ mod tests {
             value_ref: "Build.output".to_string(),
             value_is_channel: false,
             shield_ref: String::new(),
+        
+            breach_policy: None,
         };
         block_on(dispatch_emit(&ir, &ctx)).unwrap();
         let event = block_on(ctx.bus.receive("Orders")).unwrap();
@@ -568,6 +570,8 @@ mod tests {
             value_ref: "Missing".to_string(),
             value_is_channel: false,
             shield_ref: String::new(),
+        
+            breach_policy: None,
         };
         let err = block_on(dispatch_emit(&ir, &ctx)).unwrap_err();
         assert!(matches!(err, DispatchError::EmitFailure(_)));

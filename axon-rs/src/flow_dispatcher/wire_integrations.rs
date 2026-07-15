@@ -457,11 +457,31 @@ pub async fn run_emit(
                     crate::shield_registry::ShieldScanContext::new(node.shield_ref.clone());
                 match scanner.scan(&resolved_value, &scan_ctx) {
                     crate::shield_registry::ShieldVerdict::Pass(content) => content,
+                    // §Fase 114.w — a Reject runs the shield's DECLARED
+                    // `on_breach:` policy (it used to always halt). `Proceed`
+                    // egresses declared/sanitized content — never any part of
+                    // the rejected value on `deflect`; `Halt` fails closed
+                    // (quarantine/escalate route the candidate FIRST, so it is
+                    // recoverable, but the emission itself is refused).
                     crate::shield_registry::ShieldVerdict::Reject { code, reason } => {
-                        return Err(DispatchError::BackendError {
-                            name: format!("shield:{}", node.shield_ref),
-                            message: format!("[{code}] {reason}"),
-                        });
+                        match crate::shield_registry::apply_on_breach(
+                            &node.shield_ref,
+                            node.breach_policy.as_ref(),
+                            &scanner,
+                            &resolved_value,
+                            &code,
+                            &reason,
+                        ) {
+                            crate::shield_registry::BreachDisposition::Proceed { content } => {
+                                content
+                            }
+                            crate::shield_registry::BreachDisposition::Halt { message } => {
+                                return Err(DispatchError::BackendError {
+                                    name: format!("shield:{}", node.shield_ref),
+                                    message,
+                                });
+                            }
+                        }
                     }
                 }
             }
@@ -2465,6 +2485,8 @@ mod tests {
             value_ref: "payload".into(),
             value_is_channel: false,
             shield_ref: String::new(),
+        
+            breach_policy: None,
         };
         let outcome = run_emit(&node, &mut ctx).await.unwrap();
         match outcome {
@@ -2505,6 +2527,8 @@ mod tests {
             value_ref: "payload".into(),
             value_is_channel: false,
             shield_ref: String::new(),
+        
+            breach_policy: None,
         };
         run_emit(&node, &mut ctx).await.unwrap();
 
@@ -2545,6 +2569,8 @@ mod tests {
             value_ref: "payload".into(),
             value_is_channel: false,
             shield_ref: String::new(),
+        
+            breach_policy: None,
         };
         run_emit(&node, &mut ctx).await.unwrap();
 
@@ -2577,6 +2603,8 @@ mod tests {
             value_ref: "payload".into(),
             value_is_channel: false,
             shield_ref: String::new(),
+        
+            breach_policy: None,
         };
         run_emit(&node, &mut ctx).await.unwrap();
 
@@ -2607,6 +2635,8 @@ mod tests {
             value_ref: "payload".into(),
             value_is_channel: false,
             shield_ref: String::new(),
+        
+            breach_policy: None,
         };
         run_emit(&node, &mut ctx).await.unwrap();
         assert_eq!(outbox.pending_total(), 0, "ephemeral does not touch the outbox");
@@ -2631,6 +2661,8 @@ mod tests {
             value_ref: "payload".into(),
             value_is_channel: false,
             shield_ref: String::new(),
+        
+            breach_policy: None,
         };
         run_emit(&node, &mut ctx).await.unwrap();
         assert_eq!(ctx.let_bindings.get("__channel_unregistered").unwrap(), "hello");
@@ -3021,6 +3053,8 @@ mod tests {
             value_ref: "v".into(),
             value_is_channel: false,
             shield_ref: String::new(),
+        
+            breach_policy: None,
         };
         assert!(matches!(run_emit(&emit, &mut ctx).await, Err(DispatchError::UpstreamCancelled)));
 

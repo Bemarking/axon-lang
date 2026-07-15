@@ -1358,6 +1358,16 @@ impl<'a> TypeChecker<'a> {
                         .or_default()
                         .push((format!("tool '{}'", t.name), t.loc.clone()));
                 }
+                // §Fase 114.u — an `upstream` that rides a resource is a HOLDER
+                // too: it opens, holds and re-dials persistent connections to
+                // it. Missing this would let §114.u quietly re-open the sharing
+                // hole §113.b closed, exactly as §114.f said of tools.
+                Declaration::Upstream(u) if !u.resource_ref.is_empty() => {
+                    holders
+                        .entry(u.resource_ref.as_str())
+                        .or_default()
+                        .push((format!("upstream '{}'", u.name), u.loc.clone()));
+                }
                 _ => {}
             }
         }
@@ -6121,6 +6131,51 @@ impl<'a> TypeChecker<'a> {
             );
         }
 
+        // §Fase 114.w — axon-T952: a breach policy must carry its OPERAND, or
+        // it is a promise the runtime cannot run: `deflect` with no message
+        // has nothing to emit, `quarantine` with no sink has nowhere to
+        // route, `sanitize_and_retry` with no `redact:` fields sanitizes
+        // nothing (a retry loop that re-scans the same bytes). Each was
+        // silently accepted before §114.w — and silently `halt`ed.
+        match node.on_breach.as_str() {
+            "deflect" if node.deflect_message.is_empty() => self.emit(
+                format!(
+                    "axon-T952 shield '{}' declares `on_breach: deflect` with no \
+                     `deflect_message:` — there is nothing to emit instead of the \
+                     candidate. Declare the canned safe reply, or use `halt`.",
+                    node.name
+                ),
+                &node.loc,
+            ),
+            // `quarantine` without a sink is a WARNING, not an error: a large
+            // published tail (templates, compliance patterns) declares it, and
+            // the runtime has a defined fail-closed meaning for the hole (halt
+            // with a diagnostic naming it) — the pre-§114.w behaviour exactly.
+            // deflect/sanitize_and_retry differ: without their operand there
+            // is NOTHING the runtime could do but halt, so the declaration is
+            // pure noise and refusing it costs no working program.
+            "quarantine" if node.quarantine.is_empty() => self.warn(
+                format!(
+                    "axon-W012 shield '{}' declares `on_breach: quarantine` with no \
+                     `quarantine:` sink — the candidate has nowhere to route, so a \
+                     breach HALTS (fail-closed) instead of quarantining. Name the \
+                     sink to make the candidate recoverable.",
+                    node.name
+                ),
+                &node.loc,
+            ),
+            "sanitize_and_retry" if node.redact.is_empty() => self.emit(
+                format!(
+                    "axon-T952 shield '{}' declares `on_breach: sanitize_and_retry` \
+                     with no `redact:` fields — a retry that re-scans the SAME bytes \
+                     is not sanitization. Declare the fields to mask, or use `halt`.",
+                    node.name
+                ),
+                &node.loc,
+            ),
+            _ => {}
+        }
+
         // on_breach policy
         if !node.on_breach.is_empty() && !is_valid(&node.on_breach, VALID_ON_BREACH_POLICIES) {
             self.emit(
@@ -7915,8 +7970,54 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        // (c) axon-T850 — config-key shape (compile-time SecretKeyPolicy mirror).
-        self.check_upstream_config_key(&node.name, "resolve", &node.resolve, &node.loc);
+        // (c) §Fase 114.u — axon-T951: `resource:` XOR `resolve:`.
+        //
+        // When the channel rides a declared `resource`, the dial address
+        // DERIVES from `resource.endpoint` (axon-T944 already proves that is a
+        // per-tenant config key) — a `resolve:` beside it would state the
+        // channel's address TWICE, which is exactly the §113 islands defect
+        // this family of fases exists to kill. Authority attenuation: the
+        // resource encapsulates its own address resolution; the upstream only
+        // names WHICH channel it rides.
+        if !node.resource_ref.is_empty() {
+            if !node.resolve.is_empty() {
+                self.emit(
+                    format!(
+                        "axon-T951 Upstream '{}' declares BOTH `resource: {}` AND `resolve: {}` — \
+                         the channel's address stated twice. When the upstream rides a resource, \
+                         its dial address derives from the resource's `endpoint` (axon-T944); a \
+                         second address is either redundant or a contradiction, and a reader can \
+                         no longer tell which one runs. Drop `resolve:`.",
+                        node.name, node.resource_ref, node.resolve
+                    ),
+                    &node.loc,
+                );
+            }
+            // The reference must resolve to a DECLARED resource (the T950 law,
+            // verbatim discipline).
+            match self.symbols.lookup(&node.resource_ref) {
+                None => self.emit(
+                    format!(
+                        "axon-T951 Upstream '{}' names resource '{}', which is not declared.",
+                        node.name, node.resource_ref
+                    ),
+                    &node.loc,
+                ),
+                Some(sym) if sym.kind != "resource" => self.emit(
+                    format!(
+                        "axon-T951 Upstream '{}' names '{}', which is a {}, not a resource.",
+                        node.name, node.resource_ref, sym.kind
+                    ),
+                    &node.loc,
+                ),
+                _ => {}
+            }
+        } else {
+            // axon-T850 — config-key shape (compile-time SecretKeyPolicy
+            // mirror). Only when un-resourced: with `resource:` the address
+            // fact lives on the resource and `resolve:` must be absent.
+            self.check_upstream_config_key(&node.name, "resolve", &node.resolve, &node.loc);
+        }
         self.check_upstream_config_key(&node.name, "secret", &node.secret, &node.loc);
 
         // (d) axon-T849 — projection totality over the bound role.

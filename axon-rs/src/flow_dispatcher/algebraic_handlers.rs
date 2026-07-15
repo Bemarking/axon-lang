@@ -189,11 +189,28 @@ pub async fn run_shield_apply(
             let scan_ctx = crate::shield_registry::ShieldScanContext::new(node.shield_name.clone());
             match scanner.scan(&resolved_target, &scan_ctx) {
                 crate::shield_registry::ShieldVerdict::Pass(content) => content,
+                // §Fase 114.w — a Reject runs the shield's DECLARED `on_breach:`
+                // policy (it used to always halt). The policy rides the node
+                // (`IRBreachPolicy`, resolved at lowering), so this site and
+                // `run_emit`'s σ-gate honor it identically. `Proceed` continues
+                // with declared/sanitized content; `Halt` fails closed.
                 crate::shield_registry::ShieldVerdict::Reject { code, reason } => {
-                    return Err(DispatchError::BackendError {
-                        name: format!("shield:{}", node.shield_name),
-                        message: format!("[{code}] {reason}"),
-                    });
+                    match crate::shield_registry::apply_on_breach(
+                        &node.shield_name,
+                        node.breach_policy.as_ref(),
+                        &scanner,
+                        &resolved_target,
+                        &code,
+                        &reason,
+                    ) {
+                        crate::shield_registry::BreachDisposition::Proceed { content } => content,
+                        crate::shield_registry::BreachDisposition::Halt { message } => {
+                            return Err(DispatchError::BackendError {
+                                name: format!("shield:{}", node.shield_name),
+                                message,
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -712,6 +729,8 @@ mod tests {
             shield_name: "hipaa".into(),
             target: "input_text".into(),
             output_type: "scrubbed".into(),
+        
+            breach_policy: None,
         };
         let outcome = run_shield_apply(&node, &mut ctx).await.unwrap();
         match outcome {
@@ -743,6 +762,8 @@ mod tests {
             shield_name: "hipaa".into(),
             target: "doc".into(),
             output_type: String::new(),
+        
+            breach_policy: None,
         };
         run_shield_apply(&node, &mut ctx).await.unwrap();
         assert_eq!(ctx.let_bindings.get("doc_shielded").unwrap(), "content");
@@ -788,6 +809,8 @@ mod tests {
             shield_name: NAME.into(),
             target: "note".into(),
             output_type: "scrubbed".into(),
+        
+            breach_policy: None,
         };
         let outcome = run_shield_apply(&node, &mut ctx).await.unwrap();
         match outcome {
@@ -813,6 +836,8 @@ mod tests {
             shield_name: NAME.into(),
             target: "note".into(),
             output_type: "scrubbed".into(),
+        
+            breach_policy: None,
         };
         let err = run_shield_apply(&node, &mut ctx).await.unwrap_err();
         match err {
@@ -841,6 +866,8 @@ mod tests {
             shield_name: "t40b_never_registered".into(),
             target: "doc".into(),
             output_type: "out".into(),
+        
+            breach_policy: None,
         };
         let outcome = run_shield_apply(&node, &mut ctx).await.unwrap();
         match outcome {
@@ -1080,6 +1107,8 @@ mod tests {
                     shield_name: "x".into(),
                     target: "y".into(),
                     output_type: "z".into(),
+                
+                    breach_policy: None,
                 },
                 &mut ctx,
             )
