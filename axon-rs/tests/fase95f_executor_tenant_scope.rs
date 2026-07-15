@@ -104,6 +104,7 @@ fn run_enumerate_with_tenant(tenant: &str) -> Vec<String> {
         None,
         None, // budget
         None, // §Fase 114.e channel semaphores
+        None, // §Fase 114.f — tool leases (test: none)
         None, // outbox
         None, // minter
         Some(custody as Arc<dyn SecretCustody>),

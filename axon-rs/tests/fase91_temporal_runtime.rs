@@ -26,6 +26,7 @@ fn run(source: &str, flow: &str) -> axon::runner::ServerRunnerMetrics {
         &ir, flow, "stub", "", "<fase91-test>", None, None, &empty, &empty, None, None, None,
         None, // budget
         None, // §Fase 114.e channel semaphores
+        None, // §Fase 114.f — tool leases (test: none)
         None, // event_outbox
         None, // credential minter
         None, // §Fase 94.d — secret custody (test: none)

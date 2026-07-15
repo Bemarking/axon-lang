@@ -132,6 +132,7 @@ fn e2e_mint_without_a_port_fails_the_flow_loudly() {
         &ir, "Bootstrap", "stub", "", "<fase92>", None, None, &empty, &empty, None, None, None,
         None, // budget
         None, // §Fase 114.e channel semaphores
+        None, // §Fase 114.f — tool leases (test: none)
         None, // event_outbox
         None, // §Fase 92.c credential minter
         None, // §Fase 94.d — secret custody (test: none)

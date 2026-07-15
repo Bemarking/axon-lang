@@ -573,6 +573,10 @@ pub struct DispatchCtx {
     /// identical to pre-§114. Attached on the server path via
     /// [`DispatchCtx::with_channel_semaphores`].
     pub channel_semaphores: Option<std::sync::Arc<crate::channel_semaphore::ChannelSemaphores>>,
+    /// §Fase 114.f — the leases over tool-held resources, held across requests. A
+    /// post-expiry vendor call is a CT-2 Anchor Breach. `None` ⇒ no lease governs a
+    /// tool's channel in this program.
+    pub tool_leases: Option<std::sync::Arc<crate::resource_lease::ResourceLeaseGuard>>,
     /// §Fase 74.a — the shared typed-channel event bus a flow's `emit`
     /// routes to (the producer side of durable event delivery). `None`
     /// (the `DispatchCtx::new` default — HTTP / CLI / test paths) ⇒ `emit`
@@ -685,6 +689,7 @@ impl DispatchCtx {
             // path attaches one via `with_budget`.
             budget: None,
             channel_semaphores: None,
+            tool_leases: None,
             // §Fase 74.a — no event bus by default; `emit` uses the legacy
             // per-flow buffer. The daemon supervisor attaches the shared bus
             // via `with_event_bus` so `emit` delivers to `listen`ers.
@@ -824,6 +829,15 @@ impl DispatchCtx {
         sems: std::sync::Arc<crate::channel_semaphore::ChannelSemaphores>,
     ) -> Self {
         self.channel_semaphores = Some(sems);
+        self
+    }
+
+    /// §Fase 114.f — attach the cross-request tool-lease guard.
+    pub fn with_tool_leases(
+        mut self,
+        leases: std::sync::Arc<crate::resource_lease::ResourceLeaseGuard>,
+    ) -> Self {
+        self.tool_leases = Some(leases);
         self
     }
 

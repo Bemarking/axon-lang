@@ -3395,6 +3395,8 @@ async fn collect_via_dispatcher(
     // §Fase 114.e — the per-channel concurrency semaphores (`resource.capacity`),
     // held on ServerState across requests. `None` ⇒ no channel is bounded.
     channel_semaphores: Option<std::sync::Arc<crate::channel_semaphore::ChannelSemaphores>>,
+    // §Fase 114.f — the tool-lease guard.
+    tool_leases: Option<std::sync::Arc<crate::resource_lease::ResourceLeaseGuard>>,
     // §Fase 74.f — the typed event BUS (built from the program's `channel`
     // definitions) + the durable event OUTBOX (the §74.c `EventOutbox` seam),
     // attached as a pair on the daemon path. The bus carries each channel's
@@ -3484,6 +3486,10 @@ async fn collect_via_dispatcher(
     // it a bound).
     if let Some(sems) = channel_semaphores {
         ctx = ctx.with_channel_semaphores(sems);
+    }
+    // §Fase 114.f — attach the tool-lease guard so a post-expiry vendor call breaches.
+    if let Some(leases) = tool_leases {
+        ctx = ctx.with_tool_leases(leases);
     }
     // §Fase 74.f — attach the typed event bus + durable outbox as a pair (daemon
     // path only). The bus supplies the channel's `persistence` so `run_emit`
@@ -3728,6 +3734,8 @@ pub fn execute_server_flow(
     // §Fase 114.e — the per-channel concurrency semaphores (`resource.capacity`),
     // held on ServerState across requests. `None` for every non-server caller.
     channel_semaphores: Option<std::sync::Arc<crate::channel_semaphore::ChannelSemaphores>>,
+    // §Fase 114.f — the tool-lease guard (held on ServerState). `None` off-server.
+    tool_leases: Option<std::sync::Arc<crate::resource_lease::ResourceLeaseGuard>>,
     // §Fase 74.f — the durable event outbox (the §74.c `EventOutbox` seam). `Some`
     // only when a `daemon` runs this flow AND the deployment configures a durable
     // channel sink (the enterprise supervisor passes its per-tenant Postgres
@@ -4102,6 +4110,7 @@ pub fn execute_server_flow(
                     pinned,
                     budget.clone(),
                     channel_semaphores.clone(),
+                    tool_leases.clone(),
                     // §Fase 74.f — when a durable outbox is injected (the
                     // enterprise daemon path), build the typed event bus from the
                     // program's `channel` definitions so `run_emit` knows each
@@ -5195,6 +5204,7 @@ flow Recall(q: Text) -> Text {
             None,
             None, // §Fase 72.c — budget (test: unbudgeted)
             None, // §Fase 114.e — channel semaphores (test: none)
+            None, // §Fase 114.f — tool leases (test: none)
             None, // §Fase 74.f — event outbox (test: no durable sink)
             None, // §Fase 92.c — credential minter (test: none)
             None, // §Fase 94.d — secret custody (test: none)
@@ -5282,6 +5292,7 @@ flow Recall(q: Text) -> Text {
             std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             None, // §Fase 72.c — budget (test: unbudgeted)
             None, // §Fase 114.e — channel semaphores (test: none)
+            None, // §Fase 114.f — tool leases (test: none)
             None, // §Fase 74.f — event bus (test: no durable sink)
             None, // §Fase 74.f — event outbox (test: no durable sink)
             std::sync::Arc::new(std::collections::HashMap::new()), // §Fase 92.c — credentials
@@ -5330,6 +5341,7 @@ flow Lead() -> Text {
             None,                                 // llm_chat_path
             None,                                 // budget
             None,                                 // §Fase 114.e channel semaphores
+            None, // §Fase 114.f — tool leases (test: none)
             None,                                 // event_outbox
             None,                                 // credential_minter
             None,                                 // secret_custody
@@ -5382,6 +5394,7 @@ flow Echo(p: Text) -> Text {
             None,
             None, // budget
             None, // §Fase 114.e — channel semaphores (test: none)
+            None, // §Fase 114.f — tool leases (test: none)
             None, // outbox
             None, // §Fase 92.c — credential minter (test: none)
             None, // §Fase 94.d — secret custody (test: none)
@@ -5426,6 +5439,7 @@ flow Learn(tenant_id: Text, session_id_generic: Text) -> Text {
             None, // llm_chat_path
             None, // budget
             None, // §Fase 114.e channel semaphores
+            None, // §Fase 114.f — tool leases (test: none)
             None, // event_outbox
             None, // §Fase 92.c — credential minter (test: none)
             None, // §Fase 94.d — secret custody (test: none)
@@ -5482,6 +5496,7 @@ flow Producer(tenant_id: Text) -> Text {
             None,
             None, // §Fase 72.c — budget (unbudgeted)
             None, // §Fase 114.e — channel semaphores (test: none)
+            None, // §Fase 114.f — tool leases (test: none)
             // §Fase 74.f — inject the durable outbox (the enterprise daemon path).
             Some(probe.clone() as std::sync::Arc<dyn EventOutbox>),
             None, // §Fase 92.c — credential minter (test: none)

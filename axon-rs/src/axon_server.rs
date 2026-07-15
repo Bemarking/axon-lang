@@ -422,6 +422,10 @@ pub struct ServerState {
     /// resource with no `capacity:` has no entry (unbounded). `None` ⇒ no bounded
     /// channel in this program.
     pub channel_semaphores: Option<std::sync::Arc<crate::channel_semaphore::ChannelSemaphores>>,
+    /// §Fase 114.f — the leases over tool-held resources, built at deploy and held
+    /// across requests. A post-expiry vendor call is a CT-2 Anchor Breach. `None` ⇒
+    /// no lease governs a tool's channel.
+    pub tool_leases: Option<std::sync::Arc<crate::resource_lease::ResourceLeaseGuard>>,
     /// §Fase 112.c — the last supervisor pass, for the ops surface. `refusals` is
     /// first-class here: a system we could not observe is NOT a system that is fine.
     pub cognitive_io_last_tick: Option<serde_json::Value>,
@@ -1027,6 +1031,7 @@ impl ServerState {
             // §Fase 114.a — top-level budget gates; built at deploy, held across requests.
             budgets: None,
             channel_semaphores: None,
+            tool_leases: None,
             cognitive_io_last_tick: None,
             // §Fase 111.i — populated at deploy from the compiled `socket` decls.
             socket_schemas: HashMap::new(),
@@ -1880,6 +1885,10 @@ async fn deploy_handler(
             let s = state.lock().unwrap();
             s.channel_semaphores.clone()
         };
+        let http_tool_leases = {
+            let s = state.lock().unwrap();
+            s.tool_leases.clone()
+        };
         let merge_result = engine
             .write()
             .expect("dataspace engine lock poisoned")
@@ -2081,6 +2090,30 @@ async fn deploy_handler(
         } else {
             Some(std::sync::Arc::new(sems))
         };
+
+        // §Fase 114.f — acquire the leases over tool-held resources, ONCE, at
+        // deploy. `axon-T945` guarantees a leased resource has exactly one holder,
+        // so a store-held lease stays in the StoreRegistry guard (§113.d) and a
+        // tool-held lease lives here — the two never charge the same lease.
+        match crate::resource_lease::ResourceLeaseGuard::from_ir(&ir.leases, &ir.resources) {
+            Ok(guard) => {
+                s.tool_leases = guard.map(std::sync::Arc::new);
+            }
+            Err(e) => {
+                // A lease that cannot be acquired (e.g. over a `persistent`
+                // resource — no τ to decay) refuses the DEPLOY, all-or-nothing.
+                s.tool_leases = None;
+                s.metrics.total_errors += 1;
+                return Ok(Json(serde_json::json!({
+                    "success": false,
+                    "error": format!(
+                        "lease '{}' over resource '{}' could not be acquired: {}",
+                        e.lease, e.resource, e.detail
+                    ),
+                    "phase": "resource_lease",
+                })));
+            }
+        }
 
         // §Fase 112.c — instantiate the Cognitive-I/O graph.
         //
@@ -2439,6 +2472,8 @@ fn server_execute(
     http_budget: Option<std::sync::Arc<std::sync::Mutex<crate::runtime::budget_kernel::BudgetGate>>>,
     // §Fase 114.e — the per-channel concurrency semaphores, held on ServerState.
     http_channel_sems: Option<std::sync::Arc<crate::channel_semaphore::ChannelSemaphores>>,
+    // §Fase 114.f — the tool-lease guard, held on ServerState.
+    http_tool_leases: Option<std::sync::Arc<crate::resource_lease::ResourceLeaseGuard>>,
 ) -> Result<ServerExecutionResult, String> {
     let start = Instant::now();
 
@@ -2503,6 +2538,8 @@ fn server_execute(
         http_budget,
         // §Fase 114.e — the channel concurrency semaphores (same ServerState seam).
         http_channel_sems,
+        // §Fase 114.f — the tool-lease guard (same seam).
+        http_tool_leases,
         // §Fase 74.f — the OSS HTTP path carries no durable event outbox (the
         // per-tenant Postgres outbox is the enterprise supervisor's concern);
         // `emit` keeps its in-process behavior here.
@@ -13710,6 +13747,10 @@ fn execute_with_fallback(
         let s = state.lock().unwrap();
         s.channel_semaphores.clone()
     };
+    let http_tool_leases = {
+        let s = state.lock().unwrap();
+        s.tool_leases.clone()
+    };
     // §Fase 114.a — the top-level `budget` gate, resolved from `ServerState` and
     // therefore the SAME bucket every request. Cloned Arc, not rebuilt: a fresh
     // gate per request starts full and bounds nothing.
@@ -13726,6 +13767,10 @@ fn execute_with_fallback(
         let s = state.lock().unwrap();
         s.channel_semaphores.clone()
     };
+    let http_tool_leases = {
+        let s = state.lock().unwrap();
+        s.tool_leases.clone()
+    };
     // Try primary
     let result = server_execute(
         source,
@@ -13739,6 +13784,7 @@ fn execute_with_fallback(
         Some(ds_engine.clone()),
         http_budget.clone(),
         http_channel_sems.clone(),
+        http_tool_leases.clone(),
     );
     if result.is_ok() {
         return (result, primary_backend.to_string());
@@ -13778,6 +13824,7 @@ fn execute_with_fallback(
             // backend would silently DOUBLE the adopter's vendor spend.
             http_budget.clone(),
             http_channel_sems.clone(),
+            http_tool_leases.clone(),
         );
         if fb_result.is_ok() {
             return (fb_result, fallback_backend.clone());
@@ -15264,6 +15311,10 @@ async fn mcp_handler(
                 let s = state.lock().unwrap();
                 s.channel_semaphores.clone()
             };
+            let http_tool_leases = {
+                let s = state.lock().unwrap();
+                s.tool_leases.clone()
+            };
             let result = server_execute(
                 &source, &source_file, flow_name, backend, resolved_key.as_deref(), None,
                 &empty_path,
@@ -15271,6 +15322,7 @@ async fn mcp_handler(
                 Some(ds_engine),
                 http_budget,
                 http_channel_sems,
+                http_tool_leases,
             );
 
             match result {
@@ -16365,9 +16417,13 @@ async fn mcp_stream_handler(
         let s = state.lock().unwrap();
         s.channel_semaphores.clone()
     };
+    let http_tool_leases = {
+        let s = state.lock().unwrap();
+        s.tool_leases.clone()
+    };
     match server_execute(
         &source, &source_file, flow_name, backend, resolved_key.as_deref(), None,
-        &empty_path, &empty_query, Some(ds_engine), http_budget, http_channel_sems,
+        &empty_path, &empty_query, Some(ds_engine), http_budget, http_channel_sems, http_tool_leases,
     ) {
         Ok(mut er) => {
             // Record trace
@@ -28382,9 +28438,13 @@ async fn execute_warm_handler(
             let s = state.lock().unwrap();
             s.channel_semaphores.clone()
         };
+        let http_tool_leases = {
+            let s = state.lock().unwrap();
+            s.tool_leases.clone()
+        };
         match server_execute(
             source, source_file, flow_name, "stub", None, None,
-            &empty_path, &empty_query, Some(ds_engine), http_budget, http_channel_sems,
+            &empty_path, &empty_query, Some(ds_engine), http_budget, http_channel_sems, http_tool_leases,
         ) {
             Ok(er) => {
                 let mut entry = crate::trace_store::build_trace(&er.flow_name, &er.source_file, &er.backend, &client,

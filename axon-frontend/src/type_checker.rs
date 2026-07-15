@@ -1338,13 +1338,27 @@ impl<'a> TypeChecker<'a> {
         // and never appear here.
         let mut holders: BTreeMap<&str, Vec<(String, Loc)>> = BTreeMap::new();
         for d in decls {
-            if let Declaration::AxonStore(s) = d {
-                if !s.resource_ref.is_empty() {
+            match d {
+                Declaration::AxonStore(s) if !s.resource_ref.is_empty() => {
                     holders
                         .entry(s.resource_ref.as_str())
                         .or_default()
                         .push((format!("axonstore '{}'", s.name), s.loc.clone()));
                 }
+                // §Fase 114.f — a `tool` that names a resource is a HOLDER too.
+                //
+                // Before §114 a tool could not name a resource, so the sharing
+                // discipline only counted stores. Now that a tool holds a channel,
+                // an `affine` resource shared between a store and a tool — or two
+                // tools — is a breach exactly as two stores would be. Missing this
+                // would have let §114 quietly re-open the sharing hole §113.b closed.
+                Declaration::Tool(t) if !t.resource_ref.is_empty() => {
+                    holders
+                        .entry(t.resource_ref.as_str())
+                        .or_default()
+                        .push((format!("tool '{}'", t.name), t.loc.clone()));
+                }
+                _ => {}
             }
         }
 

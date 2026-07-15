@@ -213,6 +213,25 @@ pub async fn run_use_tool(
         }
     }
 
+    // §Fase 114.f — charge the tool's channel lease BEFORE the call. A post-expiry
+    // vendor call is a CT-2 Anchor Breach (the τ-decaying affine capability was
+    // used past expiry), exactly as a post-expiry store op is in §113.d — a tool
+    // call is a *use* of the resource just as a store op is. Charged before the
+    // dispatch: a breach reported after the vendor was hit bounds nothing.
+    if let Some(breach) = charge_tool_lease(node, ctx) {
+        let step_index_now = step_index;
+        emit_step_complete(ctx, &step_name, step_index_now, &breach, 0, false)?;
+        if !node.tool_name.is_empty() {
+            ctx.let_bindings
+                .insert(format!("{}_result", node.tool_name), breach.clone());
+        }
+        return Ok(NodeOutcome::Completed {
+            output: breach,
+            tokens_emitted: 0,
+            step_index,
+        });
+    }
+
     // §Fase 114.e — hold a channel permit ACROSS the call, so at most
     // `resource.capacity` calls are in flight against this tool's channel at once.
     //
@@ -269,6 +288,25 @@ pub async fn run_use_tool(
 /// runtime would panic, so the dispatch runs on the blocking pool via
 /// `spawn_blocking` (D6). The request-scoped registry is `Arc`-cloned
 /// into the task — never a shared mutable global (D10).
+/// §Fase 114.f — charge the tool's channel lease. Returns `Some(breach_message)`
+/// when the lease over the tool's resource has expired (the CT-2 Anchor Breach) —
+/// the caller must NOT make the call. `None` ⇒ no lease governs this channel, or
+/// it is live.
+fn charge_tool_lease(node: &IRUseToolStep, ctx: &DispatchCtx) -> Option<String> {
+    let leases = ctx.tool_leases.as_ref()?;
+    let registry = ctx.tool_registry.as_ref()?;
+    let entry = registry.get(&node.tool_name)?;
+    if entry.resource_ref.is_empty() {
+        // An un-resourced tool is ineligible for lease governance — you cannot
+        // govern what you did not declare (§113's ratified posture).
+        return None;
+    }
+    match leases.charge(&entry.resource_ref) {
+        Ok(()) => None,
+        Err(breach) => Some(breach.to_string()),
+    }
+}
+
 /// §Fase 114.e — acquire a concurrency permit for the tool's channel, if it has
 /// one. The returned guard bounds simultaneous calls while it lives; `None` ⇒ the
 /// tool names no capacity-bounded resource and the call is unbounded (pre-§114).

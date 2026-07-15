@@ -124,6 +124,7 @@ fn run_sync(source: &str, source_file: &str, flow_name: &str) -> Result<ServerRu
         None, // §Fase 24.g.2 — llm_chat_path
             None, // §Fase 72.c — budget (test: unbudgeted)
             None, // §Fase 114.e — channel semaphores (test: none)
+            None, // §Fase 114.f — tool leases (test: none)
         None, // §Fase 74.f — event_outbox (test: in-process emit)
         None, // §Fase 92.c — credential minter (test: none)
         None, // §Fase 94.d — secret custody (test: none)
