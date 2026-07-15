@@ -120,6 +120,28 @@ pub fn dispatch_http(entry: &ToolEntry, argument: &str) -> ToolResult {
     }
 }
 
+/// §Fase 114 (owed) — the PROCESS-SHARED blocking HTTP client. A fresh
+/// `reqwest::blocking::Client` per call threw away reqwest's internal connection
+/// pool, so every tool call paid a new TCP + TLS handshake. reqwest is explicitly
+/// designed to be built ONCE and reused (the pool lives on the `Client`); the
+/// per-call knob — the request timeout — is set per REQUEST instead, so one shared
+/// client serves every timeout. `http_tool` carries no per-resource client config
+/// (proxy / TLS impersonation is the `scrape` domain), so process-wide is the
+/// correct granularity here. Built lazily; `new()` only fails on a broken TLS
+/// backend, which would fail every call anyway.
+fn shared_blocking_client() -> &'static reqwest::blocking::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::blocking::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(reqwest::blocking::Client::new)
+}
+
+/// §Fase 114 (owed) — the PROCESS-SHARED async HTTP client (the streaming-tool
+/// dual of [`shared_blocking_client`]). Same rationale: build once, reuse the
+/// connection pool, set the timeout per request.
+fn shared_async_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(reqwest::Client::new)
+}
+
 /// Perform the actual HTTP POST request.
 fn execute_request(
     url: &str,
@@ -127,13 +149,9 @@ fn execute_request(
     body: &str,
     timeout: Duration,
 ) -> Result<ToolResult, String> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(timeout)
-        .build()
-        .map_err(|e| format!("failed to create HTTP client: {e}"))?;
-
-    let response = client
+    let response = shared_blocking_client()
         .post(url)
+        .timeout(timeout)
         .header("Content-Type", "application/json")
         .header("X-Axon-Tool", tool_name)
         .body(body.to_string())
@@ -373,22 +391,15 @@ impl Tool for HttpStreamingTool {
                 return;
             }
 
-            // 1. Build async client.
-            let client = match reqwest::Client::builder().timeout(timeout).build() {
-                Ok(c) => c,
-                Err(e) => {
-                    send_terminator(ToolFinishReason::Error {
-                        message: format!(
-                            "HTTP tool '{name}': failed to build async client: {e}"
-                        ),
-                    });
-                    return;
-                }
-            };
+            // 1. The PROCESS-SHARED async client (§Fase 114 owed — see
+            //    `shared_blocking_client`: pooling was thrown away by a
+            //    per-call `Client::builder().build()`). Timeout is per REQUEST.
+            let client = shared_async_client();
 
             // 2. Issue request.
             let response = match client
                 .post(&url)
+                .timeout(timeout)
                 .header("Content-Type", "application/json")
                 .header("X-Axon-Tool", &name)
                 .body(body)
@@ -618,6 +629,34 @@ where
 mod tests {
     use super::*;
     use crate::tool_registry::{ToolEntry, ToolSource};
+
+    /// §Fase 114 (owed) — **the HTTP client is POOLED: every call reuses ONE
+    /// client, not a fresh one per request.** reqwest's connection pool lives on
+    /// the `Client`; a fresh `Client::builder().build()` per call discarded it, so
+    /// every tool call paid a new TCP + TLS handshake. This pins the fix directly:
+    /// the shared accessor returns the SAME instance across calls — one client,
+    /// one pool. (Connection reuse from a shared client is reqwest's documented
+    /// behavior; what this crate owns is *not rebuilding the client per call*.)
+    #[test]
+    fn the_blocking_http_client_is_a_reused_singleton() {
+        let a = shared_blocking_client();
+        let b = shared_blocking_client();
+        assert!(
+            std::ptr::eq(a, b),
+            "every call must reuse ONE blocking client (its connection pool) — not build a fresh \
+             one per request"
+        );
+    }
+
+    #[test]
+    fn the_async_http_client_is_a_reused_singleton() {
+        let a = shared_async_client();
+        let b = shared_async_client();
+        assert!(
+            std::ptr::eq(a, b),
+            "every call must reuse ONE async client (its connection pool)"
+        );
+    }
 
     fn make_http_entry(name: &str, url: &str, timeout: &str) -> ToolEntry {
         ToolEntry {
