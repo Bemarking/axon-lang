@@ -459,6 +459,7 @@ mod tests {
             filter_expr: String::new(),
             timeout: String::new(),
             runtime: String::new(),
+            resource_ref: String::new(),
             sandbox: None,
             input_schema: Vec::new(),
             output_schema: String::new(),

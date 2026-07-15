@@ -66,6 +66,7 @@ fn tool_spec(name: &str, provider: &str, runtime: &str, secret: &str) -> IRToolS
         filter_expr: String::new(),
         timeout: "10s".to_string(),
         runtime: runtime.to_string(),
+        resource_ref: String::new(),
         sandbox: None,
         input_schema: Vec::new(),
         output_schema: String::new(),

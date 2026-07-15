@@ -39,6 +39,7 @@ fn partitioned_tool(url: &str) -> IRToolSpec {
         filter_expr: String::new(),
         timeout: "10s".to_string(),
         runtime: url.to_string(),
+        resource_ref: String::new(),
         sandbox: None,
         input_schema: Vec::new(),
         output_schema: String::new(),

@@ -2195,6 +2195,21 @@ pub struct ToolDefinition {
     pub filter_expr: String,
     pub timeout: String,
     pub runtime: String,
+    /// §Fase 114.c — the `resource` this tool's channel runs on (`tool T { resource: Api }`).
+    ///
+    /// When present, the tool DERIVES its endpoint from `resource.endpoint`, its
+    /// concurrency bound from `resource.capacity`, and (via `lease`/`observe`) its
+    /// lifecycle and health from the resource. `runtime:` then names the PATH
+    /// within that channel, not the channel itself.
+    ///
+    /// This is what governs `tool.runtime` — the third island. An absolute
+    /// `runtime: "https://…"` (a production URL in source, with no lifetime, no
+    /// capacity, no shield) is now refused; the address lives on the resource.
+    ///
+    /// Empty ⇒ the legacy form (slug `runtime:` joined onto a per-tenant base URL,
+    /// which already conforms). Ungoverned, and therefore ineligible for the
+    /// channel `shield` / `lease` / `observe`.
+    pub resource_ref: String,
     pub sandbox: Option<bool>,
     pub effects: Option<EffectRow>,
     /// §Fase 58.a — the tool's typed INPUT SCHEMA (W2: the caller↔tool

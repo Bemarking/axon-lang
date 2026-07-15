@@ -438,6 +438,16 @@ pub async fn run_streaming_via_dispatcher(
         if let Some(base) = tool_base_url.as_deref() {
             reg.resolve_relative_endpoints(base);
         }
+        // §Fase 114.d — the STREAMING path must derive a tool's channel from its
+        // `resource` too, or a governed tool would resolve its endpoint on the
+        // synchronous path (`execute_server_flow`) and NOT on the streaming one —
+        // `capacity: 20` real on a POST, a phantom on an SSE. The exact
+        // "real-on-one-path, dead-on-the-other" defect §111 exists to end, so it
+        // is wired in BOTH places.
+        let _refused = reg.resolve_from_resources(
+            &ir.resources,
+            &crate::resource_resolver::EnvResourceResolver,
+        );
         std::sync::Arc::new(reg)
     };
 

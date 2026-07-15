@@ -2483,6 +2483,7 @@ impl Parser {
             filter_expr: String::new(),
             timeout: String::new(),
             runtime: String::new(),
+            resource_ref: String::new(),
             sandbox: None,
             effects: None,
             parameters: Vec::new(),
@@ -2526,6 +2527,10 @@ impl Parser {
                 "filter" => node.filter_expr = self.parse_filter_expression()?,
                 "timeout" => node.timeout = self.consume(TokenType::Duration)?.value,
                 "runtime" => node.runtime = self.consume_any_ident_or_kw()?.value,
+                // §Fase 114.c — the `resource` this tool's channel runs on. The
+                // channel's address, concurrency and lifecycle come from it;
+                // `runtime:` then names the path within the channel.
+                "resource" => node.resource_ref = self.consume_any_ident_or_kw()?.value,
                 "sandbox" => node.sandbox = Some(self.parse_bool()?),
                 "effects" => node.effects = Some(self.parse_effect_row()?),
                 // §Fase 58.a — the tool's typed input schema + output type.

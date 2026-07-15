@@ -519,7 +519,9 @@ async fn s4_from_entry_rejects_invalid_url_scheme() {
         name: "Bad".into(),
         provider: "http".into(),
         timeout: "10s".into(),
-        runtime: "ftp://example.com/".into(), // wrong scheme
+        runtime: "ftp://example.com/".into(),
+        resource_ref: String::new(),
+        capacity: None, // wrong scheme
         sandbox: None,
         max_results: None,
         output_schema: String::new(),
@@ -569,6 +571,8 @@ fn registry_with_http(name: &str, runtime: &str, effect_row: Vec<&str>) -> Arc<T
         provider: "http".into(),
         timeout: "5s".into(),
         runtime: runtime.into(),
+        resource_ref: String::new(),
+        capacity: None,
         sandbox: None,
         max_results: None,
         output_schema: String::new(),

@@ -410,6 +410,8 @@ fn registry_with_mcp(name: &str, runtime: &str, effect_row: Vec<&str>) -> Arc<To
         provider: "mcp".into(),
         timeout: "5s".into(),
         runtime: runtime.into(),
+        resource_ref: String::new(),
+        capacity: None,
         sandbox: None,
         max_results: None,
         output_schema: String::new(),

@@ -23,6 +23,7 @@ fn tool(name: &str, provider: &str, runtime: &str) -> IRToolSpec {
         filter_expr: String::new(),
         timeout: String::new(),
         runtime: runtime.to_string(),
+        resource_ref: String::new(),
         sandbox: None,
         input_schema: Vec::new(),
         output_schema: String::new(),

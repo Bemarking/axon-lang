@@ -415,6 +415,8 @@ mod tests {
             provider: provider.to_string(),
             timeout: String::new(),
             runtime: String::new(),
+            resource_ref: String::new(),
+            capacity: None,
             sandbox: None,
             max_results: None,
             output_schema: String::new(),

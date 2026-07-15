@@ -3885,6 +3885,15 @@ pub fn execute_server_flow(
     if let Some(base) = tool_base_url {
         registry.resolve_relative_endpoints(base);
     }
+    // §Fase 114.d — a tool on a `resource` derives its endpoint + concurrency from
+    // it (via the config resolver), governed exactly as an `axonstore` does (§113).
+    // Runs AFTER the base-URL pass so a resource-backed tool overrides the legacy
+    // slug resolution. `refused` tools (unresolvable endpoint) are dropped, so a
+    // dispatch of one fails honestly rather than reaching a phantom.
+    let _refused_tools = registry.resolve_from_resources(
+        &ir.resources,
+        &crate::resource_resolver::EnvResourceResolver,
+    );
     // §Fase 102 (D102.9) — stamp the dispatching tenant onto every scrape entry
     // (keys the §102.d adaptive-selector memory) + apply the per-tenant
     // proxy/concurrency overrides (§102.b). Request-scoped registry → no

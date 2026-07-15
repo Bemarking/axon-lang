@@ -164,15 +164,19 @@ async fn s2_endpoint_executes_a_step_against_a_mock_llm_server() {
     let mock_url = spawn_mock_llm().await;
     let app = build_router(server_cfg());
 
-    // The flow's step applies an HTTP streaming tool pointed at the
-    // local mock. Deploy → hit → the mock's tokens reach the wire.
-    let src = format!(
-        "tool MockLLM {{ provider: http runtime: \"{mock_url}\" \
-         effects: <stream:drop_oldest> }}\n\
-         flow Chat() -> Unit {{ step S {{ ask: \"hi\" apply: MockLLM }} }}\n\
-         axonendpoint E {{ public: true method: POST path: \"/llm\" execute: Chat \
-         backend: stub transport: sse }}"
-    );
+    // §Fase 114.c/d — the tool's channel is a governed `resource`, not a pinned
+    // URL. Pinning `runtime: "http://…"` is now `axon-T949` (the third island).
+    // The mock server's dynamic address lives in configuration exactly as a
+    // production endpoint does — the `resource.endpoint` config key resolved via
+    // `AXON_RESOURCE_<KEY>`, the same seam §113 established for `axonstore`.
+    std::env::set_var("AXON_RESOURCE_MOCK_LLM", &mock_url);
+    let src =
+        "resource MockLlm { kind: http  endpoint: mock.llm  capacity: 4 }\n\
+         tool MockLLM { provider: http  resource: MockLlm  effects: <stream:drop_oldest> }\n\
+         flow Chat() -> Unit { step S { ask: \"hi\" apply: MockLLM } }\n\
+         axonendpoint E { public: true method: POST path: \"/llm\" execute: Chat \
+         backend: stub transport: sse }"
+            .to_string();
     deploy(&app, &src).await;
 
     let h = hit(&app, "/llm", true).await;

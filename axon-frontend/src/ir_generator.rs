@@ -481,6 +481,7 @@ impl IRGenerator {
             filter_expr: n.filter_expr.clone(),
             timeout: n.timeout.clone(),
             runtime: n.runtime.clone(),
+            resource_ref: n.resource_ref.clone(),
             sandbox: n.sandbox,
             input_schema: Vec::new(),
             output_schema: String::new(),

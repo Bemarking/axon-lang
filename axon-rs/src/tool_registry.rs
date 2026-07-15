@@ -20,7 +20,7 @@ use std::collections::HashMap;
 
 use crate::emcp;
 use crate::http_tool;
-use crate::ir_nodes::IRToolSpec;
+use crate::ir_nodes::{IRResource, IRToolSpec};
 use crate::tool_executor::{self, ToolResult};
 
 // ── Tool entry ─────────────────────────────────────────────────────────────
@@ -32,6 +32,18 @@ pub struct ToolEntry {
     pub provider: String,
     pub timeout: String,
     pub runtime: String,
+    /// §Fase 114.c/d — the `resource` this tool's channel runs on. When set, the
+    /// tool's endpoint is DERIVED from `resource.endpoint` (a config key), and its
+    /// concurrency is bounded by `resource.capacity`. Empty ⇒ the legacy form
+    /// (slug `runtime:` joined onto a base URL).
+    pub resource_ref: String,
+    /// §Fase 114.d — the channel's concurrency bound (`resource.capacity`): at most
+    /// this many calls in flight against the resource. `None` ⇒ unbounded (the
+    /// legacy behaviour, and the state before §114 for every tool). This is the
+    /// semaphore's permit count; the semaphore itself is held across requests on
+    /// `ServerState`, keyed by resource — a per-request semaphore would reset every
+    /// time and bound nothing.
+    pub capacity: Option<u32>,
     pub sandbox: Option<bool>,
     pub max_results: Option<i64>,
     pub output_schema: String,
@@ -290,6 +302,8 @@ impl ToolRegistry {
                 provider: "native".to_string(),
                 timeout: String::new(),
                 runtime: String::new(),
+                resource_ref: String::new(),
+                capacity: None,
                 sandbox: None,
                 max_results: None,
                 output_schema: "number".to_string(),
@@ -313,6 +327,8 @@ impl ToolRegistry {
                 provider: "native".to_string(),
                 timeout: String::new(),
                 runtime: String::new(),
+                resource_ref: String::new(),
+                capacity: None,
                 sandbox: None,
                 max_results: None,
                 output_schema: String::new(),
@@ -355,6 +371,11 @@ impl ToolRegistry {
                     provider: spec.provider.clone(),
                     timeout: spec.timeout.clone(),
                     runtime: spec.runtime.clone(),
+                    // §Fase 114.c — the channel's resource (empty = legacy form).
+                    // Endpoint + capacity are DERIVED from it by
+                    // `resolve_from_resources` on the server path.
+                    resource_ref: spec.resource_ref.clone(),
+                    capacity: None,
                     sandbox: spec.sandbox,
                     max_results: spec.max_results,
                     output_schema: spec.output_schema.clone(),
@@ -406,6 +427,72 @@ impl ToolRegistry {
             }
             entry.runtime = resolve_tool_endpoint(&entry.runtime, &entry.name, base_url);
         }
+    }
+
+    /// §Fase 114.d — **the WIRE. A tool on a `resource` DERIVES its channel from it.**
+    ///
+    /// This is the sub-fase §114 exists for, and the trap the plan named in
+    /// advance: `tool { resource: R }` as a *label* — the reference resolving but
+    /// the tool still connecting through its own `runtime:` — would leave
+    /// `endpoint`, `capacity` and `lifetime` governing nothing. Technically wired,
+    /// hollow.
+    ///
+    /// So the reference does not merely point. When a tool names a resource:
+    ///
+    /// - its **endpoint** is the resolved `resource.endpoint` (a config key —
+    ///   `axon-T944`), with the tool's slug `runtime:` joined on as the path;
+    /// - its **capacity** is `resource.capacity` — the concurrency bound the
+    ///   [`ServerState`] semaphore enforces. Before §114 a tool had **no** bound;
+    ///   a `par` over N items opened N connections to a vendor that tolerated ten.
+    ///
+    /// An unresolvable endpoint REFUSES the tool (the entry is dropped and a
+    /// dispatch of it fails honestly), never a silent fallthrough to nowhere —
+    /// the §112/§113 deny-by-default posture.
+    ///
+    /// A tool with no `resource:` is untouched (the legacy `runtime:` path).
+    pub fn resolve_from_resources(
+        &mut self,
+        resources: &[IRResource],
+        resolver: &dyn crate::resource_resolver::ResourceResolver,
+    ) -> Vec<String> {
+        let mut refused = Vec::new();
+        for entry in self.tools.values_mut() {
+            if entry.resource_ref.is_empty() {
+                continue;
+            }
+            let Some(res) = resources.iter().find(|r| r.name == entry.resource_ref) else {
+                // axon-T950 refuses this at compile; reaching it here means a
+                // hand-built IR. Refuse rather than connect nowhere.
+                refused.push(entry.name.clone());
+                continue;
+            };
+            match resolver.resolve(&res.endpoint) {
+                Ok(addr) => {
+                    // The resolved address is the channel. A slug `runtime:` is a
+                    // PATH within it (`{addr}/{slug}`); an EMPTY `runtime:` means
+                    // the resource endpoint IS the address — not "invent a slug
+                    // from the tool name", which is the legacy base-URL default and
+                    // would append `/{ToolName}` to a resource the adopter pinned
+                    // exactly.
+                    let slug = entry.runtime.trim();
+                    entry.runtime = if slug.is_empty() {
+                        addr.clone()
+                    } else {
+                        resolve_tool_endpoint(slug, &entry.name, &addr)
+                    };
+                    entry.capacity = res.capacity.filter(|c| *c > 0).map(|c| c as u32);
+                }
+                Err(_) => {
+                    refused.push(entry.name.clone());
+                }
+            }
+        }
+        // Drop the refused tools: a channel whose address could not be resolved is
+        // a channel that does not exist, and a dispatch must not reach a phantom.
+        for name in &refused {
+            self.tools.remove(name);
+        }
+        refused
     }
 
     /// §Fase 102 (D102.9) — stamp the dispatching tenant + apply per-tenant
@@ -613,6 +700,7 @@ mod tests {
                 filter_expr: String::new(),
                 timeout: String::new(),
                 runtime: String::new(),
+                resource_ref: String::new(),
                 sandbox: None,
                 input_schema: Vec::new(),
                 output_schema: String::new(),
@@ -637,6 +725,7 @@ mod tests {
                 filter_expr: String::new(),
                 timeout: String::new(),
                 runtime: String::new(),
+                resource_ref: String::new(),
                 sandbox: None,
                 input_schema: Vec::new(),
                 output_schema: String::new(),
@@ -693,6 +782,8 @@ mod tests {
             provider: "http".to_string(),
             timeout: "10s".to_string(),
             runtime: String::new(),
+            resource_ref: String::new(),
+            capacity: None,
             sandbox: None,
             max_results: Some(5),
             output_schema: String::new(),
@@ -728,6 +819,7 @@ mod tests {
                 filter_expr: String::new(),
                 timeout: "10s".to_string(),
                 runtime: String::new(),
+                resource_ref: String::new(),
                 sandbox: None,
                 input_schema: Vec::new(),
                 output_schema: String::new(),
@@ -752,6 +844,7 @@ mod tests {
                 filter_expr: String::new(),
                 timeout: String::new(),
                 runtime: "python".to_string(),
+                resource_ref: String::new(),
                 sandbox: Some(true),
                 input_schema: Vec::new(),
                 output_schema: String::new(),
@@ -801,6 +894,8 @@ mod tests {
             provider: "stub".to_string(),
             timeout: String::new(),
             runtime: String::new(),
+            resource_ref: String::new(),
+            capacity: None,
             sandbox: None,
             max_results: None,
             output_schema: String::new(),
@@ -832,6 +927,8 @@ mod tests {
             provider: "some_unregistered_vendor".to_string(),
             timeout: "10s".to_string(),
             runtime: String::new(),
+            resource_ref: String::new(),
+            capacity: None,
             sandbox: None,
             max_results: Some(5),
             output_schema: String::new(),
@@ -863,6 +960,8 @@ mod tests {
             provider: "stub".to_string(),
             timeout: String::new(),
             runtime: String::new(),
+            resource_ref: String::new(),
+            capacity: None,
             sandbox: None,
             max_results: None,
             output_schema: String::new(),
@@ -936,6 +1035,8 @@ mod tests {
             provider: "http".to_string(),
             timeout: String::new(),
             runtime: "/crm/search".to_string(),
+            resource_ref: String::new(),
+            capacity: None,
             sandbox: None,
             max_results: None,
             output_schema: String::new(),
@@ -952,6 +1053,8 @@ mod tests {
             provider: "mcp".to_string(),
             timeout: String::new(),
             runtime: "fhir".to_string(),
+            resource_ref: String::new(),
+            capacity: None,
             sandbox: None,
             max_results: None,
             output_schema: String::new(),
@@ -968,6 +1071,8 @@ mod tests {
             provider: "http".to_string(),
             timeout: String::new(),
             runtime: "https://pinned.example.com/api".to_string(),
+            resource_ref: String::new(),
+            capacity: None,
             sandbox: None,
             max_results: None,
             output_schema: String::new(),
@@ -1007,6 +1112,8 @@ mod tests {
             provider: "http".to_string(),
             timeout: String::new(),
             runtime: "/x".to_string(),
+            resource_ref: String::new(),
+            capacity: None,
             sandbox: None,
             max_results: None,
             output_schema: String::new(),
@@ -1030,6 +1137,8 @@ mod tests {
             provider: "stub".to_string(),
             timeout: String::new(),
             runtime: String::new(),
+            resource_ref: String::new(),
+            capacity: None,
             sandbox: None,
             max_results: None,
             output_schema: String::new(),
@@ -1046,6 +1155,8 @@ mod tests {
             provider: "stub".to_string(),
             timeout: String::new(),
             runtime: String::new(),
+            resource_ref: String::new(),
+            capacity: None,
             sandbox: None,
             max_results: None,
             output_schema: String::new(),

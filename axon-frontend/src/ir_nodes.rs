@@ -806,6 +806,10 @@ pub struct IRToolSpec {
     pub filter_expr: String,
     pub timeout: String,
     pub runtime: String,
+    /// §Fase 114.c — the `resource` this tool's channel runs on. Empty ⇒ legacy
+    /// form. Skip-if-empty ⇒ every pre-§114 tool serializes byte-identically.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub resource_ref: String,
     pub sandbox: Option<bool>,
     pub input_schema: Vec<String>,
     pub output_schema: String,

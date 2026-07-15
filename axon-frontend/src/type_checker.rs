@@ -2933,6 +2933,60 @@ impl<'a> TypeChecker<'a> {
             );
         }
 
+        // ── §Fase 114.c — the CHANNEL is governed, not just the action ────────
+        //
+        // `tool.runtime` was the THIRD island (§113's census). An absolute
+        // `runtime: "https://api.vendor.com"` is used VERBATIM as the endpoint
+        // (`tool_registry.rs`), opening a real production connection with **no
+        // lifetime, no capacity, no shield, no certainty_floor** — and until now
+        // `check_tool` never looked at the field. A production URL in source, on
+        // the primitive whose neighbours (`upstream.resolve`, `tool.secret`) the
+        // language already forbids URLs on (`axon-T850`/`T902`).
+        //
+        // axon-T949 — an absolute `runtime:` URL is refused. The address of a
+        // channel lives on a `resource` (governed) or in per-tenant config (a
+        // slug joined onto a base URL), never as a literal in the program.
+        let rt = node.runtime.trim();
+        if rt.starts_with("http://") || rt.starts_with("https://") {
+            self.emit(
+                format!(
+                    "axon-T949 tool '{}' pins an absolute `runtime: \"{}\"` — a production URL in \
+                     source. That opens a real connection with no lifetime, no capacity, no \
+                     shield: the channel is ungoverned. Name a `resource` instead (`tool {} {{ \
+                     resource: <R> }}`), whose `endpoint` is a per-tenant config key (axon-T944), \
+                     and let `runtime:` name the PATH within it. URLs never appear in source — \
+                     the same law `axon-T850` enforces on `upstream.resolve` and `axon-T902` on \
+                     `tool.secret`.",
+                    node.name, node.runtime, node.name
+                ),
+                &node.loc,
+            );
+        }
+
+        // axon-T950 — a `resource:` names a DECLARED resource, and does not
+        // duplicate the channel address. `resource:` + an absolute `runtime:`
+        // would be the same fact twice (the islands defect); T949 already caught
+        // the URL, so here we only resolve the reference.
+        if !node.resource_ref.is_empty() {
+            match self.symbols.lookup(&node.resource_ref) {
+                None => self.emit(
+                    format!(
+                        "axon-T950 tool '{}' names resource '{}', which is not declared.",
+                        node.name, node.resource_ref
+                    ),
+                    &node.loc,
+                ),
+                Some(sym) if sym.kind != "resource" => self.emit(
+                    format!(
+                        "axon-T950 tool '{}' names '{}', which is a {}, not a resource.",
+                        node.name, node.resource_ref, sym.kind
+                    ),
+                    &node.loc,
+                ),
+                _ => {}
+            }
+        }
+
         // §Fase 84.c — Remote Hands technician-command laws (T858–T862). Inert
         // for any tool that does not set `target:`/`risk:`/`argv:`.
         self.check_technician_tool(node);

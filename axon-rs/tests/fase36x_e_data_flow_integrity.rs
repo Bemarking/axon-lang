@@ -64,6 +64,8 @@ fn echo_tool(name: &str) -> ToolEntry {
         provider: "stub_stream".into(),
         timeout: String::new(),
         runtime: String::new(),
+        resource_ref: String::new(),
+        capacity: None,
         sandbox: None,
         max_results: None,
         output_schema: String::new(),

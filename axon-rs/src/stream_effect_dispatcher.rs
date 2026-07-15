@@ -378,6 +378,7 @@ mod tests {
             filter_expr: String::new(),
             timeout: String::new(),
             runtime: String::new(),
+            resource_ref: String::new(),
             sandbox: None,
             effects: effects.map(|es| EffectRow {
                 effects: es.into_iter().map(String::from).collect(),
