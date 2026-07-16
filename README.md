@@ -1,47 +1,12 @@
 <p align="center">
-  <strong>AXON</strong> <em>v2.74.0</em><br>
-  The first formal cognitive language for AI — a 100% Rust + C23 native
-  runtime with <strong>Cognitive I/O</strong>, real-time streaming,
-  first-class HTTP endpoints, a four-pillar cognitive data plane, and
-  <strong>session-typed WebSocket dialogue</strong> as a cognitive primitive
-  (Caires–Pfenning linear-logic Curry–Howard).
+  <strong>AXON</strong> <em>v2.75.0</em><br>
+  Axon is the Cognitive Runtime for Enterprise Software.<br><br>
+  Build AI systems with deterministic execution, formal guarantees and
+  native cognitive primitives.
 </p>
 
 <p align="center">
-  <!-- Cognition primitives -->
-  <code>persona</code> · <code>intent</code> · <code>flow</code> · <code>reason</code> · <code>anchor</code> · <code>refine</code> · <code>memory</code> · <code>tool</code> · <code>probe</code> · <code>weave</code> · <code>validate</code> · <code>context</code> · <code>step</code> · <code>run</code><br>
-  <code>know</code> · <code>believe</code> · <code>speculate</code> · <code>doubt</code> · <code>par</code> · <code>hibernate</code><br>
-  <code>dataspace</code> · <code>ingest</code> · <code>focus</code> · <code>associate</code> · <code>aggregate</code> · <code>explore</code><br>
-  <code>type</code> · <code>json</code> · <code>ledger</code><br>
-  <code>deliberate</code> · <code>consensus</code> · <code>forge</code> · <code>agent</code> · <code>shield</code><br>
-  <code>savant</code> · <code>synth</code> · <code>warden</code> · <code>scope</code><br>
-  <code>stream</code> · <code>effects</code> · <code>@contract_tool</code> · <code>@csp_tool</code><br>
-  <code>pix</code> · <code>navigate</code> · <code>drill</code> · <code>trail</code> · <code>corpus</code><br>
-  <code>psyche</code> · <code>ots</code><br>
-  <code>mcp</code> · <code>mandate</code> · <code>lambda</code><br>
-  <code>budget</code> · <code>window</code> · <code>cors</code> · <code>document</code> · <code>deliver</code> · <code>notify</code><br>
-  <code>credential</code> · <code>mint</code> · <code>rotate</code><br>
-  <code>compute</code> · <code>grad</code> · <code>quant</code> · <code>observable</code><br>
-  <code>daemon</code> · <code>listen</code><br>
-  <code>channel</code> · <code>emit</code> · <code>publish</code> · <code>discover</code><br>
-  <code>axonendpoint</code> · <code>axpoint</code> · <code>axonstore</code><br>
-  <!-- Cognitive I/O & compliance (λ-L-E calculus, Phases 1–9) -->
-  <strong>Cognitive I/O:</strong>
-  <code>resource</code> · <code>fabric</code> · <code>manifest</code> · <code>observe</code> ·
-  <code>reconcile</code> · <code>lease</code> · <code>ensemble</code><br>
-  <code>topology</code> · <code>session</code> · <code>send</code> · <code>receive</code> · <code>select</code> · <code>branch</code> ·
-  <code>immune</code> · <code>reflex</code> · <code>heal</code> ·
-  <code>compliance</code><br>
-  <code>component</code> · <code>view</code><br>
-  <!-- Enterprise I/O capabilities (Fases 80–85) -->
-  <code>cache</code> · <code>voice</code> · <code>shell</code> · <code>path rewrite</code> · <code>PASETO</code><br>
-  <!-- NEW — Session-typed WebSocket dialogue (Fase 41, v2.3.0) -->
-  <strong>Session types (v2.3.0):</strong>
-  <code>socket</code> · <code>upstream</code> · <code>send T</code> · <code>receive T</code> · <code>select {ℓᵢ:…}</code> · <code>branch {ℓᵢ:…}</code> · <code>backpressure: credit(k)</code> · <code>reconnect: cognitive_state</code>
-</p>
-
-<p align="center">
-  <img src="https://img.shields.io/badge/version-v2.74.0-informational" alt="Version">
+  <img src="https://img.shields.io/badge/version-v2.75.0-informational" alt="Version">
   <img src="https://img.shields.io/badge/status-production-brightgreen" alt="Status: Production">
   <img src="https://img.shields.io/badge/runtime-100%25%20Rust%20%2B%20C23-orange" alt="100% Rust + C23">
   <img src="https://img.shields.io/badge/streaming-SSE%20%7C%20NDJSON%20%7C%20WebSocket-brightgreen" alt="Streaming">
@@ -57,11 +22,11 @@
 
 > **Two repositories, two version lines.** This repo (`axon-lang`,
 > AGPL-3.0-or-later, public) ships the **language + runtime + compiler + 7 LLM
-> backends + Cognitive I/O + WebSocket session types** — currently **v2.74.0**.
+> backends + Cognitive I/O + WebSocket session types** — currently **v2.75.0**.
 > The commercial control plane (`axon-enterprise`, EULA, private) layers
 > multi-tenant identity / RBAC / SSO / metering / audit / vertical compliance
 > **on top of** this language via a pinned Cargo dependency — currently
-> **v3.0.7**. The version numbers diverge by design (enterprise iterates on
+> **v3.92.0**. The version numbers diverge by design (enterprise iterates on
 > the SaaS surface independently of the language). If you don't run a
 > commercial Axon deployment, this repo is all you need; the badge above is
 > the only version that matters for you.
@@ -95,11 +60,11 @@ backpressure), and the compiler proves the two endpoints are duals
 (Caires–Pfenning linear-logic Curry–Howard); the runtime enforces every step,
 seals the residual cursor on disconnect for typed reconnection, and projects
 to W3C Server-Sent Events when the protocol is single-polarity. See
-[`docs/paper_websocket_cognitive_primitive.md`](docs/paper_websocket_cognitive_primitive.md).
+[`docs/papers/paper_websocket_cognitive_primitive.md`](docs/papers/paper_websocket_cognitive_primitive.md).
 
 It is **not** a Python library, a LangChain wrapper, a YAML DSL, or a Terraform
 replacement. It is a *new kind of calculus* — see
-[`docs/paper_lambda_lineal_epistemico.md`](docs/paper_lambda_lineal_epistemico.md)
+[`docs/papers/paper_lambda_lineal_epistemico.md`](docs/papers/paper_lambda_lineal_epistemico.md)
 for the formal semantics (Cálculo Lambda Lineal Epistémico).
 
 ---
@@ -120,8 +85,8 @@ error**, not a post-mortem finding.
 | `lease`     | τ-decaying affine capability; post-expiry use is a CT-2 *Anchor Breach* | Hybrid affine + revocation (D2) |
 | `ensemble`  | Byzantine quorum aggregator over N observations with common-knowledge fusion | Fagin–Halpern `Cφ` |
 | `topology` + `session` | Typed directed graph over declared entities with Honda–Vasconcelos duality + deadlock detection | π-calculus binary sessions |
-| `socket` (v2.3.0) | Session-typed WebSocket transport with credit-refined backpressure, typed reconnection via `cognitive_states`, SSE-as-fragment projection | Caires–Pfenning Curry–Howard + Rast credit-refined types ([paper_websocket_cognitive_primitive.md](docs/paper_websocket_cognitive_primitive.md)) |
-| `immune` + `reflex` + `heal` | KL-divergence anomaly sensor + O(1) signed-trace motor response + Linear-Logic one-shot patch FSM | Cognitive Immune System ([paper_immune_v2.md](docs/paper_immune_v2.md)) |
+| `socket` (v2.3.0) | Session-typed WebSocket transport with credit-refined backpressure, typed reconnection via `cognitive_states`, SSE-as-fragment projection | Caires–Pfenning Curry–Howard + Rast credit-refined types ([paper_websocket_cognitive_primitive.md](docs/papers/paper_websocket_cognitive_primitive.md)) |
+| `immune` + `reflex` + `heal` | KL-divergence anomaly sensor + O(1) signed-trace motor response + Linear-Logic one-shot patch FSM | Cognitive Immune System ([paper_immune_v2.md](docs/papers/paper_immune_v2.md)) |
 | `component` + `view` | Declarative UI with the **same** compile-time κ coverage rule — regulated types need a covering shield or the compiler rejects | Regulatory Type Theory (Fase 9) |
 
 ### Hard differentiators vs. Terraform / Pulumi / Kubernetes manifests
@@ -143,12 +108,12 @@ error**, not a post-mortem finding.
 
 The audit engine ships **108 mapped controls** across the four major external frameworks:
 
-- [SOC 2 Type II](docs/compliance/soc2_type_ii_control_mapping.md) — 31 TSC controls (CC + C + PI + P)
-- [ISO/IEC 27001:2022](docs/compliance/iso27001_control_mapping.md) — 41 Annex A controls
-- [FIPS 140-3 (CMVP)](docs/compliance/fips_140_3_submission_template.md) — 14 CAVP/FSM entries
-- [Common Criteria EAL 4+](docs/compliance/common_criteria_eal4_protocol.md) — 22 SFRs + SARs
+- **SOC 2 Type II** — 31 TSC controls (CC + C + PI + P)
+- **ISO/IEC 27001:2022** — 41 Annex A controls
+- **FIPS 140-3 (CMVP)** — 14 CAVP/FSM entries
+- **Common Criteria EAL 4+** — 22 SFRs + SARs
 
-Each framework has an operational runbook ([`docs/compliance/runbook_*.md`](docs/compliance/)) and a CI workflow ([`.github/workflows/audit_evidence.yml`](.github/workflows/audit_evidence.yml)) that emits the evidence ZIP on every release.
+Each framework has an operational runbook and an audit-evidence pipeline that emits the evidence bundle on every release.
 
 ### Try it in 30 seconds
 
@@ -179,9 +144,9 @@ Remove the `shield` line and `axon check` fails with *"endpoint 'Api' sends regu
 
 ### Academic references
 
-- [`docs/paper_lambda_lineal_epistemico.md`](docs/paper_lambda_lineal_epistemico.md) — λ-L-E calculus: Theorem 5.1 *Stochastic Degenerative Soundness*
-- [`docs/paper_immune_v2.md`](docs/paper_immune_v2.md) — Cognitive Immune System with red-teaming metrics (F1 ≥ 0.80 per class)
-- [`docs/paper_esk.md`](docs/paper_esk.md) — Regulatory Type Theory for Cognitive Systems (Theorems 10.1–10.5)
+- [`docs/papers/paper_lambda_lineal_epistemico.md`](docs/papers/paper_lambda_lineal_epistemico.md) — λ-L-E calculus: Theorem 5.1 *Stochastic Degenerative Soundness*
+- [`docs/papers/paper_immune_v2.md`](docs/papers/paper_immune_v2.md) — Cognitive Immune System with red-teaming metrics (F1 ≥ 0.80 per class)
+- [`docs/papers/paper_esk.md`](docs/papers/paper_esk.md) — Regulatory Type Theory for Cognitive Systems (Theorems 10.1–10.5)
 
 ---
 
@@ -400,7 +365,7 @@ const backends = await client.readResource("axon://backends");
 const prompt = await client.getPrompt("workflow:research", { question: "How does attention work?" });
 ```
 
-Full language specification: [docs/axon_language_specification.md](docs/axon_language_specification.md)
+Full language specification available on request.
 
 ---
 
@@ -700,9 +665,7 @@ unlike every prompt-based "creative mode," its novelty is **measured** (NCD) and
 > **Honest scope.** `forge` synthesizes a typed *concept/specification*, not a
 > rendered artifact; "novelty" is novelty-relative-to-the-obvious-baseline (a
 > computable proxy for the uncomputable Kolmogorov novelty), not a claim of
-> absolute unprecedentedness. See
-> [`docs/fase/fase_86_forge_creative_synthesis.md`](https://github.com/Bemarking/axon-lang)
-> for the full mathematics and deferred scope.
+> absolute unprecedentedness.
 
 ### V. Autonomous Goal-Seeking — the `agent` Primitive
 
@@ -4717,10 +4680,7 @@ axon-constructor/
 │   └── tests/                       # sanitizer-clean + valgrind-clean CI lanes
 ├── axon/                        # Python — thin PyPI wrapper (downloads + invokes the Rust binary)
 ├── examples/                    # Reference .axon programs (healthcare, banking, government…)
-├── docs/                        # Language spec, papers, adopter guides, plans vivos
-│   ├── ADOPTER_SESSION_TYPES.md     # §Fase 41 adopter guide
-│   ├── MIGRATION_v2.3.md            # v2.2.x → v2.3.0 migration recipes
-│   └── paper_websocket_cognitive_primitive.md  # The four-pillar Fase 41 paper
+├── docs/papers/                 # Academic papers (formal proofs, calculus, theorems)
 ├── sdk/                         # TypeScript MCP client SDK
 ├── tests/                       # Wrapper contract tests + CLI smoke tests
 └── .github/workflows/           # CI — per-fase test workflows + release pipelines
@@ -4811,7 +4771,6 @@ axon check program.axon
 # Multi-file diagnostic pass (v1.20.0+) — surfaces every parse error
 # across a whole corpus in one pass, with rustc-style source-context
 # blocks + "Did you mean X?" hints on typo'd keywords.
-# See docs/ADOPTER_DIAGNOSTICS.md for the full guide.
 axon parse src/                                # walk recursively
 axon parse "src/**/*.axon"                     # glob pattern
 axon parse src/ --json --format=ndjson         # IDE / LSP-friendly

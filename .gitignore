@@ -58,6 +58,12 @@ temp_*.txt
 # SDK (not part of this repo)
 sdk/
 
+# docs/ is internal working material (fase logs, vision drafts, adopter
+# upgrade notes, investor prep) — kept local, not published. Only the
+# academic papers stay public.
+/docs/*
+!/docs/papers/
+
 # Private internal know-how (plan vivos, design notes, vision docs).
 # These describe HOW we construct axon cycle-by-cycle — not part of the
 # public surface adopters depend on. Public guides for adopters live at

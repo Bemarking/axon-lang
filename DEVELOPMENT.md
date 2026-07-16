@@ -1,10 +1,10 @@
-# Development Guide — AXON v1.0.0
+# Development Guide — AXON
 
 ## Dual Repository Strategy
 
 This project uses **two GitHub repositories**:
 
-1. **`axon-lang`** (PUBLIC, MIT License)
+1. **`axon-lang`** (PUBLIC, AGPL-3.0-or-later + commercial dual-license)
    - URL: `git@github.com:Bemarking/axon-lang.git`
    - Contains: Core language, compiler, runtime, 7 LLM backends
    - Visibility: Open Source, GitHub public
@@ -131,7 +131,7 @@ git push origin master
 - Use commit messages that indicate **scope**: `feat(core):`, `feat(enterprise):`, `chore:`, `docs:`
 - Push to `origin` (public) frequently — drives community adoption
 - Push to `enterprise` only when it's intentional
-- Use tags for releases: `git tag -a v1.0.0 -m "Release v1.0.0"`
+- Use tags for releases: `git tag -a v2.75.0 -m "Release v2.75.0"`
 
 ### ❌ DON'T
 
@@ -177,7 +177,7 @@ git diff origin/master..HEAD --name-only
 ## Security Notes
 
 1. **Credentials**: Use GitHub secrets for API keys, never commit them
-2. **License**: Enterprise code is under commercial license, not MIT
+2. **License**: `axon-lang` is AGPL-3.0-or-later (dual-licensed commercially); enterprise code is under a separate commercial license
 3. **Access Control**: Only Bemarking AI team has access to axon-enterprise
 4. **Separation**: Enterprise features must be in separate modules/crates when possible
 
@@ -187,4 +187,4 @@ git diff origin/master..HEAD --name-only
 - For **enterprise questions**: Internal Bemarking AI channel
 
 ---
-Last updated: April 15, 2026 (Phase K v1.0.0)
+Last updated: July 16, 2026
