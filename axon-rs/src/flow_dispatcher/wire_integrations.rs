@@ -465,6 +465,7 @@ pub async fn run_emit(
                     // recoverable, but the emission itself is refused).
                     crate::shield_registry::ShieldVerdict::Reject { code, reason } => {
                         match crate::shield_registry::apply_on_breach(
+                            &ctx.tenant_id,
                             &node.shield_ref,
                             node.breach_policy.as_ref(),
                             &scanner,

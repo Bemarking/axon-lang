@@ -196,6 +196,7 @@ pub async fn run_shield_apply(
                 // with declared/sanitized content; `Halt` fails closed.
                 crate::shield_registry::ShieldVerdict::Reject { code, reason } => {
                     match crate::shield_registry::apply_on_breach(
+                        &ctx.tenant_id,
                         &node.shield_name,
                         node.breach_policy.as_ref(),
                         &scanner,

@@ -49,17 +49,21 @@ impl ShieldScanner for RejectNeedle {
     }
 }
 
-/// Records everything routed to it.
-struct CaptureSink(Arc<Mutex<Vec<String>>>);
+/// Records everything routed to it, including the tenant it was routed
+/// for — a DLQ sink over regulated content must see WHOSE content it is
+/// (the reason `BreachSink::route` carries `tenant_id`, mirroring
+/// `axon::scrape_tool::ScrapeAuditSink::record`).
+struct CaptureSink(Arc<Mutex<Vec<(String, String)>>>);
 impl BreachSink for CaptureSink {
     fn route(
         &self,
+        tenant_id: &str,
         _shield: &str,
         _code: &str,
         _reason: &str,
         candidate: &str,
     ) -> Result<(), String> {
-        self.0.lock().unwrap().push(candidate.to_string());
+        self.0.lock().unwrap().push((tenant_id.to_string(), candidate.to_string()));
         Ok(())
     }
 }
@@ -68,7 +72,10 @@ type EventRx =
     tokio::sync::mpsc::UnboundedReceiver<axon::flow_execution_event::FlowExecutionEvent>;
 fn ctx_with_payload(value: &str) -> (DispatchCtx, EventRx) {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut ctx = DispatchCtx::new("F", "stub", "", CancellationFlag::new(), tx);
+    // A concrete, non-empty tenant — proves tenant_id actually THREADS
+    // through apply_on_breach into the sink, not just an empty default.
+    let mut ctx = DispatchCtx::new("F", "stub", "", CancellationFlag::new(), tx)
+        .with_tenant_id("t-114w");
     ctx.let_bindings.insert("payload".to_string(), value.to_string());
     (ctx, rx)
 }
@@ -232,8 +239,8 @@ async fn quarantine_routes_to_the_sink_and_refuses() {
     }
     assert_eq!(
         captured.lock().unwrap().as_slice(),
-        &["SSN 123-45-6789".to_string()],
-        "the candidate must be RECOVERABLE from the sink"
+        &[("t-114w".to_string(), "SSN 123-45-6789".to_string())],
+        "the candidate must be RECOVERABLE from the sink, tagged with the ACQUIRING tenant"
     );
     assert!(
         ctx.let_bindings.get("__channel_Secure").is_none(),

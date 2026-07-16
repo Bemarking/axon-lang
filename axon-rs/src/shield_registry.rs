@@ -270,8 +270,22 @@ pub fn check_extension_scan_coverage(ir: &crate::ir_nodes::IRProgram) -> Result<
 pub trait BreachSink: Send + Sync {
     /// Persist the rejected candidate for later handling. An `Err` aborts
     /// into halt — a quarantine that cannot record must not pretend it did.
-    fn route(&self, shield_name: &str, code: &str, reason: &str, candidate: &str)
-        -> Result<(), String>;
+    ///
+    /// `tenant_id` is the acquiring tenant (mirrors
+    /// `axon::scrape_tool::ScrapeAuditSink::record`'s `tenant: &str` — a
+    /// process-global hook still needs the caller's tenant so a
+    /// multi-tenant sink can partition storage and RLS-scope its audit
+    /// witness). A sink over regulated content that cannot see WHOSE
+    /// content it is quarantining cannot honestly claim per-tenant
+    /// recovery or compliance segregation.
+    fn route(
+        &self,
+        tenant_id: &str,
+        shield_name: &str,
+        code: &str,
+        reason: &str,
+        candidate: &str,
+    ) -> Result<(), String>;
 }
 
 static BREACH_SINKS: LazyLock<RwLock<HashMap<String, Arc<dyn BreachSink>>>> =
@@ -364,6 +378,7 @@ fn mask_fields(value: &mut serde_json::Value, redact: &[String]) {
 /// `None` policy ⇒ `halt` (the fail-closed default, byte-identical to the
 /// pre-§114.w behaviour).
 pub fn apply_on_breach(
+    tenant_id: &str,
     shield_name: &str,
     policy: Option<&crate::ir_nodes::IRBreachPolicy>,
     scanner: &Arc<dyn ShieldScanner>,
@@ -382,10 +397,11 @@ pub fn apply_on_breach(
         // differs from halt by making the candidate RECOVERABLE (the DLQ
         // reading), never by letting it through.
         "quarantine" if policy.quarantine.is_empty() => halt(format!(
-            "{base} — `on_breach: quarantine` declares NO sink (axon-W012 warned at              compile); halting (fail-closed, the pre-114.w behaviour)"
+            "{base} — `on_breach: quarantine` declares NO sink (axon-W012 warned at \
+             compile); halting (fail-closed, the pre-114.w behaviour)"
         )),
         "quarantine" => match lookup_breach_sink(&policy.quarantine) {
-            Some(sink) => match sink.route(shield_name, code, reason, candidate) {
+            Some(sink) => match sink.route(tenant_id, shield_name, code, reason, candidate) {
                 Ok(()) => halt(format!(
                     "{base} — candidate quarantined to sink '{}' (recoverable; the \
                      emission itself is refused)",
@@ -407,7 +423,7 @@ pub fn apply_on_breach(
         },
         // Hand off to the escalation queue, then REFUSE (a human decides).
         "escalate" => match escalation_queue() {
-            Some(queue) => match queue.route(shield_name, code, reason, candidate) {
+            Some(queue) => match queue.route(tenant_id, shield_name, code, reason, candidate) {
                 Ok(()) => halt(format!(
                     "{base} — escalated to the escalation queue (a human decides; \
                      the emission itself is refused)"
