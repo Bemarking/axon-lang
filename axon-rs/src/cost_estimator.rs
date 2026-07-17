@@ -572,6 +572,7 @@ mod tests {
             synths: vec![],
             scopes: vec![],
             effects: vec![],
+            modules: vec![],
         };
 
         let pricing = PricingModel::default_sonnet();
@@ -652,6 +653,7 @@ mod tests {
             synths: vec![],
             scopes: vec![],
             effects: vec![],
+            modules: vec![],
         };
 
         let pricing = PricingModel::default_sonnet();
@@ -734,6 +736,7 @@ mod tests {
             synths: vec![],
             scopes: vec![],
             effects: vec![],
+            modules: vec![],
         };
 
         let pricing = PricingModel::default_sonnet();

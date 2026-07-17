@@ -805,7 +805,14 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
     //     (`shield`/`ots`/`mandate`/`compute` on a target, `run` as a
     //     flow-step): their doc home is the parent primitive's `.md`.
     //   - structural control flow — `if`/`for`/`let`/`return`/`break`/
-    //     `continue`/`import`: syntax, not primitives.
+    //     `continue`/`import`: syntax, not primitives. (§115 note: the
+    //     exclusion stays correct for `import` — it has no runtime
+    //     kernel — but as of the Rust EMS it is REAL syntax: the
+    //     compiler resolves it, T953/T954/T955 govern it, and the
+    //     README's §XVI section documents the subsystem. Through
+    //     v2.75.0 this exclusion quietly covered a statement nothing
+    //     resolved; the census exclusion was correct, the SILENCE
+    //     around the dead subsystem was the §115 finding.)
     //   - retracted constructs — `transact` (axon-T938) and
     //     `corroborate`: they parse only so the checker can teach the
     //     retraction; a retracted primitive is not an exposed one.

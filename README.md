@@ -18,6 +18,44 @@
   <img src="https://img.shields.io/badge/license-AGPL--3.0--or--later-lightgrey" alt="License">
 </p>
 
+<details>
+<summary align="center"><strong>Primitive census</strong> — every language construct advertised here is a <em>build input</em>: the compiler's anti-drift gate (<code>axon-frontend/src/advertised.rs</code>, §111/§114.z) parses this block at test time and fails the build unless each badge carries a human-attested statement of what its runtime actually does.</summary>
+
+<p align="center">
+  <!-- Cognition primitives -->
+  <code>persona</code> · <code>intent</code> · <code>flow</code> · <code>reason</code> · <code>anchor</code> · <code>refine</code> · <code>memory</code> · <code>tool</code> · <code>probe</code> · <code>weave</code> · <code>validate</code> · <code>context</code> · <code>step</code> · <code>run</code><br>
+  <code>know</code> · <code>believe</code> · <code>speculate</code> · <code>doubt</code> · <code>par</code> · <code>hibernate</code><br>
+  <code>dataspace</code> · <code>ingest</code> · <code>focus</code> · <code>associate</code> · <code>aggregate</code> · <code>explore</code><br>
+  <code>type</code> · <code>json</code> · <code>ledger</code><br>
+  <code>deliberate</code> · <code>consensus</code> · <code>forge</code> · <code>agent</code> · <code>shield</code><br>
+  <code>savant</code> · <code>synth</code> · <code>warden</code> · <code>scope</code><br>
+  <code>stream</code> · <code>effects</code> · <code>@contract_tool</code> · <code>@csp_tool</code><br>
+  <code>pix</code> · <code>navigate</code> · <code>drill</code> · <code>trail</code> · <code>corpus</code><br>
+  <code>psyche</code> · <code>ots</code><br>
+  <code>mcp</code> · <code>mandate</code> · <code>lambda</code><br>
+  <code>budget</code> · <code>window</code> · <code>cors</code> · <code>document</code> · <code>deliver</code> · <code>notify</code><br>
+  <code>credential</code> · <code>mint</code> · <code>rotate</code><br>
+  <code>compute</code> · <code>grad</code> · <code>quant</code> · <code>observable</code><br>
+  <code>daemon</code> · <code>listen</code><br>
+  <code>channel</code> · <code>emit</code> · <code>publish</code> · <code>discover</code><br>
+  <code>axonendpoint</code> · <code>axpoint</code> · <code>axonstore</code><br>
+  <!-- Cognitive I/O & compliance (λ-L-E calculus, Phases 1–9) -->
+  <strong>Cognitive I/O:</strong>
+  <code>resource</code> · <code>fabric</code> · <code>manifest</code> · <code>observe</code> ·
+  <code>reconcile</code> · <code>lease</code> · <code>ensemble</code><br>
+  <code>topology</code> · <code>session</code> · <code>send</code> · <code>receive</code> · <code>select</code> · <code>branch</code> ·
+  <code>immune</code> · <code>reflex</code> · <code>heal</code> ·
+  <code>compliance</code><br>
+  <code>component</code> · <code>view</code><br>
+  <!-- Enterprise I/O capabilities (Fases 80–85) -->
+  <code>cache</code> · <code>voice</code> · <code>shell</code> · <code>path rewrite</code> · <code>PASETO</code><br>
+  <!-- NEW — Session-typed WebSocket dialogue (Fase 41, v2.3.0) -->
+  <strong>Session types (v2.3.0):</strong>
+  <code>socket</code> · <code>upstream</code> · <code>send T</code> · <code>receive T</code> · <code>select {ℓᵢ:…}</code> · <code>branch {ℓᵢ:…}</code> · <code>backpressure: credit(k)</code> · <code>reconnect: cognitive_state</code>
+</p>
+
+</details>
+
 ---
 
 > **Two repositories, two version lines.** This repo (`axon-lang`,
@@ -3227,72 +3265,80 @@ flow DraftContract(terms: NegotiationTerms) -> ContractDocument {
 
 ---
 
-### XVI. Epistemic Module System — Separate Compilation for Cognitive Languages
+### XVI. Epistemic Module System — Separate Compilation and Linking for Cognitive Languages
 
 Every mainstream module system (OCaml, Haskell, Rust, Zig) solves the same problem:
 compile files independently, then link them. But none of them operate on *cognitive
 primitives* — and none validate epistemic guarantees across module boundaries.
 
-AXON's **Epistemic Module System (EMS)** synthesizes seven state-of-the-art paradigms
-into a single system designed for cognitive compilation units:
+AXON's **Epistemic Module System (EMS)** — rebuilt natively in Rust in §Fase 115
+(v2.76.0; the original Python implementation was retired with the Python frontend in
+Fase 39) — compiles a multi-file project in five phases: lexer-true import discovery
+over a Kahn-sorted DAG (an import cycle is refused naming its full path,
+`axon-T955`), per-module `.axi` interface generation, the Epistemic Compatibility
+Check, per-module validation in which imported names register with their exported
+kinds (`axon-T953`: every imported name must exist in the exporting module; no
+shadowing, ever), and a real **linker**: the modules merge at the AST tier, the full
+type checker revalidates the linked program once — so every deep semantic law the
+language has applies cross-module by construction — and the compiler emits ONE linked
+IR artifact carrying full declaration bodies plus per-module provenance
+(`content_hash` + `interface_hash` + source-map line windows per module). That linked
+IR is the same artifact shape the enterprise deploy path stores and re-hydrates.
 
-| Paradigm | Source | What AXON takes |
-|----------|--------|-----------------|
-| ML Signatures | OCaml (Leroy 2000) | **Cognitive Signatures** — interfaces that declare persona domains, anchor constraints, shield capabilities |
-| 1ML Unification | Rossberg (ICFP 2015) | **Unified namespace** — an imported persona IS a persona, no module-level wrappers |
-| Backpack Mixin Linking | Haskell (Kilpatrick et al. 2014) | **Two-phase compilation** — wiring diagram first, type-check against interfaces second |
-| `.hi` / `.cmi` Interface Files | GHC + OCaml | **`.axi` files** — compiled cognitive interfaces with content hashing for early cutoff |
-| Lazy Build DAG | Zig (Kelley 2024) | **Lazy resolution** — fast regex scan over `import` statements, no full parse needed |
-| Content-Addressed Cache | Nix (Dolstra 2006) + Bazel | **Hermetic builds** — `SHA-256(source + dependency_interfaces)` as cache key |
-| Crate Traits | Rust | **Cognitive behavioral contracts** — anchor sets as compile-time behavioral guarantees |
+The full design — the seven paradigms it synthesizes (OCaml signatures, 1ML
+unification, Backpack two-phase checking, GHC ABI hashes, Zig lazy discovery,
+Nix/Bazel content addressing, Rust behavioral contracts) and the theoretical
+guarantees — is the EMS paper: `docs/papers/paper_ems_axon.md`.
 
 #### The Novel Contribution: Epistemic Compatibility Checking (ECC)
 
-No existing module system validates *epistemic compatibility* across imports. EMS
-introduces the **Epistemic Floor** — each module carries a compile-time guarantee
-level (know > believe > doubt > speculate) derived from its content:
+No existing module system validates *epistemic compatibility* across imports. Each
+module carries a compile-time **epistemic floor** (know > believe > doubt >
+speculate) derived from its content — anchors ⇒ `know`, shields ⇒ `believe`, an
+epistemic block ⇒ its level; never from an annotation an author could forget:
 
 ```
 Module A (know-level: has anchors + factual constraints)
   └── imports from Module B (speculate-level: creative personas)
 
-  → ❌ COMPILE ERROR: epistemic conflict
-    "Module 'A' operates at know-level but imports speculate-level
-     definitions from 'B'. Explicit @allow_downgrade required."
+  → ❌ axon-T954: epistemic conflict — a know-level module cannot
+     silently depend on speculate-level definitions. Either raise the
+     imported module's floor or acknowledge with `@allow_downgrade`
+     (which downgrades the error to a VISIBLE axon-W017 warning —
+     an acknowledged downgrade is never a silent one).
 ```
 
 **Why this matters**: A medical diagnosis flow (`know`-level, anchored with
 `NoHallucination`) that silently imports from a creative writing module
 (`speculate`-level) would execute speculative reasoning where factual rigor was
-expected. No linter, test, or traditional type system catches this. EMS catches
-it at compile time.
+expected. No linter, test, or traditional type system catches this. The ECC catches
+it at compile time — `axon check --strict` escalates the warnings for CI.
 
 #### `.axi` Interface Files — The Cognitive `.cmi`
 
-Each `.axon` file compiles to a `.axi` (AXON Interface) containing only the
-public surface — names, types, and constraints — never prompt text or step logic:
+Each module compiles to a `.axi` (AXON Interface) under `.axon_cache/interfaces/`,
+containing only the public surface — names, kinds, and constraint hashes — never
+prompt text or step logic. Two hashes enable GHC-style **early cutoff**:
 
-```json
-{
-  "module_path": ["axon", "security"],
-  "epistemic_floor": "know",
-  "personas": { "Guardian": { "domain": ["security"], "tone": "strict" } },
-  "anchors": { "NoHallucination": { "constraint_hash": "a7f3...", "on_violation": "raise" } }
-}
-```
-
-Two hashes enable GHC-style **early cutoff**:
 - `content_hash` = SHA-256(source) — changes on any edit
-- `interface_hash` = SHA-256(`.axi`) — changes only when the public surface changes
+- `interface_hash` = SHA-256(public surface) — changes only when the surface changes
 
-If a developer adds a comment to `security.axon`, the `content_hash` changes but
-the `interface_hash` stays identical → downstream modules **skip recompilation**.
+Add a comment (or edit a step body) in `security.axon`: its `content_hash` changes,
+its `interface_hash` doesn't → dependents **skip re-validation** (observable in the
+cache stats, and sound because per-module validation consumes only interface facts —
+all body resolution happens at link time). The cache is content-addressed, writes
+atomically, self-heals from source if corrupted, and a compiler upgrade busts it
+wholesale.
 
 #### Backwards Compatible: Zero Breaking Changes
 
-When no `ModuleRegistry` is provided, the compiler behaves identically to before.
-Single-file compilation is unchanged. EMS is additive — 151 existing tests pass
-without modification alongside 34 new EMS-specific tests (185 total).
+A program with no `import` statements never engages the EMS: single-file compilation
+is byte-identical to v2.75.0, including its IR JSON (the new `IRImport` fields and
+the provenance block are skip-serialized at their defaults). The suite pinning all of
+this is `fase115_a`–`g` across `axon-frontend/tests/` and `axon-rs/tests/` — 34
+integration tests plus the per-module unit suites, including the paper's own
+two-file example compiling end-to-end and the anti-stub proof (an imported flow's
+steps survive the link).
 
 ---
 

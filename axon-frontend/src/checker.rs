@@ -94,6 +94,18 @@ pub fn run_check(
         }
     };
 
+    // ── 1.b §Fase 115.g — the EMS engages when the entry declares any
+    // import. One statement means module semantics were requested; the
+    // refused forms then refuse loudly (D115.9) instead of staying
+    // decorative as they did through v2.75.0.
+    if crate::ems::source_declares_imports(&source, file) {
+        let manifest_owned = match load_manifest(schemas_dir, &filename, &c) {
+            Ok(m) => m,
+            Err(code) => return code,
+        };
+        return run_check_ems(path, &filename, strict, manifest_owned.as_ref(), &c);
+    }
+
     // ── 2. Lex ───────────────────────────────────────────────────
     let tokens = match Lexer::new(&source, file).tokenize() {
         Ok(t) => t,
@@ -149,20 +161,9 @@ pub fn run_check(
     // forms (b) `manifest_ref` and (c) `env_var` exactly as they do
     // for form (a) inline. Without the flag, behavior is byte-
     // identical to v1.38.3 (D5 backwards-compat absolute).
-    let manifest_owned: Option<crate::store_schema_manifest::Manifest> = match schemas_dir {
-        Some(path) if !path.trim().is_empty() => {
-            match crate::store_schema_manifest::load_and_merge_manifests(Path::new(path)) {
-                Ok(m) => Some(m),
-                Err(e) => {
-                    eprintln!(
-                        "{}X {filename}{}  schemas-dir load error: {e}",
-                        c.red_bold, c.reset
-                    );
-                    return 1;
-                }
-            }
-        }
-        _ => None,
+    let manifest_owned = match load_manifest(schemas_dir, &filename, &c) {
+        Ok(m) => m,
+        Err(code) => return code,
     };
     let (type_errors, type_warnings) = match &manifest_owned {
         Some(m) => TypeChecker::with_manifest(&program, m).check_with_warnings(),
@@ -229,4 +230,121 @@ pub fn run_check(
     );
 
     0
+}
+
+/// §Fase 38.x.d — load + merge the `--schemas-dir` manifests (shared by
+/// the single-file path and the §115 EMS path). `Err(exit_code)` when the
+/// directory fails to load.
+fn load_manifest(
+    schemas_dir: Option<&str>,
+    filename: &str,
+    c: &Colors,
+) -> Result<Option<crate::store_schema_manifest::Manifest>, i32> {
+    match schemas_dir {
+        Some(path) if !path.trim().is_empty() => {
+            match crate::store_schema_manifest::load_and_merge_manifests(Path::new(path)) {
+                Ok(m) => Ok(Some(m)),
+                Err(e) => {
+                    eprintln!(
+                        "{}X {filename}{}  schemas-dir load error: {e}",
+                        c.red_bold, c.reset
+                    );
+                    Err(1)
+                }
+            }
+        }
+        _ => Ok(None),
+    }
+}
+
+/// §Fase 115.g — `axon check` over a multi-module project. Same exit
+/// contract as the single-file path (0 clean · 1 diagnostics); the
+/// report gains a module count, and every diagnostic names its FILE
+/// (module-local line) because the compilation spans several.
+fn run_check_ems(
+    entry: &Path,
+    filename: &str,
+    strict: bool,
+    manifest: Option<&crate::store_schema_manifest::Manifest>,
+    c: &Colors,
+) -> i32 {
+    let opts = crate::ems::EmsOptions {
+        modules_root: std::env::var("AXON_MODULES_ROOT").ok().map(Into::into),
+        use_cache: true,
+        cache_dir: None,
+    };
+
+    let base = |origin: &str| -> String {
+        Path::new(origin)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| origin.to_string())
+    };
+
+    match crate::ems::compile_project_with_manifest(entry, &opts, manifest) {
+        Err(fail) => {
+            eprintln!(
+                "{}X {filename}{}  {} error(s){}",
+                c.red_bold,
+                c.reset,
+                fail.errors.len(),
+                if fail.warnings.is_empty() {
+                    String::new()
+                } else {
+                    format!(", {} warning(s)", fail.warnings.len())
+                }
+            );
+            for e in &fail.errors {
+                eprintln!("  error [{} line {}]: {}", base(&e.file), e.line, e.message);
+            }
+            for w in &fail.warnings {
+                eprintln!("  warning [{} line {}]: {}", base(&w.file), w.line, w.message);
+            }
+            1
+        }
+        Ok(out) => {
+            if strict && !out.warnings.is_empty() {
+                eprintln!(
+                    "{}X {filename}{}  0 errors, {} warning(s) {}(--strict){}",
+                    c.red_bold,
+                    c.reset,
+                    out.warnings.len(),
+                    c.red_bold,
+                    c.reset,
+                );
+                for w in &out.warnings {
+                    eprintln!("  error [{} line {}]: {}", base(&w.file), w.line, w.message);
+                }
+                return 1;
+            }
+            if !out.warnings.is_empty() {
+                println!(
+                    "{}\u{26A0}{} {}{filename}{}  {}{} tokens \u{00B7} {} declarations \u{00B7} {} modules \u{00B7} 0 errors \u{00B7} {} warning(s){}",
+                    c.yellow_bold, c.reset,
+                    c.bold, c.reset,
+                    c.dim,
+                    out.token_count,
+                    out.declaration_count,
+                    out.module_count,
+                    out.warnings.len(),
+                    c.reset,
+                );
+                for w in &out.warnings {
+                    println!("  warning [{} line {}]: {}", base(&w.file), w.line, w.message);
+                }
+                return 0;
+            }
+            println!(
+                "{}\u{2713}{} {}{filename}{}  {}{} tokens \u{00B7} {} declarations \u{00B7} {} modules \u{00B7} 0 errors{}",
+                c.green_bold, c.reset,
+                c.bold, c.reset,
+                c.dim,
+                out.token_count,
+                out.declaration_count,
+                out.module_count,
+                c.reset,
+            );
+            0
+        }
+    }
 }

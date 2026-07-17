@@ -18,9 +18,19 @@
 pub use axon_frontend::{
     ast,
     checker,
+    // §Fase 115 — the Epistemic Module System (resolver · interfaces ·
+    // ECC · linker · cache · driver). Re-exported so the CLI and the
+    // enterprise workspace reach the module pipeline through the single
+    // `axon = …` dep, exactly like the rest of the frontend.
+    compilation_cache,
+    ems,
     epistemic,
+    epistemic_compat,
     ir_generator,
     ir_nodes,
+    module_interface,
+    module_linker,
+    module_resolver,
     legal_basis,
     lexer,
     parser,

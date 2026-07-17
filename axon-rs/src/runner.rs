@@ -4479,57 +4479,92 @@ pub fn run_run(
         }
     };
 
-    // ── 2. Lex ───────────────────────────────────────────────────
-    let tokens = match Lexer::new(&source, file).tokenize() {
-        Ok(t) => t,
-        Err(LexerError { message, line, column }) => {
-            let loc = if column > 0 {
-                format!(":{line}:{column}")
-            } else {
-                format!(":{line}")
-            };
+    // ── 2–5. Compile: EMS when imports are declared (§Fase 115.g),
+    // the classic single-file pipeline otherwise.
+    let ir_program = if axon_frontend::ems::source_declares_imports(&source, file) {
+        let opts = axon_frontend::ems::EmsOptions {
+            modules_root: std::env::var("AXON_MODULES_ROOT").ok().map(Into::into),
+            use_cache: true,
+            cache_dir: None,
+        };
+        let base = |origin: &str| -> String {
+            Path::new(origin)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| origin.to_string())
+        };
+        match axon_frontend::ems::compile_project(path, &opts) {
+            Err(fail) => {
+                eprintln!(
+                    "{}  {} error(s)",
+                    c(&format!("✗ {filename}"), "\x1b[1;31m", use_color),
+                    fail.errors.len()
+                );
+                for e in &fail.errors {
+                    eprintln!("  error [{} line {}]: {}", base(&e.file), e.line, e.message);
+                }
+                return 1;
+            }
+            Ok(out) => {
+                for w in &out.warnings {
+                    eprintln!("  warning [{} line {}]: {}", base(&w.file), w.line, w.message);
+                }
+                out.ir
+            }
+        }
+    } else {
+        // ── 2. Lex ───────────────────────────────────────────────
+        let tokens = match Lexer::new(&source, file).tokenize() {
+            Ok(t) => t,
+            Err(LexerError { message, line, column }) => {
+                let loc = if column > 0 {
+                    format!(":{line}:{column}")
+                } else {
+                    format!(":{line}")
+                };
+                eprintln!(
+                    "{}  {message}",
+                    c(&format!("✗ {filename}{loc}"), "\x1b[1;31m", use_color)
+                );
+                return 1;
+            }
+        };
+
+        // ── 3. Parse ─────────────────────────────────────────────
+        let mut parser = Parser::new(tokens);
+        let program = match parser.parse() {
+            Ok(p) => p,
+            Err(ParseError { message, line, column, .. }) => {
+                let loc = if column > 0 {
+                    format!(":{line}:{column}")
+                } else {
+                    format!(":{line}")
+                };
+                eprintln!(
+                    "{}  {message}",
+                    c(&format!("✗ {filename}{loc}"), "\x1b[1;31m", use_color)
+                );
+                return 1;
+            }
+        };
+
+        // ── 4. Type check ────────────────────────────────────────
+        let type_errors = TypeChecker::new(&program).check();
+        if !type_errors.is_empty() {
             eprintln!(
-                "{}  {message}",
-                c(&format!("✗ {filename}{loc}"), "\x1b[1;31m", use_color)
+                "{}  {} type error(s)",
+                c(&format!("✗ {filename}"), "\x1b[1;31m", use_color),
+                type_errors.len()
             );
+            for te in &type_errors {
+                eprintln!("  error [line {}]: {}", te.line, te.message);
+            }
             return 1;
         }
+
+        // ── 5. Generate IR ───────────────────────────────────────
+        IRGenerator::new().generate(&program)
     };
-
-    // ── 3. Parse ─────────────────────────────────────────────────
-    let mut parser = Parser::new(tokens);
-    let program = match parser.parse() {
-        Ok(p) => p,
-        Err(ParseError { message, line, column, .. }) => {
-            let loc = if column > 0 {
-                format!(":{line}:{column}")
-            } else {
-                format!(":{line}")
-            };
-            eprintln!(
-                "{}  {message}",
-                c(&format!("✗ {filename}{loc}"), "\x1b[1;31m", use_color)
-            );
-            return 1;
-        }
-    };
-
-    // ── 4. Type check ────────────────────────────────────────────
-    let type_errors = TypeChecker::new(&program).check();
-    if !type_errors.is_empty() {
-        eprintln!(
-            "{}  {} type error(s)",
-            c(&format!("✗ {filename}"), "\x1b[1;31m", use_color),
-            type_errors.len()
-        );
-        for te in &type_errors {
-            eprintln!("  error [line {}]: {}", te.line, te.message);
-        }
-        return 1;
-    }
-
-    // ── 5. Generate IR ───────────────────────────────────────────
-    let ir_program = IRGenerator::new().generate(&program);
 
     // ── 6. Build execution plan ──────────────────────────────────
     let units = build_execution_plan(&ir_program, backend);

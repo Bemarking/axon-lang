@@ -1,0 +1,56 @@
+---
+name: module_imports
+title: Multi-file project with the Epistemic Module System (§115)
+summary: Splits a program across two files — a know-level security module and a consulting entry that imports it — resolved, epistemically checked (ECC) and linked by the EMS into one deployable artifact.
+topic: composition
+primitives:
+  - persona
+  - anchor
+  - flow
+  - run
+---
+
+// The Epistemic Module System (EMS, §Fase 115): `import` resolves for
+// real. `axon check consultation.axon` discovers the DAG, generates
+// `.axi` interfaces, runs the Epistemic Compatibility Check (a
+// know-level module importing speculate-level definitions is
+// axon-T954; acknowledge deliberately with `@allow_downgrade`), links
+// the modules and emits ONE IR artifact with per-module provenance.
+//
+// Shown inline below as the two on-disk files. Laws to know:
+//   · imports are selective — `import a.b` alone is refused (axon-T953)
+//   · an imported name may not be shadowed, ever (axon-T953)
+//   · import cycles are refused naming the full path (axon-T955)
+//   · module path maps to a file: axon.security → axon/security.axon
+
+// ── File: axon/security.axon ─────────────────────────────────────────
+// Anchors make this module know-level: its importers inherit a real
+// guarantee, checked at compile time.
+
+persona Expert {
+  domain: ["medicine", "diagnostics"]
+  tone: precise
+  confidence_threshold: 0.9
+}
+
+anchor NoHallucination {
+  require: source_citation
+  confidence_floor: 0.75
+  on_violation: raise AnchorBreachError
+}
+
+// ── File: consultation.axon (the entry) ──────────────────────────────
+
+import axon.security.{Expert, NoHallucination}
+
+flow Consultation(symptoms: Document) -> DiagnosticReport {
+  step Diagnose {
+    given: symptoms
+    ask: "Diagnose the patient's symptoms"
+    output: DiagnosticReport
+  }
+}
+
+run Consultation(case_file)
+  as Expert
+  constrained_by [NoHallucination]

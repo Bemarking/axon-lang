@@ -2238,6 +2238,35 @@ impl Parser {
             self.consume(TokenType::RBrace)?;
         }
 
+        // ── §Fase 115.c — the `@allow_downgrade` ECC valve ───────────────
+        //
+        // `import a.b.{X} @allow_downgrade` acknowledges an epistemic
+        // downgrade across this edge (see `epistemic_compat.rs`). The
+        // annotation position is unambiguous: no top-level declaration
+        // begins with `@`, so an `@` here belongs to this import — and an
+        // unknown annotation is refused with the fix in the message
+        // rather than surfacing later as an opaque parse error.
+        let mut allow_downgrade = false;
+        if self.check(TokenType::At) {
+            let at_tok = self.current().clone();
+            self.advance();
+            let ident = self.consume(TokenType::Identifier)?;
+            if ident.value == "allow_downgrade" {
+                allow_downgrade = true;
+            } else {
+                return Err(ParseError {
+                    message: format!(
+                        "unknown import annotation '@{}' — the only import annotation is \
+                         `@allow_downgrade` (the §115 epistemic-downgrade acknowledgment).",
+                        ident.value
+                    ),
+                    line: at_tok.line,
+                    column: at_tok.column,
+                    ..Default::default()
+                });
+            }
+        }
+
         // ── §Fase 111 — `apx` is RETRACTED ───────────────────────────────
         //
         // `import X with apx { … }` used to parse and then call
@@ -2265,7 +2294,8 @@ impl Parser {
                           dependency manager exists: no MEC/PCC verification, no EPR ranking, no \
                           quarantine, no compliance gate. Declaring it verified nothing while \
                           implying your supply chain was checked. Remove the `with apx { … }` \
-                          clause; the plain `import` is unaffected."
+                          clause; the plain `import` resolves through the §115 Epistemic Module \
+                          System."
                     .to_string(),
                 line: tok.line,
                 column: tok.column,
@@ -2276,6 +2306,7 @@ impl Parser {
         Ok(ImportNode {
             module_path: path_parts,
             names,
+            allow_downgrade,
             loc,
             leading_trivia: Vec::new(),
             trailing_trivia: Vec::new(),

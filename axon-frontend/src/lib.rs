@@ -98,6 +98,21 @@ pub mod multiparty;
 /// question no linter can decide.
 pub mod advertised;
 pub mod primitive_registry;
+
+// §Fase 115 — the Epistemic Module System, rebuilt natively in Rust
+// (docs/papers/paper_ems_axon.md). The retired Python EMS (v0.23.0,
+// gone since Fase 39) advertised separate compilation the Rust toolchain
+// never had: `import` parsed, lowered, and resolved NOTHING. §115 makes
+// it real — and goes one phase further: the LINKER exists, so a
+// multi-module program executes. Pure modules, zero new deps (SHA-256 is
+// the §38 hand-rolled `sha256_hex`); in-memory-first so the LSP and the
+// enterprise bundle loader resolve without a filesystem.
+pub mod compilation_cache;
+pub mod ems;
+pub mod epistemic_compat;
+pub mod module_interface;
+pub mod module_linker;
+pub mod module_resolver;
 pub use primitive_registry::{
     by_category, coverage_summary, find as find_primitive, with_status, CoverageSummary,
     DocStatus, PrimitiveInfo, PRIMITIVE_REGISTRY,

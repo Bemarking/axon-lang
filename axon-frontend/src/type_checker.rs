@@ -1005,6 +1005,30 @@ pub struct TypeChecker<'a> {
     /// API and the mediated `rotate` commit) and by the §94.b `rotate`
     /// target rule (`axon-T898`: `rotate` targets ONLY a secrets store).
     secrets_backed_stores: std::collections::HashSet<String>,
+    /// §Fase 115.d — the Epistemic Module System's per-module check
+    /// context. `None` (every pre-§115 caller) ⇒ behavior byte-identical
+    /// to v2.75.0: imports stay inert. `Some` ⇒ **module mode**: imported
+    /// names REGISTER in the symbol table with their exported kinds (so
+    /// all 71 `symbols.lookup` reference sites resolve), and the
+    /// `axon-T953` import laws fire (selective required · `@scope`
+    /// reserved · module exists · every name exported · no collision).
+    module_ctx: Option<&'a ModuleCheckContext>,
+    /// §Fase 115.d — names registered FROM imports (name → (kind, dotted
+    /// source module)), so a colliding local declaration gets the branded
+    /// `axon-T953` collision law instead of the generic duplicate message.
+    imported_symbols: std::collections::BTreeMap<String, (String, String)>,
+}
+
+/// §Fase 115.d — what the type-checker's module mode needs to know about
+/// the rest of the project: every resolved module's exports. Built by the
+/// EMS driver (`crate::ems`) from the Phase-1 interfaces.
+#[derive(Debug, Default)]
+pub struct ModuleCheckContext {
+    /// Dotted module path → (export name → symbol-table kind).
+    pub modules: std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<String, String>,
+    >,
 }
 
 // ── §Fase 70.b — static type inference for the pure expression engine ─────────
@@ -1225,7 +1249,17 @@ impl<'a> TypeChecker<'a> {
             current_epistemic_mode: String::new(),
             emitted_channels: std::collections::HashSet::new(),
             secrets_backed_stores: std::collections::HashSet::new(),
+            module_ctx: None,
+            imported_symbols: std::collections::BTreeMap::new(),
         }
+    }
+
+    /// §Fase 115.d — enter module mode: imported names will register in
+    /// the symbol table and the `axon-T953` import laws fire. Without
+    /// this call, behavior is byte-identical to v2.75.0 (backwards-compat
+    /// absolute — the EMS engages only when an entry declares imports).
+    pub fn set_module_context(&mut self, ctx: &'a ModuleCheckContext) {
+        self.module_ctx = Some(ctx);
     }
 
     /// §Fase 38.x.d (D2) — construct a TypeChecker that consults the
@@ -1260,6 +1294,8 @@ impl<'a> TypeChecker<'a> {
             current_epistemic_mode: String::new(),
             emitted_channels: std::collections::HashSet::new(),
             secrets_backed_stores: std::collections::HashSet::new(),
+            module_ctx: None,
+            imported_symbols: std::collections::BTreeMap::new(),
         }
     }
 
@@ -1524,6 +1560,51 @@ impl<'a> TypeChecker<'a> {
     // ── Phase 1: registration ────────────────────────────────────
 
     fn register_declarations(&mut self, decls: &[Declaration]) {
+        // §Fase 115.d — module mode: register imported names FIRST, with
+        // their exported kinds, so (a) every `symbols.lookup` reference
+        // site resolves an imported symbol exactly like a local one, and
+        // (b) a local declaration reusing an imported name collides
+        // against the import (the D115.5 no-shadowing law, branded
+        // `axon-T953` in the flush loop below). Names the module does
+        // not export register nothing here — the validation pass owns
+        // that diagnostic (`check_import_laws`).
+        if let Some(ctx) = self.module_ctx {
+            for decl in decls {
+                let Declaration::Import(n) = decl else { continue };
+                if n.names.is_empty() {
+                    continue; // non-selective — refused in validation
+                }
+                let dotted = n.module_path.join(".");
+                let Some(exports) = ctx.modules.get(&dotted) else {
+                    continue; // unresolved module — refused in validation
+                };
+                for name in &n.names {
+                    let Some(kind) = exports.get(name) else {
+                        continue; // not exported — refused in validation
+                    };
+                    if let Some(prev) = self.imported_symbols.get(name) {
+                        let (_, prev_module) = prev.clone();
+                        if prev_module != dotted {
+                            self.emit(
+                                format!(
+                                    "axon-T953 import collision: '{}' is imported from both \
+                                     '{}' and '{}'. A name has exactly one provider — alias \
+                                     support does not exist; import it from one module only.",
+                                    name, prev_module, dotted
+                                ),
+                                &n.loc,
+                            );
+                        }
+                        continue;
+                    }
+                    if self.symbols.declare(name, kind, n.loc.line).is_none() {
+                        self.imported_symbols
+                            .insert(name.clone(), (kind.clone(), dotted.clone()));
+                    }
+                }
+            }
+        }
+
         // Collect registrations first to avoid borrow conflict
         let mut registrations: Vec<(String, String, u32, Loc)> = Vec::new();
 
@@ -2050,6 +2131,20 @@ impl<'a> TypeChecker<'a> {
         }
 
         for (name, kind, line, loc) in registrations {
+            // §Fase 115.d — a local declaration reusing an IMPORTED name is
+            // the D115.5 collision law, branded so the fix is in the message.
+            if let Some((imp_kind, imp_module)) = self.imported_symbols.get(&name) {
+                let (imp_kind, imp_module) = (imp_kind.clone(), imp_module.clone());
+                self.emit(
+                    format!(
+                        "axon-T953 '{}' collides with the {} imported from '{}'. There is no \
+                         shadowing: rename the local {} or drop the import.",
+                        name, imp_kind, imp_module, kind
+                    ),
+                    &loc,
+                );
+                continue;
+            }
             if let Some(err) = self.symbols.declare(&name, &kind, line) {
                 self.emit(err, &loc);
             }
@@ -2245,8 +2340,10 @@ impl<'a> TypeChecker<'a> {
                 // {effects,scan}, no-shadowing of canonical bases/categories,
                 // provenance-class members, valid default_confidence range).
                 Declaration::Extension(_) => {}
-                Declaration::Import(_)
-                | Declaration::Type(_)
+                // §Fase 115.d — module mode fires the import laws; without
+                // a module context an import stays inert (v2.75.0 parity).
+                Declaration::Import(n) => self.check_import_laws(n),
+                Declaration::Type(_)
                 | Declaration::Let(_)
                 | Declaration::Generic(_) => {}
             }
@@ -2254,6 +2351,78 @@ impl<'a> TypeChecker<'a> {
     }
 
     // ── Per-construct checks ─────────────────────────────────────
+
+    /// §Fase 115.d — the `axon-T953` import laws (module mode only):
+    ///
+    /// 1. **Selective import required.** `import a.b` without a `{…}`
+    ///    selector is `#include` wearing a module system's clothes — it
+    ///    would flood the namespace (the EMS paper's own §1.3 argument).
+    /// 2. **`@scope` reserved.** The scoped form parses but has no
+    ///    resolution semantics yet; it is refused loudly rather than
+    ///    granted invented directory semantics (the §111 posture — a form
+    ///    that parses but does nothing must refuse, not stay silent).
+    /// 3. **Module exists.** Defense-in-depth: the resolver normally
+    ///    refuses first with the searched path; this covers embedded
+    ///    callers that assemble their own context (the enterprise bundle).
+    /// 4. **Every imported name is exported** by the named module — with
+    ///    the module's real export list in the message.
+    fn check_import_laws(&mut self, node: &crate::ast::ImportNode) {
+        let Some(ctx) = self.module_ctx else { return };
+
+        if node.module_path.first().map(|s| s.starts_with('@')).unwrap_or(false) {
+            self.emit(
+                format!(
+                    "axon-T953 `import {}` uses the @scope form, which is RESERVED for a \
+                     future package registry and resolves to nothing today. Import a \
+                     project module by its root-relative path instead.",
+                    node.module_path.join(".")
+                ),
+                &node.loc,
+            );
+            return;
+        }
+        if node.names.is_empty() {
+            self.emit(
+                format!(
+                    "axon-T953 selective import required: `import {}` names nothing and \
+                     would flood the namespace. Name what you need: `import {}.{{A, B}}`.",
+                    node.module_path.join("."),
+                    node.module_path.join(".")
+                ),
+                &node.loc,
+            );
+            return;
+        }
+        let dotted = node.module_path.join(".");
+        let Some(exports) = ctx.modules.get(&dotted) else {
+            self.emit(
+                format!(
+                    "axon-T953 module '{}' is not part of this compilation (expected file \
+                     '{}').",
+                    dotted,
+                    node.module_path.join("/") + ".axon"
+                ),
+                &node.loc,
+            );
+            return;
+        };
+        for name in &node.names {
+            if !exports.contains_key(name) {
+                let mut available: Vec<&str> =
+                    exports.keys().map(String::as_str).collect();
+                available.sort_unstable();
+                self.emit(
+                    format!(
+                        "axon-T953 module '{}' does not export '{}'. Its exports: [{}].",
+                        dotted,
+                        name,
+                        available.join(", ")
+                    ),
+                    &node.loc,
+                );
+            }
+        }
+    }
 
     fn check_persona(&mut self, node: &PersonaDefinition) {
         if !node.tone.is_empty() && !is_valid(&node.tone, VALID_TONES) {
@@ -11720,7 +11889,13 @@ impl<'a> TypeChecker<'a> {
     // ── Type reference validation (epistemic lattice) ──────────────
 
     /// Verify that a type name is either built-in or user-defined.
-    /// Soft check: unknown types are silently accepted (may come from imports).
+    /// Soft check: unknown types are silently accepted — the house
+    /// ad-hoc-type idiom (D115.6). §Fase 115 note: this leniency is NO
+    /// LONGER justified by "may come from imports" — imports are real now
+    /// (module mode registers them), and an *explicitly imported* type is
+    /// verified against its module's exports (`axon-T953`). Free type
+    /// names stay soft because they are idiom, not because a phantom
+    /// mechanism might provide them.
     // ── §Fase 73.a — the `Json<T>` shape-lens well-formedness pass ──
     //
     // Open `Json` (no shape) is the always-total, always-honest default
@@ -12011,7 +12186,8 @@ impl<'a> TypeChecker<'a> {
         {
             return true;
         }
-        // Soft: unknown types accepted silently (may be from imports)
+        // Soft: unknown types accepted silently — house idiom (D115.6),
+        // not the phantom-import excuse §115 retired.
         true
     }
 

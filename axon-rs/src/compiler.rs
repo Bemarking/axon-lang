@@ -48,6 +48,46 @@ pub fn run_compile(
         }
     };
 
+    // ── 1.b §Fase 115.g — a source with imports compiles through the
+    // EMS: resolve → interfaces → ECC → link → ONE IR over the linked
+    // program (module provenance included). The emitted JSON is the
+    // deployable multi-module artifact.
+    if axon_frontend::ems::source_declares_imports(&source, file) {
+        let opts = axon_frontend::ems::EmsOptions {
+            modules_root: std::env::var("AXON_MODULES_ROOT").ok().map(Into::into),
+            use_cache: true,
+            cache_dir: None,
+        };
+        let base = |origin: &str| -> String {
+            Path::new(origin)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| origin.to_string())
+        };
+        return match axon_frontend::ems::compile_project(path, &opts) {
+            Err(fail) => {
+                eprintln!(
+                    "{}  {} error(s)",
+                    c(&format!("X {filename}"), "\x1b[1;31m", use_color),
+                    fail.errors.len()
+                );
+                for e in &fail.errors {
+                    eprintln!("  error [{} line {}]: {}", base(&e.file), e.line, e.message);
+                }
+                for w in &fail.warnings {
+                    eprintln!("  warning [{} line {}]: {}", base(&w.file), w.line, w.message);
+                }
+                1
+            }
+            Ok(out) => {
+                for w in &out.warnings {
+                    eprintln!("  warning [{} line {}]: {}", base(&w.file), w.line, w.message);
+                }
+                emit_ir_json(&out.ir, file, backend, output, stdout, use_color)
+            }
+        };
+    }
+
     // ── 2. Lex ───────────────────────────────────────────────────
     let tokens = match Lexer::new(&source, file).tokenize() {
         Ok(t) => t,
@@ -100,8 +140,22 @@ pub fn run_compile(
     // ── 5. Generate IR ───────────────────────────────────────────
     let ir_program = IRGenerator::new().generate(&program);
 
-    // ── 6. Serialize to JSON ─────────────────────────────────────
-    let mut ir_value = serde_json::to_value(&ir_program).unwrap_or(serde_json::Value::Null);
+    // ── 6+7. Serialize + emit (shared with the §115 EMS path) ────
+    emit_ir_json(&ir_program, file, backend, output, stdout, use_color)
+}
+
+/// Steps 6–7 of `axon compile`: attach `_meta`, serialize, and write to
+/// stdout or the output file. Shared by the single-file path and the
+/// §Fase 115 multi-module path (one emission, one shape).
+fn emit_ir_json(
+    ir_program: &axon_frontend::ir_nodes::IRProgram,
+    file: &str,
+    backend: &str,
+    output: Option<&str>,
+    stdout: bool,
+    use_color: bool,
+) -> i32 {
+    let mut ir_value = serde_json::to_value(ir_program).unwrap_or(serde_json::Value::Null);
 
     // Add _meta
     if let serde_json::Value::Object(ref mut map) = ir_value {
@@ -115,7 +169,6 @@ pub fn run_compile(
 
     let ir_json = serde_json::to_string_pretty(&ir_value).unwrap_or_default();
 
-    // ── 7. Output ────────────────────────────────────────────────
     if stdout {
         println!("{ir_json}");
     } else {

@@ -98,6 +98,11 @@ pub struct IRGenerator {
     /// the policy rides `IRShieldApplyStep` / `IREmit` regardless of
     /// declaration order.
     shield_policies: HashMap<String, crate::ir_nodes::IRBreachPolicy>,
+    /// §Fase 115.e — dotted module path → `.axi` interface hash for every
+    /// module the EMS resolved in this compilation. Empty (every pre-§115
+    /// caller) ⇒ `visit_import` lowers exactly as in v2.75.0 (the new
+    /// `IRImport` fields stay at their skip-serialized defaults).
+    import_resolution: std::collections::BTreeMap<String, String>,
 }
 
 impl IRGenerator {
@@ -117,7 +122,20 @@ impl IRGenerator {
             channel_shields: HashMap::new(),
             resource_channels: HashMap::new(),
             shield_policies: HashMap::new(),
+            import_resolution: std::collections::BTreeMap::new(),
         }
+    }
+
+    /// §Fase 115.e — supply the EMS resolution map (dotted module path →
+    /// interface hash) so every `IRImport` this generation lowers carries
+    /// `resolved: true` + its module's interface hash. Called by the EMS
+    /// driver (`crate::ems`) on the linked program; no other caller needs it.
+    pub fn with_import_resolution(
+        mut self,
+        resolution: std::collections::BTreeMap<String, String>,
+    ) -> Self {
+        self.import_resolution = resolution;
+        self
     }
 
     /// §Fase 77.b (Phase 0) — record every declared shield's non-empty
@@ -478,12 +496,22 @@ impl IRGenerator {
     // ── Visitors ─────────────────────────────────────────────────
 
     fn visit_import(&self, n: &ImportNode) -> IRImport {
+        // §Fase 115.e — when the EMS driver supplied a resolution map, the
+        // lowered import carries the proof it resolved (+ against WHICH
+        // interface). Without a map both fields stay at their defaults and
+        // are skip-serialized — v2.75.0 byte parity.
+        let interface_hash = self
+            .import_resolution
+            .get(&n.module_path.join("."))
+            .cloned();
         IRImport {
             node_type: "import",
             source_line: n.loc.line,
             source_column: n.loc.column,
             module_path: n.module_path.clone(),
             names: n.names.clone(),
+            resolved: interface_hash.is_some(),
+            interface_hash,
         }
     }
 

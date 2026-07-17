@@ -213,6 +213,91 @@ pub enum Declaration {
     Generic(GenericDeclaration),
 }
 
+/// §Fase 115.b — the named surface of a declaration: `(name, kind, loc)`,
+/// or `None` for the statement-like declarations that do not bind a
+/// referenceable top-level name (`import` / `run` / `let` / the epistemic
+/// block wrapper, whose body registers recursively).
+///
+/// # Parity contract
+///
+/// The `kind` strings here MUST match the kinds the type-checker's
+/// `register_declarations` assigns (that is what `TypeChecker::lookup`
+/// compares against when a `run` / reference names the symbol). The match
+/// below is deliberately **exhaustive — no wildcard arm** — so adding a
+/// `Declaration` variant without deciding its export surface is a compile
+/// error, not a silent gap in the module system.
+pub fn declaration_surface(decl: &Declaration) -> Option<(String, String, Loc)> {
+    match decl {
+        Declaration::Import(_)
+        | Declaration::Run(_)
+        | Declaration::Let(_)
+        | Declaration::Epistemic(_) => None,
+        Declaration::Persona(n) => Some((n.name.clone(), "persona".into(), n.loc.clone())),
+        Declaration::Context(n) => Some((n.name.clone(), "context".into(), n.loc.clone())),
+        Declaration::Anchor(n) => Some((n.name.clone(), "anchor".into(), n.loc.clone())),
+        Declaration::Memory(n) => Some((n.name.clone(), "memory".into(), n.loc.clone())),
+        Declaration::Tool(n) => Some((n.name.clone(), "tool".into(), n.loc.clone())),
+        Declaration::Type(n) => Some((n.name.clone(), "type".into(), n.loc.clone())),
+        Declaration::Flow(n) => Some((n.name.clone(), "flow".into(), n.loc.clone())),
+        Declaration::Intent(n) => Some((n.name.clone(), "intent".into(), n.loc.clone())),
+        Declaration::LambdaData(n) => Some((n.name.clone(), "lambda_data".into(), n.loc.clone())),
+        Declaration::Agent(n) => Some((n.name.clone(), "agent".into(), n.loc.clone())),
+        Declaration::Shield(n) => Some((n.name.clone(), "shield".into(), n.loc.clone())),
+        Declaration::Window(n) => Some((n.name.clone(), "window".into(), n.loc.clone())),
+        Declaration::Budget(n) => Some((n.name.clone(), "budget".into(), n.loc.clone())),
+        Declaration::Pix(n) => Some((n.name.clone(), "pix".into(), n.loc.clone())),
+        Declaration::Ledger(n) => Some((n.name.clone(), "ledger".into(), n.loc.clone())),
+        Declaration::Psyche(n) => Some((n.name.clone(), "psyche".into(), n.loc.clone())),
+        Declaration::Corpus(n) => Some((n.name.clone(), "corpus".into(), n.loc.clone())),
+        Declaration::Dataspace(n) => Some((n.name.clone(), "dataspace".into(), n.loc.clone())),
+        Declaration::Ots(n) => Some((n.name.clone(), "ots".into(), n.loc.clone())),
+        Declaration::Mandate(n) => Some((n.name.clone(), "mandate".into(), n.loc.clone())),
+        Declaration::Compute(n) => Some((n.name.clone(), "compute".into(), n.loc.clone())),
+        Declaration::Daemon(n) => Some((n.name.clone(), "daemon".into(), n.loc.clone())),
+        Declaration::AxonStore(n) => Some((n.name.clone(), "axonstore".into(), n.loc.clone())),
+        Declaration::AxonEndpoint(n) => {
+            Some((n.name.clone(), "axonendpoint".into(), n.loc.clone()))
+        }
+        Declaration::Extension(n) => Some((n.name.clone(), "extension".into(), n.loc.clone())),
+        Declaration::Resource(n) => Some((n.name.clone(), "resource".into(), n.loc.clone())),
+        Declaration::Fabric(n) => Some((n.name.clone(), "fabric".into(), n.loc.clone())),
+        Declaration::Manifest(n) => Some((n.name.clone(), "manifest".into(), n.loc.clone())),
+        Declaration::Observe(n) => Some((n.name.clone(), "observe".into(), n.loc.clone())),
+        Declaration::Reconcile(n) => Some((n.name.clone(), "reconcile".into(), n.loc.clone())),
+        Declaration::Lease(n) => Some((n.name.clone(), "lease".into(), n.loc.clone())),
+        Declaration::Ensemble(n) => Some((n.name.clone(), "ensemble".into(), n.loc.clone())),
+        Declaration::Session(n) => Some((n.name.clone(), "session".into(), n.loc.clone())),
+        Declaration::Topology(n) => Some((n.name.clone(), "topology".into(), n.loc.clone())),
+        Declaration::Immune(n) => Some((n.name.clone(), "immune".into(), n.loc.clone())),
+        Declaration::Reflex(n) => Some((n.name.clone(), "reflex".into(), n.loc.clone())),
+        Declaration::Heal(n) => Some((n.name.clone(), "heal".into(), n.loc.clone())),
+        Declaration::Component(n) => Some((n.name.clone(), "component".into(), n.loc.clone())),
+        Declaration::View(n) => Some((n.name.clone(), "view".into(), n.loc.clone())),
+        Declaration::Channel(n) => Some((n.name.clone(), "channel".into(), n.loc.clone())),
+        Declaration::Socket(n) => Some((n.name.clone(), "socket".into(), n.loc.clone())),
+        Declaration::Upstream(n) => Some((n.name.clone(), "upstream".into(), n.loc.clone())),
+        Declaration::Voice(n) => Some((n.name.clone(), "voice".into(), n.loc.clone())),
+        Declaration::Cors(n) => Some((n.name.clone(), "cors".into(), n.loc.clone())),
+        Declaration::Cache(n) => Some((n.name.clone(), "cache".into(), n.loc.clone())),
+        Declaration::Savant(n) => Some((n.name.clone(), "savant".into(), n.loc.clone())),
+        Declaration::Synth(n) => Some((n.name.clone(), "synth".into(), n.loc.clone())),
+        Declaration::Scope(n) => Some((n.name.clone(), "scope".into(), n.loc.clone())),
+        Declaration::Credential(n) => Some((n.name.clone(), "credential".into(), n.loc.clone())),
+        Declaration::Observable(n) => Some((n.name.clone(), "observable".into(), n.loc.clone())),
+        Declaration::Witness(n) => Some((n.name.clone(), "witness".into(), n.loc.clone())),
+        Declaration::Document(n) => Some((n.name.clone(), "document".into(), n.loc.clone())),
+        Declaration::Deliver(n) => Some((n.name.clone(), "deliver".into(), n.loc.clone())),
+        Declaration::Notify(n) => Some((n.name.clone(), "notify".into(), n.loc.clone())),
+        Declaration::Generic(n) => {
+            if n.name.is_empty() {
+                None
+            } else {
+                Some((n.name.clone(), n.keyword.clone(), n.loc.clone()))
+            }
+        }
+    }
+}
+
 // ── §Fase 99 — Native Document Synthesis ─────────────────────────────────────
 
 /// §Fase 99.b — a declarative document. `target:` picks the serializer
@@ -2096,6 +2181,11 @@ pub struct AxonEndpointDefinition {
 pub struct ImportNode {
     pub module_path: Vec<String>,
     pub names: Vec<String>,
+    /// §Fase 115.c — the `@allow_downgrade` ECC valve: acknowledges an
+    /// epistemic downgrade across this import edge (silences `axon-W017`,
+    /// downgrades `axon-T954` to a *visible* `axon-W017`). `false` for
+    /// every import written before §115.
+    pub allow_downgrade: bool,
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia attached to this declaration
     /// (comments preceding the declaration's first token, since the

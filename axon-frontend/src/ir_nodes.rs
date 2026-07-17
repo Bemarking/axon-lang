@@ -190,6 +190,36 @@ pub struct IRProgram {
     /// Rust runtime (axon-rs/src/effects/) consumes the JSON IR
     /// emitted by Python.
     pub effects: Vec<IREffectDeclaration>,
+    /// §Fase 115.e — per-module provenance of a LINKED program: for every
+    /// module the linker merged, its path, origin file, both EMS hashes and
+    /// the virtual-line window its declarations occupy (the driver renumbers
+    /// each module's lines by a base offset so diagnostics and IR
+    /// `source_line`s stay globally unambiguous — map back with
+    /// `line − line_base`). `skip_serializing_if = empty` keeps every
+    /// single-file program's IR JSON byte-identical (zero IR-SHA drift —
+    /// the standing §76.d discipline).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub modules: Vec<IRModuleProvenance>,
+}
+
+/// §Fase 115.e — one linked module's provenance record: the audit chain
+/// from a deployed multi-module artifact back to its sources.
+#[derive(Debug, Serialize, Clone)]
+pub struct IRModuleProvenance {
+    /// Dotted module path (`axon.security`).
+    pub module: String,
+    /// Display origin (file path or bundle key).
+    pub origin: String,
+    /// SHA-256 of the module's source bytes.
+    pub content_hash: String,
+    /// SHA-256 of the module's `.axi` interface (comment-stable).
+    pub interface_hash: String,
+    /// First virtual line assigned to this module by the link renumbering.
+    pub line_base: u32,
+    /// Number of source lines the module occupies.
+    pub line_count: u32,
+    /// The module's exported declaration names (deterministic order).
+    pub declarations: Vec<String>,
 }
 
 impl IRProgram {
@@ -254,6 +284,7 @@ impl IRProgram {
             synths: Vec::new(),
             scopes: Vec::new(),
             effects: Vec::new(),
+            modules: Vec::new(),
         }
     }
 }
@@ -708,6 +739,20 @@ pub struct IRImport {
     pub source_column: u32,
     pub module_path: Vec<String>,
     pub names: Vec<String>,
+    /// §Fase 115.e — `true` iff the EMS resolved this import against a
+    /// module in the compilation (the fields this paper-era struct always
+    /// promised). Skipped when `false` so every pre-§115 program's IR
+    /// JSON stays byte-identical (zero IR-SHA drift).
+    #[serde(default, skip_serializing_if = "ir_import_unresolved")]
+    pub resolved: bool,
+    /// §Fase 115.e — the resolved module's `.axi` interface hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interface_hash: Option<String>,
+}
+
+/// Serde helper: skip `resolved` while it is `false`.
+fn ir_import_unresolved(resolved: &bool) -> bool {
+    !*resolved
 }
 
 // ── Persona ──────────────────────────────────────────────────────────────────
