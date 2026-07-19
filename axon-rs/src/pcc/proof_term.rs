@@ -349,6 +349,15 @@ pub enum PropertyClass {
     /// content reach an agent's beliefs unscanned is refuted BEFORE deploy.
     /// Program-wide, 0-or-1 proof; no scrape tool → no proof.
     ScrapeProvenanceSoundness,
+    /// §116.a (D116.9) — for a program declaring any tool with a non-empty
+    /// `requires:`, re-derives the `axon-T956` scope-coverage invariant the
+    /// type-checker proved: every `use` of a scope-declaring tool is covered by
+    /// the program's GRANTED set (∪ `credential.grants` §92 ∪ endpoint/daemon
+    /// `requires_capabilities` §51.x/§52.d). A stored/hand-edited IR that adds a
+    /// tool-use requiring an ungranted scope — or strips the credential that
+    /// granted it — is REFUTED before deploy. Program-wide, 0-or-1 proof; no
+    /// scope-declaring tool → no proof.
+    ScopeCoverageSoundness,
     /// §99.d — for a program declaring any `document`, re-derives the §99.d
     /// egress invariants the type-checker proved: every document's `target` is
     /// in the catalog (T910); a document binding `sensitive:*` carries a
@@ -465,6 +474,7 @@ impl PropertyClass {
             PropertyClass::CredentialAttenuation => "credential_attenuation",
             PropertyClass::SecretCustodySoundness => "secret_custody_soundness",
             PropertyClass::ScrapeProvenanceSoundness => "scrape_provenance_soundness",
+            PropertyClass::ScopeCoverageSoundness => "scope_coverage_soundness",
             PropertyClass::DocumentProvenanceSoundness => "document_provenance_soundness",
             PropertyClass::DeliveryProvenanceSoundness => "delivery_provenance_soundness",
             PropertyClass::QuerySafetySoundness => "query_safety_soundness",
@@ -1246,6 +1256,27 @@ pub struct ScrapeProvenanceSoundnessWitness {
     pub unshielded_flows: Vec<String>,
 }
 
+/// §116.a (D116.9) — witness for [`PropertyClass::ScopeCoverageSoundness`], one
+/// per program (the authorization laws are whole-module). The checker RE-DERIVES
+/// every field from `ir.tools` + `ir.credentials` + `ir.endpoints` + `ir.daemons`
+/// + `ir.flows` and rejects on disagreement. A verifying proof has
+/// `uncovered_uses` empty.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScopeCoverageSoundnessWitness {
+    /// `(tool_name, sorted required scopes)` for every tool declaring a
+    /// non-empty `requires:`, source order.
+    pub scoped_tools: Vec<(String, Vec<String>)>,
+    /// The program's GRANTED capability set (sorted, deduped): the union of
+    /// every `credential.grants` and every endpoint/daemon `requires:`
+    /// capability. The scopes the program has DECLARED it holds.
+    pub granted: Vec<String>,
+    /// `(flow, tool, missing_scope)` for every `use` whose required scope the
+    /// granted set does not cover (`axon-T956`, re-derived), canonical order. A
+    /// hand-edited IR that smuggles in an unauthorized operation is REFUTED
+    /// before it mounts. Empty for a verifying proof.
+    pub uncovered_uses: Vec<(String, String, String)>,
+}
+
 /// §99.d — witness for [`PropertyClass::DocumentProvenanceSoundness`], one per
 /// program (the egress laws are whole-module). The checker RE-DERIVES every
 /// field from `ir.documents` and rejects on disagreement. A verifying proof has
@@ -1429,6 +1460,8 @@ pub enum Witness {
     CredentialAttenuation(CredentialAttenuationWitness),
     SecretCustodySoundness(SecretCustodySoundnessWitness),
     ScrapeProvenanceSoundness(ScrapeProvenanceSoundnessWitness),
+    /// §Fase 116.a.
+    ScopeCoverageSoundness(ScopeCoverageSoundnessWitness),
     DocumentProvenanceSoundness(DocumentProvenanceSoundnessWitness),
     DeliveryProvenanceSoundness(DeliveryProvenanceSoundnessWitness),
     QuerySafetySoundness(QuerySafetySoundnessWitness),
@@ -1487,6 +1520,7 @@ impl Witness {
             // §94.e — program-wide property, no single named subject.
             Witness::SecretCustodySoundness(_) => "<program>",
             Witness::ScrapeProvenanceSoundness(_) => "<program>",
+            Witness::ScopeCoverageSoundness(_) => "<program>",
             Witness::DocumentProvenanceSoundness(_) => "<program>",
             Witness::DeliveryProvenanceSoundness(_) => "<program>",
             Witness::QuerySafetySoundness(_) => "<program>",

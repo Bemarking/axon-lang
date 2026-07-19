@@ -72,6 +72,8 @@ pub use generate::{
     // §Fase 98.d — the web-acquisition provenance obligation (born-Untrusted
     // + the content-injection barrier).
     derive_scrape_provenance_soundness_witness, generate_scrape_provenance_soundness_proofs,
+    // §Fase 116.a — the authorization scope-coverage obligation (axon-T956 twin).
+    derive_scope_coverage_soundness_witness, generate_scope_coverage_soundness_proofs,
     derive_document_provenance_soundness_witness, generate_document_provenance_soundness_proofs,
     // §Fase 105 — the CRM-delivery provenance obligation (T920 egress barrier).
     derive_delivery_provenance_soundness_witness, generate_delivery_provenance_soundness_proofs,

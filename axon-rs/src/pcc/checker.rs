@@ -156,6 +156,9 @@ pub fn check_proof(proof: &ProofTerm, ir: &IRProgram) -> CheckOutcome {
         (PropertyClass::ScrapeProvenanceSoundness, Witness::ScrapeProvenanceSoundness(w)) => {
             check_scrape_provenance_soundness(w, ir)
         }
+        (PropertyClass::ScopeCoverageSoundness, Witness::ScopeCoverageSoundness(w)) => {
+            check_scope_coverage_soundness(w, ir)
+        }
         (PropertyClass::DocumentProvenanceSoundness, Witness::DocumentProvenanceSoundness(w)) => {
             check_document_provenance_soundness(w, ir)
         }
@@ -1713,6 +1716,45 @@ fn check_scrape_provenance_soundness(
                 "axon-T908 content-injection barrier: flow(s) feed web content to an agent's \
                  beliefs with no shield: {:?}",
                 actual.unshielded_flows
+            ),
+        };
+    }
+    CheckOutcome::Verified
+}
+
+/// §116.a (D116.9) — verify a [`ScopeCoverageSoundnessWitness`]. The checker
+/// independently RE-DERIVES the whole-program scope coverage from `ir.tools` +
+/// `ir.credentials` + `ir.endpoints` + `ir.daemons` + `ir.flows` and rejects on:
+/// a forged/stale witness, or any `use` of a scope-declaring tool whose required
+/// scope the program's granted set does not cover (`axon-T956`) — a hand-edited
+/// IR that smuggles in an unauthorized operation, or strips the granting
+/// credential, is refuted BEFORE it mounts.
+fn check_scope_coverage_soundness(
+    claimed: &super::proof_term::ScopeCoverageSoundnessWitness,
+    ir: &IRProgram,
+) -> CheckOutcome {
+    let actual = match super::generate::derive_scope_coverage_soundness_witness(ir) {
+        Some(w) => w,
+        None => {
+            return CheckOutcome::Refuted {
+                reason: "no scope-coverage contract exists in this artifact (no tool declares \
+                         `requires:`) — forged or stale proof"
+                    .to_string(),
+            }
+        }
+    };
+    if actual != *claimed {
+        return CheckOutcome::Refuted {
+            reason: "witness disagrees with artifact re-derivation (forged or stale proof)"
+                .to_string(),
+        };
+    }
+    if !actual.uncovered_uses.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axon-T956 scope coverage: tool use(s) require a scope the program's granted set \
+                 does not cover (flow, tool, missing_scope): {:?}",
+                actual.uncovered_uses
             ),
         };
     }

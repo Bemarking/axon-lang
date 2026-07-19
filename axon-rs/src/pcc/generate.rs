@@ -28,7 +28,7 @@ use super::proof_term::{
     GradientSoundnessWitness, NotificationProvenanceSoundnessWitness,
     QuerySafetySoundnessWitness,
     InferredCeilingSoundnessWitness,
-    ScrapeProvenanceSoundnessWitness, WardenSoundnessWitness,
+    ScopeCoverageSoundnessWitness, ScrapeProvenanceSoundnessWitness, WardenSoundnessWitness,
     ShieldHaltGuaranteeWitness, TechnicianCommandSafetyWitness, ToolCallSoundnessWitness,
     UpstreamProjectionSoundnessWitness, Witness,
     CALL_INTERRUPT_CAUSES, MAX_RETRIES, VALID_BREACH_POLICIES, VALID_BUDGET_PERIODS,
@@ -2671,6 +2671,111 @@ pub fn generate_scrape_provenance_soundness_proofs(
     }
 }
 
+// ── §Fase 116.a (D116.9) — ScopeCoverageSoundness ────────────────────────────
+
+/// §116.a — accumulate every tool-use name over an `IRFlow`'s step tree (mirror
+/// of the frontend flow walk; recurses `Conditional`/`ForIn` bodies).
+fn collect_tool_uses(steps: &[crate::ir_nodes::IRFlowNode], out: &mut Vec<String>) {
+    use crate::ir_nodes::IRFlowNode;
+    for step in steps {
+        match step {
+            IRFlowNode::UseTool(u) => out.push(u.tool_name.clone()),
+            IRFlowNode::Conditional(c) => {
+                collect_tool_uses(&c.then_body, out);
+                collect_tool_uses(&c.else_body, out);
+            }
+            IRFlowNode::ForIn(f) => collect_tool_uses(&f.body, out),
+            _ => {}
+        }
+    }
+}
+
+/// §116.a — re-derive the whole-program scope-coverage witness from `ir.tools` +
+/// `ir.credentials` + `ir.endpoints` + `ir.daemons` + `ir.flows`. "No contract →
+/// no proof": a program with no tool declaring a `requires:` returns `None`.
+/// This is the deploy-time twin of the frontend `check_use_tool_scopes` law
+/// (`axon-T956`) — the two granted-set derivations must stay in lockstep.
+pub fn derive_scope_coverage_soundness_witness(
+    ir: &IRProgram,
+) -> Option<ScopeCoverageSoundnessWitness> {
+    // The contract: tools that DECLARE a required scope (source order).
+    let scoped_tools: Vec<(String, Vec<String>)> = ir
+        .tools
+        .iter()
+        .filter(|t| !t.requires.is_empty())
+        .map(|t| {
+            let mut r = t.requires.clone();
+            r.sort();
+            r.dedup();
+            (t.name.clone(), r)
+        })
+        .collect();
+    if scoped_tools.is_empty() {
+        return None;
+    }
+
+    // The GRANTED set (program-wide, the mirror of the frontend `granted_scopes`):
+    // ∪ credential.grants ∪ endpoint/daemon requires_capabilities.
+    let mut granted_set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for c in &ir.credentials {
+        granted_set.extend(c.grants.iter().cloned());
+    }
+    for e in &ir.endpoints {
+        granted_set.extend(e.requires_capabilities.iter().cloned());
+    }
+    for d in &ir.daemons {
+        granted_set.extend(d.requires_capabilities.iter().cloned());
+    }
+    let granted: Vec<String> = granted_set.iter().cloned().collect();
+
+    // Tool → required scopes (from the SAME source-order slice, unsorted so the
+    // scan reports in the tool's declared order).
+    let requires_of: std::collections::HashMap<&str, &Vec<String>> = ir
+        .tools
+        .iter()
+        .filter(|t| !t.requires.is_empty())
+        .map(|t| (t.name.as_str(), &t.requires))
+        .collect();
+
+    // Every flow's tool uses: a required scope not in the granted set is an
+    // uncovered use (axon-T956).
+    let mut uncovered_uses: Vec<(String, String, String)> = Vec::new();
+    for flow in &ir.flows {
+        let mut uses = Vec::new();
+        collect_tool_uses(&flow.steps, &mut uses);
+        for tool in &uses {
+            if let Some(reqs) = requires_of.get(tool.as_str()) {
+                for scope in reqs.iter() {
+                    if !granted_set.contains(scope) {
+                        uncovered_uses.push((flow.name.clone(), tool.clone(), scope.clone()));
+                    }
+                }
+            }
+        }
+    }
+    // Canonical order (both generate + check call this — stable equality).
+    uncovered_uses.sort();
+    uncovered_uses.dedup();
+
+    Some(ScopeCoverageSoundnessWitness { scoped_tools, granted, uncovered_uses })
+}
+
+/// §116.a — generate the (at most one) ScopeCoverageSoundness proof for `ir`.
+pub fn generate_scope_coverage_soundness_proofs(
+    ir: &IRProgram,
+    axon_version: &str,
+) -> Vec<ProofTerm> {
+    match derive_scope_coverage_soundness_witness(ir) {
+        Some(witness) => vec![ProofTerm {
+            property: PropertyClass::ScopeCoverageSoundness,
+            artifact_digest: artifact_digest(ir),
+            witness: Witness::ScopeCoverageSoundness(witness),
+            axon_version: axon_version.to_string(),
+        }],
+        None => Vec::new(),
+    }
+}
+
 // ── §Fase 99.d — DocumentProvenanceSoundness ─────────────────────────────────
 
 const DOC_TARGETS: &[&str] = &["docx", "pptx", "xlsx"];
@@ -3868,6 +3973,7 @@ pub fn generate_all_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm>
     proofs.extend(generate_technician_command_safety_proofs(ir, axon_version));
     proofs.extend(generate_cache_soundness_proofs(ir, axon_version));
     proofs.extend(generate_scrape_provenance_soundness_proofs(ir, axon_version));
+    proofs.extend(generate_scope_coverage_soundness_proofs(ir, axon_version));
     proofs.extend(generate_document_provenance_soundness_proofs(ir, axon_version));
     proofs.extend(generate_delivery_provenance_soundness_proofs(ir, axon_version));
     proofs.extend(generate_query_safety_soundness_proofs(ir, axon_version));
