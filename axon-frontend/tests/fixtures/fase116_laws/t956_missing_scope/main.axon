@@ -1,0 +1,15 @@
+// axon-T956 — a `use` of a tool whose `requires:` scope the program's granted
+// set does not cover is refused. No credential, no endpoint capability → the
+// scope `reports.read` is unheld.
+tool ReportReader {
+  requires: [reports.read]
+  parameters: { id: String }
+  output_type: String
+}
+
+type Out { summary: String }
+
+flow ReadReport(id: String) -> Out {
+  use ReportReader(id = "${id}")
+  step S { ask: "summarize" output: Out }
+}

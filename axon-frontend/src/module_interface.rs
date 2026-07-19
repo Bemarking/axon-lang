@@ -147,6 +147,13 @@ pub enum ExportSignature {
         #[serde(skip_serializing_if = "Option::is_none", default)]
         risk: Option<String>,
         provider: String,
+        /// §Fase 116.a (D116.9) — the authorization scopes the tool requires.
+        /// PUBLIC surface: an importer must see the scope demands (axon-T956
+        /// coverage), and the interface_hash must cover it so a `requires:`
+        /// change invalidates every dependent (early-cutoff soundness, §115.7).
+        /// Elided when empty ⇒ every pre-§116 tool's `.axi` is byte-identical.
+        #[serde(skip_serializing_if = "Vec::is_empty", default)]
+        requires: Vec<String>,
     },
     Resource {
         resource_kind: String,
@@ -291,6 +298,7 @@ pub fn generate_interface(
                         .unwrap_or_default(),
                     risk: n.risk.clone(),
                     provider: n.provider.clone(),
+                    requires: n.requires.clone(),
                 },
                 Declaration::Resource(n) => ExportSignature::Resource {
                     resource_kind: n.kind.clone(),

@@ -1,0 +1,66 @@
+// axon-agora — Instagram connector surface (§Fase 116.a / §116.d)
+//
+// Owned-only posture (D116.3): professional (business/creator) accounts only —
+// consumer-account publishing does not exist in the official API (paper §2.3,
+// verified 3-0). Publishing is a mandatory two-step container protocol
+// (create → poll status → publish; axon-T957 territory) metered by a HARD
+// consumable quota of 100 API-published posts per rolling 24h per account,
+// queryable via `content_publishing_limit` — the §72 linear-budget shape.
+//
+// `instagram_publish_media` drives the WHOLE container protocol inside the
+// connector core (§116.d): the multi-step state machine is the core's job; the
+// surface exposes the governed intent. Media deletion is NOT offered by the
+// official API and is therefore absent here — never emulated. Scopes per the
+// Instagram-Login path; axon-T956 enforces the program holds them.
+
+import agora.types.{ AgoraComment, AgoraMetrics, AgoraReceipt }
+
+tool instagram_read_comments {
+  provider: agora_instagram
+  runtime: read_comments
+  requires: [instagram_business_basic]
+  parameters: { target: String }
+  output_type: List<AgoraComment>
+  effects: <network>
+  timeout: 30s
+}
+
+tool instagram_insights {
+  provider: agora_instagram
+  runtime: read_metrics
+  requires: [instagram_business_basic]
+  parameters: { target: String }
+  output_type: AgoraMetrics
+  effects: <network>
+  timeout: 30s
+}
+
+tool instagram_reply {
+  provider: agora_instagram
+  runtime: reply
+  requires: [instagram_business_basic, instagram_business_manage_comments]
+  parameters: { comment_id: String, text: String }
+  output_type: AgoraReceipt
+  effects: <network>
+  timeout: 30s
+}
+
+tool instagram_moderate {
+  provider: agora_instagram
+  runtime: moderate
+  requires: [instagram_business_basic, instagram_business_manage_comments]
+  parameters: { comment_id: String, action: String }
+  output_type: String
+  effects: <network>
+  timeout: 30s
+}
+
+tool instagram_publish_media {
+  provider: agora_instagram
+  runtime: publish
+  requires: [instagram_business_basic, instagram_business_content_publish]
+  parameters: { body: String, media_urls: List<String> }
+  output_type: AgoraReceipt
+  effects: <network>
+  timeout: 120s
+}

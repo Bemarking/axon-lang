@@ -1,0 +1,22 @@
+// axon-T956 satisfied — an endpoint's `requires:` capabilities cover the scope.
+tool ReportReader {
+  requires: [reports.read]
+  parameters: { id: String }
+  output_type: String
+}
+
+type Out { summary: String }
+
+flow ReadReport(id: String) -> Out {
+  use ReportReader(id = "${id}")
+  step S { ask: "summarize" output: Out }
+}
+
+axonendpoint ReadReportApi {
+  method: POST
+  path: "/reports/read"
+  execute: ReadReport
+  backend: auto
+  requires: [reports.read]
+  transport: sse public: false
+}

@@ -624,6 +624,9 @@ impl IRGenerator {
                 })
                 .collect(),
             output_type: n.output_type.clone(),
+            // §Fase 116.a — the required authorization scopes (D116.9; elided
+            // when empty, IR-SHA stable for every pre-§116 tool).
+            requires: n.requires.clone(),
             // §Fase 94.c — the dispatch-injection secret KEY (elided when
             // empty; the value NEVER rides the IR — it lives in custody).
             secret: n.secret.clone(),

@@ -48,6 +48,7 @@ fn partitioned_tool(url: &str) -> IRToolSpec {
             IRToolParam { name: "nombre".to_string(), type_name: "String".to_string(), optional: false },
         ],
         output_type: None,
+        requires: Vec::new(),
         secret: "crm.hubspot".to_string(),
         secret_partition: "tenant_id".to_string(),
         effect_row: Vec::new(),

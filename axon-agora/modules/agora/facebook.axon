@@ -1,0 +1,77 @@
+// axon-agora — Facebook Pages connector surface (§Fase 116.a / §116.c)
+//
+// Owned-only posture (D116.3): every operation acts on a Page the tenant owns.
+// Ground truth (paper_axon_agora.md §2.2, source-confirmed): the Pages API
+// covers publish/schedule (`pages_manage_posts`), comment moderation + post
+// deletion (`pages_manage_engagement`), reading Page content
+// (`pages_read_engagement`), insights, and webhook event ingestion. Extended
+// permissions are App-Review-gated; the never-expiring long-lived Page token
+// makes steady-state operation truly unattended.
+//
+// `provider: agora_facebook` routes to the registered SocialConnector core
+// (agora_runtime, §116.c); `runtime:` names the connector operation. Each op
+// declares the OAuth scope it `requires:` — axon-T956 refuses a `use` the
+// program's granted set (its credentials) does not cover. No core registered ⇒
+// a typed refusal at dispatch — never a fabricated result.
+
+import agora.types.{ AgoraComment, AgoraMetrics, AgoraReceipt }
+
+tool facebook_read_comments {
+  provider: agora_facebook
+  runtime: read_comments
+  requires: [pages_read_engagement]
+  parameters: { target: String }
+  output_type: List<AgoraComment>
+  effects: <network>
+  timeout: 30s
+}
+
+tool facebook_page_insights {
+  provider: agora_facebook
+  runtime: read_metrics
+  requires: [pages_read_engagement]
+  parameters: { target: String }
+  output_type: AgoraMetrics
+  effects: <network>
+  timeout: 30s
+}
+
+tool facebook_reply {
+  provider: agora_facebook
+  runtime: reply
+  requires: [pages_manage_engagement]
+  parameters: { comment_id: String, text: String }
+  output_type: AgoraReceipt
+  effects: <network>
+  timeout: 30s
+}
+
+tool facebook_moderate {
+  provider: agora_facebook
+  runtime: moderate
+  requires: [pages_manage_engagement]
+  parameters: { comment_id: String, action: String }
+  output_type: String
+  effects: <network>
+  timeout: 30s
+}
+
+tool facebook_publish_post {
+  provider: agora_facebook
+  runtime: publish
+  requires: [pages_manage_posts]
+  parameters: { body: String }
+  output_type: AgoraReceipt
+  effects: <network>
+  timeout: 60s
+}
+
+tool facebook_delete_post {
+  provider: agora_facebook
+  runtime: delete
+  requires: [pages_manage_engagement]
+  parameters: { object_id: String }
+  output_type: String
+  effects: <network>
+  timeout: 30s
+}

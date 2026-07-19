@@ -1,0 +1,85 @@
+// axon-agora — LinkedIn connector surface (§Fase 116.a / §116.e)
+//
+// Owned-only posture (D116.3): ORGANIZATION pages under an approved Community
+// Management use case — the official program covers creating, updating, and
+// deleting organization posts, comments, reactions, and analytics (paper §2.1,
+// verified 3-0). Member-level automation is FORBIDDEN (API ToS §3.1(26):
+// "automate posting"; `r_member_social` is a closed permission) — no member
+// operation appears on this surface, and none ever will (axon-T958 posture).
+//
+// Reads target the Social Metadata API (the replacement for the legacy
+// `socialActions` endpoint — a live deprecation the core tracks, §116.e). Each
+// op declares its OAuth scope (`w_organization_social` for writes,
+// `r_organization_social` for reads); axon-T956 enforces the program holds it.
+
+import agora.types.{ AgoraComment, AgoraReaction, AgoraMetrics, AgoraReceipt }
+
+tool linkedin_read_comments {
+  provider: agora_linkedin
+  runtime: read_comments
+  requires: [r_organization_social]
+  parameters: { target: String }
+  output_type: List<AgoraComment>
+  effects: <network>
+  timeout: 30s
+}
+
+tool linkedin_read_reactions {
+  provider: agora_linkedin
+  runtime: read_reactions
+  requires: [r_organization_social]
+  parameters: { target: String }
+  output_type: List<AgoraReaction>
+  effects: <network>
+  timeout: 30s
+}
+
+tool linkedin_page_analytics {
+  provider: agora_linkedin
+  runtime: read_metrics
+  requires: [r_organization_social]
+  parameters: { target: String }
+  output_type: AgoraMetrics
+  effects: <network>
+  timeout: 30s
+}
+
+tool linkedin_reply {
+  provider: agora_linkedin
+  runtime: reply
+  requires: [w_organization_social]
+  parameters: { comment_id: String, text: String }
+  output_type: AgoraReceipt
+  effects: <network>
+  timeout: 30s
+}
+
+tool linkedin_publish_post {
+  provider: agora_linkedin
+  runtime: publish
+  requires: [w_organization_social]
+  parameters: { body: String }
+  output_type: AgoraReceipt
+  effects: <network>
+  timeout: 60s
+}
+
+tool linkedin_edit_post {
+  provider: agora_linkedin
+  runtime: edit
+  requires: [w_organization_social]
+  parameters: { object_id: String, body: String }
+  output_type: AgoraReceipt
+  effects: <network>
+  timeout: 60s
+}
+
+tool linkedin_delete_post {
+  provider: agora_linkedin
+  runtime: delete
+  requires: [w_organization_social]
+  parameters: { object_id: String }
+  output_type: String
+  effects: <network>
+  timeout: 30s
+}

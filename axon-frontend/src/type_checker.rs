@@ -163,6 +163,16 @@ pub const VALID_TOOL_PROVIDERS: &[&str] = &[
     "scrape_crawl",
     "scrape_enrich",
     "bash",
+    // §Fase 116.a — the axon-agora governed social connectors (one per platform,
+    // the §98 scrape-family shape). Each routes through `agora_runtime::dispatch_agora`
+    // in axon-rs to the registered per-platform `SocialConnector`; an unregistered
+    // platform is a TYPED refusal at dispatch (the §104 D104.6 honesty), never a
+    // fabrication. The `runtime:` field names the connector OPERATION (read_comments,
+    // publish, …) — the same slug role it plays for `http` tools.
+    "agora_linkedin",
+    "agora_facebook",
+    "agora_instagram",
+    "agora_tiktok",
 ];
 
 /// §Fase 98.d — the closed `scrape.engine:` catalog. `impersonate` (HTTP-
@@ -10942,7 +10952,11 @@ impl<'a> TypeChecker<'a> {
                             format!("'{}' is a {}, not a tool", n.tool_name, sym.kind),
                             &n.loc,
                         ),
-                        _ => self.check_use_tool_args(n, steps),
+                        _ => {
+                            self.check_use_tool_args(n, steps);
+                            // §Fase 116.a (axon-T956) — scope coverage.
+                            self.check_use_tool_scopes(n);
+                        }
                     }
                 }
                 // §Fase 59 (D2) — `apply: <Tool>` on a schema-bearing tool is
@@ -11432,6 +11446,72 @@ impl<'a> TypeChecker<'a> {
     /// untyped and skipped (§58 D5 back-compat), as is a schema-less tool (no
     /// `parameters:` → no contract to enforce). The `apply: Tool given:
     /// <struct>` splat (D3) is validated separately (§58.d.2).
+    /// §Fase 116.a (D116.9) — the scopes a tool's operation requires
+    /// (`tool T { requires: [...] }`). Empty for every pre-§116 tool.
+    fn tool_required_scopes(&self, name: &str) -> Vec<String> {
+        self.program
+            .declarations
+            .iter()
+            .find_map(|d| match d {
+                Declaration::Tool(t) if t.name == name => Some(t.requires.clone()),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    /// §Fase 116.a (D116.9) — the program's GRANTED capability set: the flat
+    /// union of every `credential`'s `grants` (§92) and every endpoint's /
+    /// daemon's `requires:` capabilities (§51.x / §52.d). These are the scopes
+    /// the program has DECLARED it holds — the same vocabulary a tool's
+    /// `requires:` draws from. Program-wide (an app's OAuth scopes are held
+    /// app-wide, not per-flow); a per-flow tightening is a named future
+    /// refinement, not a §116.a hole.
+    fn granted_scopes(&self) -> std::collections::HashSet<String> {
+        let mut granted = std::collections::HashSet::new();
+        for d in &self.program.declarations {
+            match d {
+                Declaration::Credential(c) => granted.extend(c.grants.iter().cloned()),
+                Declaration::AxonEndpoint(e) => {
+                    granted.extend(e.requires_capabilities.iter().cloned())
+                }
+                Declaration::Daemon(dm) => {
+                    granted.extend(dm.requires_capabilities.iter().cloned())
+                }
+                _ => {}
+            }
+        }
+        granted
+    }
+
+    /// §Fase 116.a — **axon-T956** (scope coverage). A `use` of a tool whose
+    /// `requires:` names a scope the program's granted set does not cover is
+    /// refused: an autonomous operation must hold the authority it needs, and
+    /// that authority must be DECLARED (the doctrine `every_requirement_is_
+    /// grantable`, §90, on the tool surface). Inert for every tool with no
+    /// `requires:` (the whole pre-§116 corpus).
+    fn check_use_tool_scopes(&mut self, n: &UseToolStep) {
+        let required = self.tool_required_scopes(&n.tool_name);
+        if required.is_empty() {
+            return;
+        }
+        let granted = self.granted_scopes();
+        for scope in required {
+            if !granted.contains(&scope) {
+                self.emit(
+                    format!(
+                        "axon-T956 tool '{}' requires scope '{}', which the program's granted \
+                         set does not cover. A tool's `requires:` scope must be held: declare a \
+                         `credential` that grants '{}', or add it to the executing endpoint's \
+                         `requires:` capabilities. Held scopes come from `credential.grants` \
+                         (§92) and endpoint/daemon `requires:` capabilities (§51.x).",
+                        n.tool_name, scope, scope
+                    ),
+                    &n.loc,
+                );
+            }
+        }
+    }
+
     fn check_use_tool_args(&mut self, n: &UseToolStep, steps: &[FlowStep]) {
         let UseArgs::Named(pairs) = &n.args else {
             return; // LegacyPositional — no schema validation (D5).

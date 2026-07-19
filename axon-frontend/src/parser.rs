@@ -2519,6 +2519,7 @@ impl Parser {
             effects: None,
             parameters: Vec::new(),
             output_type: None,
+            requires: Vec::new(),
             secret: String::new(),
             secret_partition: String::new(),
             target: None,
@@ -2567,6 +2568,33 @@ impl Parser {
                 // §Fase 58.a — the tool's typed input schema + output type.
                 "parameters" => node.parameters = self.parse_tool_param_schema()?,
                 "output_type" => node.output_type = Some(self.parse_output_type_string()?),
+                // §Fase 116.a (D116.9) — the tool's required authorization
+                // scopes: bare dot-separated capability slugs, the EXACT
+                // grammar + charset of `credential.grants` (§92) so the two
+                // vocabularies are one. `requires: [w_organization_social,
+                // video.publish]`. Subset coverage is `axon-T956`.
+                "requires" => {
+                    let bracket_tok = self.current().clone();
+                    let items = self.parse_bracketed_dot_identifiers()?;
+                    for slug in &items {
+                        if !is_valid_capability_slug(slug) {
+                            return Err(ParseError {
+                                message: format!(
+                                    "Invalid capability slug '{slug}' in tool '{}' \
+                                     `requires:`. Scope slugs must match \
+                                     ^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$ — the same \
+                                     grammar as `credential.grants`. Examples: \
+                                     `w_organization_social`, `video.publish`.",
+                                    node.name
+                                ),
+                                line: bracket_tok.line,
+                                column: bracket_tok.column,
+                                ..Default::default()
+                            });
+                        }
+                    }
+                    node.requires = items;
+                }
                 // §Fase 94.c — the per-tenant secret KEY injected at
                 // dispatch (`rotation_without_revelation`). Key shape +
                 // technician exclusion are `axon-T902` (type-checker).

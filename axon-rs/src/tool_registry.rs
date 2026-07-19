@@ -577,6 +577,17 @@ impl ToolRegistry {
             // (D104.6 — the same honesty as the §101 extraction seam).
             "scrape_enrich" => Some(crate::enrichment::dispatch_enrich(entry, argument)),
 
+            // §Fase 116.a — axon-agora governed social connectors. The provider
+            // names the platform; `runtime:` names the operation (read_comments,
+            // publish, …). Dispatch routes to the registered per-platform
+            // `SocialConnector` core; no core registered ⇒ a TYPED refusal (the
+            // D104.6 honesty), never a fabricated comment, metric, or receipt.
+            // Every output is born Untrusted (§98/T908 — social content is
+            // attacker-controlled; a vendor receipt is a vendor's claim).
+            "agora_linkedin" | "agora_facebook" | "agora_instagram" | "agora_tiktok" => {
+                Some(crate::agora_runtime::dispatch_agora(entry, argument))
+            }
+
             // Known providers that currently fall through to LLM
             // Future: "grpc" adapters. §Fase 100.a — but a name DECLARED in
             // `stdlib::TOOLS` with no native executor and no provider must NOT
@@ -706,6 +717,7 @@ mod tests {
                 output_schema: String::new(),
                 parameters: Vec::new(),
                 output_type: None,
+                requires: Vec::new(),
                 secret: String::new(),
                 secret_partition: String::new(),
                 effect_row: vec!["stream:drop_oldest".to_string()],
@@ -731,6 +743,7 @@ mod tests {
                 output_schema: String::new(),
                 parameters: Vec::new(),
                 output_type: None,
+                requires: Vec::new(),
                 secret: String::new(),
                 secret_partition: String::new(),
                 effect_row: vec!["compute".to_string()],
@@ -825,6 +838,7 @@ mod tests {
                 output_schema: String::new(),
                 parameters: Vec::new(),
                 output_type: None,
+                requires: Vec::new(),
                 secret: String::new(),
                 secret_partition: String::new(),
                 effect_row: Vec::new(),
@@ -850,6 +864,7 @@ mod tests {
                 output_schema: String::new(),
                 parameters: Vec::new(),
                 output_type: None,
+                requires: Vec::new(),
                 secret: String::new(),
                 secret_partition: String::new(),
                 effect_row: Vec::new(),

@@ -1,0 +1,15 @@
+// axon-T956 satisfied — a `credential` granting the scope covers the `use`.
+tool ReportReader {
+  requires: [reports.read]
+  parameters: { id: String }
+  output_type: String
+}
+
+credential ReportAuth { ttl: 1h grants: [reports.read] }
+
+type Out { summary: String }
+
+flow ReadReport(id: String) -> Out {
+  use ReportReader(id = "${id}")
+  step S { ask: "summarize" output: Out }
+}

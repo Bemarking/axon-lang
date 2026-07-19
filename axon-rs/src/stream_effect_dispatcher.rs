@@ -387,6 +387,7 @@ mod tests {
             }),
             parameters: Vec::new(),
             output_type: None,
+            requires: Vec::new(),
             secret: String::new(),
             secret_partition: String::new(),
             target: None,

@@ -1,0 +1,37 @@
+// axon-agora — TikTok connector surface (§Fase 116.a / §116.f)
+//
+// READ/ANALYTICS-FIRST by ratified decision (D116.7), because TikTok's platform
+// policy is the hardest zero-input regime of the four (paper §2.4, verified
+// 3-0): unaudited API clients are restricted to SELF_ONLY private posting
+// (≤5 users/24h), public posting requires passing TikTok's audit, and the
+// guidelines require EXPRESS PER-POST USER CONSENT before content is even
+// transmitted — so fully unattended public publishing is not permitted at the
+// policy level, regardless of technical capability.
+//
+// Publishing therefore does NOT appear on this surface yet. It arrives in
+// §116.f carrying the consent machinery (per-post human confirmation, the
+// audited-app gate, and the ~15 posts/creator/24h linear budget) — governed,
+// or absent. Exposing it earlier would advertise an act the platform forbids
+// (the §111 defect, refused by design).
+
+import agora.types.{ AgoraComment, AgoraMetrics }
+
+tool tiktok_read_comments {
+  provider: agora_tiktok
+  runtime: read_comments
+  requires: [comment.list]
+  parameters: { target: String }
+  output_type: List<AgoraComment>
+  effects: <network>
+  timeout: 30s
+}
+
+tool tiktok_video_metrics {
+  provider: agora_tiktok
+  runtime: read_metrics
+  requires: [video.list]
+  parameters: { target: String }
+  output_type: AgoraMetrics
+  effects: <network>
+  timeout: 30s
+}

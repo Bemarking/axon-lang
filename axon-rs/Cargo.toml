@@ -27,6 +27,11 @@ path = "src/main.rs"
 # `version` makes the dep cargo-publishable (crates.io requires non-path
 # deps to carry a version specifier).
 axon-frontend = { path = "../axon-frontend", version = "=1.56.0" }
+# §Fase 116.a — the axon-agora protocol layer (the first official library):
+# Platform/Operation enums, the SocialConnector seam, scope/protocol/posture/
+# quota single-source-of-truth. Pure data + traits (serde only) — the network
+# cores plug in via `agora_runtime::register_agora_connector`.
+axon-agora = { path = "../axon-agora", version = "=0.1.0" }
 clap = { version = "4.5", features = ["derive", "env"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "rustls-tls", "stream"] }
 serde = { version = "1", features = ["derive"] }
@@ -126,6 +131,11 @@ required-features = ["idpe-sidecar"]
 # (§Fase 41.d's dev-only `tokio-tungstenite` moved to [dependencies] in
 # §Fase 80.d — the `upstream` runtime needs the RFC 6455 CLIENT half in
 # production; tests keep using the same dep.)
+# §Fase 116.a — the fase116_a integration test names axon-agora directly
+# (Platform/Operation/required_scopes) to pin the .axon surface's `requires:`
+# ≡ the crate's scope matrix. It is a normal dep of the lib; a dev-dep line
+# makes it usable from the tests/ crate too.
+axon-agora = { path = "../axon-agora", version = "=0.1.0" }
 
 # ─── target/ bloat control (disk hygiene) ────────────────────────────
 # axon-rs/target grew 5.76 → 176 → 382 GB in 3 cycles: the 174 files under

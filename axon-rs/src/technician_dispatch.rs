@@ -255,6 +255,7 @@ mod tests {
                 })
                 .collect(),
             output_type: None,
+            requires: Vec::new(),
             secret: String::new(),
             secret_partition: String::new(),
             effect_row: Vec::new(),

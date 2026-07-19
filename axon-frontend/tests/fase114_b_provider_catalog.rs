@@ -88,6 +88,18 @@ fn every_dispatchable_provider_is_accepted() {
             "`provider: {p}` is in the catalog and must pass T948. Got: {errs}"
         );
     }
+    // §Fase 116.a — the axon-agora connector providers. Each has a real dispatch
+    // arm (`agora_runtime::dispatch_agora`), honoring the catalog's own law:
+    // a value here without an arm behind it re-creates the §114.b defect.
+    for p in ["agora_linkedin", "agora_facebook", "agora_instagram", "agora_tiktok"] {
+        let errs = errors_of(&format!(
+            "tool T {{ provider: {p}  runtime: read_comments  effects: <network> }}"
+        ));
+        assert!(
+            !errs.contains("axon-T948"),
+            "`provider: {p}` is in the catalog and must pass T948. Got: {errs}"
+        );
+    }
 }
 
 /// **An LLM-routed tool — no `provider:` at all — stays legitimate.**

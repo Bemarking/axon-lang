@@ -245,6 +245,11 @@ pub mod scrape_tool;
 /// contact lookup via a pluggable enterprise provider; results born Inferred
 /// (≤ believe-ceiling) + Untrusted. OSS default = typed refusal (no fabrication).
 pub mod enrichment;
+/// §Fase 116.a — axon-agora governed social connectors (`agora_linkedin` /
+/// `agora_facebook` / `agora_instagram` / `agora_tiktok`): the first official
+/// library of axon-lang. Per-platform pluggable `SocialConnector` cores; every
+/// result born Untrusted. OSS default = typed refusal (no fabrication).
+pub mod agora_runtime;
 /// §Fase 105 — Governed CRM Delivery (`deliver`): the egress-dual of acquisition.
 /// Canonical, idempotent CRM operations delivered via a pluggable enterprise
 /// transducer; each field carries its epistemic provenance (D105.2) or the author

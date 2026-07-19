@@ -2326,6 +2326,16 @@ pub struct ToolDefinition {
     /// is referenceable as `${Step.output}` with a real type (§58 D8). Flat
     /// string (mirrors step `output:`); `None` when undeclared.
     pub output_type: Option<String>,
+    /// §Fase 116.a (D116.9) — the authorization scopes this tool's operation
+    /// requires (`requires: ["w_organization_social"]`): flat capability atoms,
+    /// the same vocabulary as `credential.grants` (§92) and endpoint
+    /// `requires_capabilities` (§51.x). `axon-T956` enforces subset coverage —
+    /// every `use` of a tool with a non-empty `requires` must occur where the
+    /// program's granted set covers it. Empty = no scope demand (every
+    /// pre-§116 tool, unchanged). Flat SETS by design: OAuth scopes are
+    /// per-platform atoms with no hierarchy — a scope tree would model
+    /// structure the domain does not have.
+    pub requires: Vec<String>,
     /// §Fase 94.c — the per-tenant secret KEY injected into every dispatch
     /// of this tool (doctrine `rotation_without_revelation`): at `use`
     /// time the runtime resolves the key against the tenant's secret

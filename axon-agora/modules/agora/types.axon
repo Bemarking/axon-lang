@@ -1,0 +1,33 @@
+// axon-agora — shared wire types (§Fase 116.a)
+//
+// The uniform result shapes every platform connector returns, mirroring the
+// `axon-agora` crate's connector wire types (Comment / Reaction / Metrics /
+// PublishReceipt). One schema across platforms is the point: a flow that reads
+// LinkedIn comments and Facebook comments reasons over ONE Comment shape.
+//
+// Provenance law: every value of these types is born epistemically Untrusted
+// (§98/T908) — social content is attacker-controlled text; a vendor receipt is
+// a vendor's claim. A shield + confidence floor stand between these values and
+// an agent's beliefs, exactly as for scraped content.
+
+type AgoraComment {
+  id: String
+  author: String
+  text: String
+}
+
+type AgoraReaction {
+  kind: String
+  count: Int
+}
+
+type AgoraMetrics {
+  impressions: Int
+  engagements: Int
+  followers: Int
+}
+
+type AgoraReceipt {
+  object_id: String
+  url: String
+}

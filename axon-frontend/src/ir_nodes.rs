@@ -868,6 +868,15 @@ pub struct IRToolSpec {
     /// is typed. `None` when undeclared. Single source of truth (lives here,
     /// not denormalised onto each call site).
     pub output_type: Option<String>,
+    /// §Fase 116.a (D116.9) — the authorization scopes this tool's operation
+    /// requires: flat capability atoms, the `credential.grants` (§92) /
+    /// `requires_capabilities` (§51.x) vocabulary. `axon-T956` enforces subset
+    /// coverage at compile; the PCC `ScopeCoverage` witness rides the linked
+    /// IR. Elided when empty — every pre-§116 tool serializes byte-identically
+    /// (IR-SHA stability), and stored FlowIr hydrates via `default` (§49.f
+    /// mirror discipline).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires: Vec<String>,
     /// §Fase 94.c — the per-tenant secret KEY injected into every dispatch
     /// under the reserved `axon_secret` request field (resolved against the
     /// tenant's custody at `use` time; the flow never touches the value).
