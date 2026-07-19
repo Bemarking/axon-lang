@@ -31,6 +31,7 @@ pub mod instagram;
 pub mod linkedin;
 pub mod oauth;
 pub mod platform;
+pub mod tiktok;
 pub mod posture;
 pub mod protocol;
 pub mod quota;
@@ -43,6 +44,7 @@ pub use connector::{
 pub use facebook::{FacebookPagesConfig, FacebookPagesConnector};
 pub use instagram::{InstagramConfig, InstagramConnector};
 pub use linkedin::{LinkedInConfig, LinkedInConnector};
+pub use tiktok::{TikTokConfig, TikTokConnector};
 pub use oauth::{
     needs_refresh, refresh_grant, refresh_mechanism, OAuthError, RefreshGrantConfig,
     RefreshMechanism, RefreshedTokens,
