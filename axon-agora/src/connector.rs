@@ -85,6 +85,11 @@ pub enum ConnectorError {
     /// The platform's official API has no such operation (e.g. Instagram media
     /// deletion) — honestly unsupported, never emulated.
     Unsupported { platform: Platform, reason: String },
+    /// No credential is available for this call — neither the §94.c custody
+    /// injection (`CallContext.secret`) nor the connector's configured token.
+    /// Fail-closed: never an unauthenticated vendor call (the lambda_tools
+    /// posture).
+    MissingCredential { platform: Platform },
     /// The publish quota is exhausted (§72 / axon-W018).
     QuotaExhausted,
     /// A protocol-order violation (axon-T957).
@@ -108,6 +113,13 @@ impl std::fmt::Display for ConnectorError {
                  emulates a missing platform capability",
                 platform.as_str()
             ),
+            ConnectorError::MissingCredential { platform } => write!(
+                f,
+                "no access token available for {} — neither custody injection (axon_secret, \
+                 §94.c) nor connector config supplies one; the call fails closed (never an \
+                 unauthenticated vendor call)",
+                platform.as_str()
+            ),
             ConnectorError::QuotaExhausted => {
                 write!(f, "publish quota exhausted (the §72 budget is spent for this window)")
             }
@@ -124,6 +136,36 @@ impl std::fmt::Display for ConnectorError {
     }
 }
 
+/// Per-call context (§116.c). The credential is PER-CALL, not per-connector-instance:
+/// in the enterprise runtime one registered connector serves many tenants, and the §94.c
+/// custody injection resolves the per-tenant token at dispatch (`axon_secret`), which the
+/// `agora_runtime` dispatch strips out of the body and hands here — the value never rides
+/// a vendor payload, a log line, or the flow's bindings.
+#[derive(Clone, Default)]
+pub struct CallContext {
+    /// The custody-revealed credential for THIS call, if the tool declared `secret:`
+    /// (§94.c/§116.b). `None` in a dev runtime with no custody — the connector then falls
+    /// back to its own configured token, or fails closed. Redacted from `Debug` output.
+    pub secret: Option<String>,
+}
+
+// The §94 redacting-Debug discipline (the `RevealedSecret` shape): a custody value
+// must never reach a log line through a stray `{:?}`.
+impl std::fmt::Debug for CallContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CallContext")
+            .field("secret", &self.secret.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
+impl CallContext {
+    /// A context with no custody-revealed credential (dev/OSS default).
+    pub fn none() -> CallContext {
+        CallContext { secret: None }
+    }
+}
+
 /// The uniform surface every platform connector implements. Read operations return data born
 /// `Untrusted`; write operations are governed egress. Synchronous by design — the runtime wraps
 /// dispatch in `spawn_blocking` (the Brief #63 isolation discipline), and a sync trait is
@@ -136,33 +178,53 @@ pub trait SocialConnector: Send + Sync {
     /// Which platform this connector serves.
     fn platform(&self) -> Platform;
 
-    /// A short engine slug for provenance + audit (e.g. `"facebook-graph-v21"`).
+    /// A short engine slug for provenance + audit (e.g. `"facebook-graph"`).
     fn name(&self) -> &'static str;
 
     /// Read comments on an owned asset. Results are born `Untrusted`.
-    fn read_comments(&self, target: &str) -> Result<Vec<Comment>, ConnectorError>;
+    fn read_comments(&self, ctx: &CallContext, target: &str)
+        -> Result<Vec<Comment>, ConnectorError>;
 
     /// Read reactions on an owned asset. Results are born `Untrusted`.
-    fn read_reactions(&self, target: &str) -> Result<Vec<Reaction>, ConnectorError>;
+    fn read_reactions(
+        &self,
+        ctx: &CallContext,
+        target: &str,
+    ) -> Result<Vec<Reaction>, ConnectorError>;
 
     /// Read engagement metrics for an owned asset.
-    fn read_metrics(&self, target: &str) -> Result<Metrics, ConnectorError>;
+    fn read_metrics(&self, ctx: &CallContext, target: &str) -> Result<Metrics, ConnectorError>;
 
     /// Reply to a comment (governed egress).
-    fn reply(&self, comment_id: &str, text: &str) -> Result<PublishReceipt, ConnectorError>;
+    fn reply(
+        &self,
+        ctx: &CallContext,
+        comment_id: &str,
+        text: &str,
+    ) -> Result<PublishReceipt, ConnectorError>;
 
     /// Moderate a comment on owned content (governed egress).
-    fn moderate(&self, comment_id: &str, action: ModerationAction) -> Result<(), ConnectorError>;
+    fn moderate(
+        &self,
+        ctx: &CallContext,
+        comment_id: &str,
+        action: ModerationAction,
+    ) -> Result<(), ConnectorError>;
 
     /// Publish content to an owned asset (governed egress; quota-metered; protocol-driven).
-    fn publish(&self, req: &PublishRequest) -> Result<PublishReceipt, ConnectorError>;
-
-    /// Edit previously published content, where the platform's official API supports it.
-    fn edit(&self, object_id: &str, req: &PublishRequest)
+    fn publish(&self, ctx: &CallContext, req: &PublishRequest)
         -> Result<PublishReceipt, ConnectorError>;
 
+    /// Edit previously published content, where the platform's official API supports it.
+    fn edit(
+        &self,
+        ctx: &CallContext,
+        object_id: &str,
+        req: &PublishRequest,
+    ) -> Result<PublishReceipt, ConnectorError>;
+
     /// Delete previously published content (governed egress).
-    fn delete(&self, object_id: &str) -> Result<(), ConnectorError>;
+    fn delete(&self, ctx: &CallContext, object_id: &str) -> Result<(), ConnectorError>;
 }
 
 #[cfg(test)]

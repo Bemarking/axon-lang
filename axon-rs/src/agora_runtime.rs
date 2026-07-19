@@ -35,8 +35,8 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock, RwLock};
 
 use axon_agora::{
-    Comment, ConnectorError, Metrics, ModerationAction, Operation, Platform, PublishReceipt,
-    PublishRequest, Reaction, SocialConnector,
+    CallContext, Comment, ConnectorError, Metrics, ModerationAction, Operation, Platform,
+    PublishReceipt, PublishRequest, Reaction, SocialConnector,
 };
 
 use crate::emcp::EpistemicTaint;
@@ -153,16 +153,19 @@ pub fn dispatch_agora_outcome(entry: &ToolEntry, argument: &str) -> AgoraOutcome
     // 3. Structured body (keyword form) or legacy single argument. The reserved
     //    §94.c `axon_secret` field is stripped BEFORE anything else can see it —
     //    a custody value never reaches a connector's typed args, a log line, or
-    //    a vendor payload. (§116.b wires how the token reaches the core; until
-    //    then a stripped secret is inert.)
+    //    a vendor payload. It rides the per-call CallContext into the core
+    //    (§116.c), where it becomes the Authorization header and nothing else.
     let mut body: serde_json::Value = match serde_json::from_str(argument) {
         Ok(v @ serde_json::Value::Object(_)) => v,
         _ => serde_json::Value::Null,
     };
-    let _secret = match body.as_object_mut() {
-        Some(map) => map.remove("axon_secret"),
+    let secret = match body.as_object_mut() {
+        Some(map) => map
+            .remove("axon_secret")
+            .and_then(|v| v.as_str().map(str::to_string)),
         None => None,
     };
+    let call_ctx = CallContext { secret };
     let legacy = if body.is_null() { argument.trim() } else { "" };
     let get = |key: &str| -> Option<String> {
         body.get(key)
@@ -209,21 +212,21 @@ pub fn dispatch_agora_outcome(entry: &ToolEntry, argument: &str) -> AgoraOutcome
 
     match op {
         Operation::ReadComments => match get("target") {
-            Some(target) => match connector.read_comments(&target) {
+            Some(target) => match connector.read_comments(&call_ctx, &target) {
                 Ok(comments) => encode(to_value(&comments)),
                 Err(e) => connector_err(e),
             },
             None => missing("target"),
         },
         Operation::ReadReactions => match get("target") {
-            Some(target) => match connector.read_reactions(&target) {
+            Some(target) => match connector.read_reactions(&call_ctx, &target) {
                 Ok(reactions) => encode(to_value(&reactions)),
                 Err(e) => connector_err(e),
             },
             None => missing("target"),
         },
         Operation::ReadMetrics => match get("target") {
-            Some(target) => match connector.read_metrics(&target) {
+            Some(target) => match connector.read_metrics(&call_ctx, &target) {
                 Ok(metrics) => encode(to_value(&metrics)),
                 Err(e) => connector_err(e),
             },
@@ -236,7 +239,7 @@ pub fn dispatch_agora_outcome(entry: &ToolEntry, argument: &str) -> AgoraOutcome
             let Some(text) = body.get("text").and_then(|v| v.as_str()) else {
                 return missing("text");
             };
-            match connector.reply(&comment_id, text) {
+            match connector.reply(&call_ctx, &comment_id, text) {
                 Ok(receipt) => encode(to_value(&receipt)),
                 Err(e) => connector_err(e),
             }
@@ -256,7 +259,7 @@ pub fn dispatch_agora_outcome(entry: &ToolEntry, argument: &str) -> AgoraOutcome
                     ),
                 );
             };
-            match connector.moderate(&comment_id, action) {
+            match connector.moderate(&call_ctx, &comment_id, action) {
                 Ok(()) => encode(serde_json::json!({
                     "moderated": true, "comment_id": comment_id, "action": action_slug
                 })),
@@ -268,7 +271,7 @@ pub fn dispatch_agora_outcome(entry: &ToolEntry, argument: &str) -> AgoraOutcome
                 Ok(r) => r,
                 Err(param) => return missing(param),
             };
-            match connector.publish(&req) {
+            match connector.publish(&call_ctx, &req) {
                 Ok(receipt) => encode(to_value(&receipt)),
                 Err(e) => connector_err(e),
             }
@@ -281,13 +284,13 @@ pub fn dispatch_agora_outcome(entry: &ToolEntry, argument: &str) -> AgoraOutcome
                 Ok(r) => r,
                 Err(param) => return missing(param),
             };
-            match connector.edit(object_id, &req) {
+            match connector.edit(&call_ctx, object_id, &req) {
                 Ok(receipt) => encode(to_value(&receipt)),
                 Err(e) => connector_err(e),
             }
         }
         Operation::Delete => match get("object_id") {
-            Some(object_id) => match connector.delete(&object_id) {
+            Some(object_id) => match connector.delete(&call_ctx, &object_id) {
                 Ok(()) => encode(serde_json::json!({ "deleted": true, "object_id": object_id })),
                 Err(e) => connector_err(e),
             },
@@ -329,11 +332,12 @@ fn publish_request_from(
 // Re-export the wire types so enterprise cores implement the seam via
 // `axon::agora_runtime::…` without a separate direct dependency line.
 pub use axon_agora::{
-    Comment as AgoraComment, ConnectorError as AgoraConnectorError, Metrics as AgoraMetrics,
-    ModerationAction as AgoraModerationAction, Operation as AgoraOperation,
-    Platform as AgoraPlatform, PublishReceipt as AgoraPublishReceipt,
-    PublishRequest as AgoraPublishRequest, Reaction as AgoraReaction,
-    SocialConnector as AgoraSocialConnector,
+    CallContext as AgoraCallContext, Comment as AgoraComment,
+    ConnectorError as AgoraConnectorError, FacebookPagesConfig, FacebookPagesConnector,
+    Metrics as AgoraMetrics, ModerationAction as AgoraModerationAction,
+    Operation as AgoraOperation, Platform as AgoraPlatform,
+    PublishReceipt as AgoraPublishReceipt, PublishRequest as AgoraPublishRequest,
+    Reaction as AgoraReaction, SocialConnector as AgoraSocialConnector,
 };
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -384,7 +388,7 @@ mod tests {
         fn name(&self) -> &'static str {
             "test-connector"
         }
-        fn read_comments(&self, target: &str) -> Result<Vec<Comment>, ConnectorError> {
+        fn read_comments(&self, _ctx: &CallContext, target: &str) -> Result<Vec<Comment>, ConnectorError> {
             assert!(!target.is_empty(), "prod invariant: target is never empty");
             Ok(vec![Comment {
                 id: "c1".into(),
@@ -392,23 +396,24 @@ mod tests {
                 text: format!("comment on {target}"),
             }])
         }
-        fn read_reactions(&self, _target: &str) -> Result<Vec<Reaction>, ConnectorError> {
+        fn read_reactions(&self, _ctx: &CallContext, _target: &str) -> Result<Vec<Reaction>, ConnectorError> {
             Ok(vec![Reaction { kind: "like".into(), count: 7 }])
         }
-        fn read_metrics(&self, _target: &str) -> Result<Metrics, ConnectorError> {
+        fn read_metrics(&self, _ctx: &CallContext, _target: &str) -> Result<Metrics, ConnectorError> {
             Ok(Metrics { impressions: 100, engagements: 10, followers: 5 })
         }
-        fn reply(&self, comment_id: &str, text: &str) -> Result<PublishReceipt, ConnectorError> {
+        fn reply(&self, _ctx: &CallContext, comment_id: &str, text: &str) -> Result<PublishReceipt, ConnectorError> {
             Ok(PublishReceipt { object_id: format!("reply-to-{comment_id}-{text}"), url: None })
         }
         fn moderate(
             &self,
+            _ctx: &CallContext,
             _comment_id: &str,
             _action: ModerationAction,
         ) -> Result<(), ConnectorError> {
             Ok(())
         }
-        fn publish(&self, req: &PublishRequest) -> Result<PublishReceipt, ConnectorError> {
+        fn publish(&self, _ctx: &CallContext, req: &PublishRequest) -> Result<PublishReceipt, ConnectorError> {
             assert!(
                 !req.body.contains("axon_secret"),
                 "prod invariant: a custody value never reaches the connector payload"
@@ -417,12 +422,13 @@ mod tests {
         }
         fn edit(
             &self,
+            _ctx: &CallContext,
             object_id: &str,
             _req: &PublishRequest,
         ) -> Result<PublishReceipt, ConnectorError> {
             Ok(PublishReceipt { object_id: object_id.into(), url: None })
         }
-        fn delete(&self, _object_id: &str) -> Result<(), ConnectorError> {
+        fn delete(&self, _ctx: &CallContext, _object_id: &str) -> Result<(), ConnectorError> {
             if self.platform == Platform::Instagram {
                 return Err(ConnectorError::Unsupported {
                     platform: Platform::Instagram,

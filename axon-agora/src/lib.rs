@@ -25,6 +25,7 @@
 //! confirmed against primary platform documentation (2026-07).
 
 pub mod connector;
+pub mod facebook;
 pub mod platform;
 pub mod posture;
 pub mod protocol;
@@ -32,9 +33,10 @@ pub mod quota;
 pub mod scope;
 
 pub use connector::{
-    Comment, ConnectorError, Metrics, ModerationAction, PublishReceipt, PublishRequest, Reaction,
-    SocialConnector,
+    CallContext, Comment, ConnectorError, Metrics, ModerationAction, PublishReceipt,
+    PublishRequest, Reaction, SocialConnector,
 };
+pub use facebook::{FacebookPagesConfig, FacebookPagesConnector};
 pub use platform::{Operation, Platform};
 pub use posture::{posture_check, AppAudit, Attendance, PostureRefusal, TargetKind};
 pub use protocol::{is_multi_step, publish_protocol, validate_sequence, ProtocolViolation};

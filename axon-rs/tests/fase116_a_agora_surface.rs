@@ -10,7 +10,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use axon::agora_runtime::{clear_agora_connectors, register_agora_connector};
+use axon::agora_runtime::{clear_agora_connectors, register_agora_connector, AgoraCallContext};
 use axon::tool_registry::ToolRegistry;
 use axon_agora::{
     required_scopes, Comment, ConnectorError, Metrics, ModerationAction, Operation, Platform,
@@ -70,32 +70,46 @@ impl SocialConnector for FixtureConnector {
     fn name(&self) -> &'static str {
         "fixture"
     }
-    fn read_comments(&self, target: &str) -> Result<Vec<Comment>, ConnectorError> {
+    fn read_comments(&self, _x: &AgoraCallContext, target: &str) -> Result<Vec<Comment>, ConnectorError> {
         Ok(vec![Comment {
             id: "c1".into(),
             author: "reader".into(),
             text: format!("about {target}"),
         }])
     }
-    fn read_reactions(&self, _t: &str) -> Result<Vec<Reaction>, ConnectorError> {
+    fn read_reactions(&self, _x: &AgoraCallContext, _t: &str) -> Result<Vec<Reaction>, ConnectorError> {
         Ok(Vec::new())
     }
-    fn read_metrics(&self, _t: &str) -> Result<Metrics, ConnectorError> {
+    fn read_metrics(&self, _x: &AgoraCallContext, _t: &str) -> Result<Metrics, ConnectorError> {
         Ok(Metrics { impressions: 1, engagements: 1, followers: 1 })
     }
-    fn reply(&self, _c: &str, _t: &str) -> Result<PublishReceipt, ConnectorError> {
+    fn reply(&self, _x: &AgoraCallContext, _c: &str, _t: &str) -> Result<PublishReceipt, ConnectorError> {
         Ok(PublishReceipt { object_id: "r1".into(), url: None })
     }
-    fn moderate(&self, _c: &str, _a: ModerationAction) -> Result<(), ConnectorError> {
+    fn moderate(
+        &self,
+        _x: &AgoraCallContext,
+        _c: &str,
+        _a: ModerationAction,
+    ) -> Result<(), ConnectorError> {
         Ok(())
     }
-    fn publish(&self, req: &PublishRequest) -> Result<PublishReceipt, ConnectorError> {
+    fn publish(
+        &self,
+        _x: &AgoraCallContext,
+        req: &PublishRequest,
+    ) -> Result<PublishReceipt, ConnectorError> {
         Ok(PublishReceipt { object_id: format!("post:{}", req.body), url: None })
     }
-    fn edit(&self, o: &str, _r: &PublishRequest) -> Result<PublishReceipt, ConnectorError> {
+    fn edit(
+        &self,
+        _x: &AgoraCallContext,
+        o: &str,
+        _r: &PublishRequest,
+    ) -> Result<PublishReceipt, ConnectorError> {
         Ok(PublishReceipt { object_id: o.into(), url: None })
     }
-    fn delete(&self, _o: &str) -> Result<(), ConnectorError> {
+    fn delete(&self, _x: &AgoraCallContext, _o: &str) -> Result<(), ConnectorError> {
         Ok(())
     }
 }
