@@ -46,8 +46,8 @@ pub use instagram::{InstagramConfig, InstagramConnector};
 pub use linkedin::{LinkedInConfig, LinkedInConnector};
 pub use tiktok::{TikTokConfig, TikTokConnector};
 pub use oauth::{
-    needs_refresh, refresh_grant, refresh_mechanism, OAuthError, RefreshGrantConfig,
-    RefreshMechanism, RefreshedTokens,
+    needs_refresh, refresh_grant, refresh_long_lived, refresh_mechanism, OAuthError,
+    RefreshGrantConfig, RefreshMechanism, RefreshedTokens,
 };
 pub use platform::{Operation, Platform};
 pub use posture::{posture_check, AppAudit, Attendance, PostureRefusal, TargetKind};

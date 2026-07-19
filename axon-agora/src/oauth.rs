@@ -228,6 +228,58 @@ pub fn refresh_grant(
     })
 }
 
+/// Exchange a long-lived token for a fresh one (the Facebook/Instagram
+/// `fb_exchange_token` shape): `GET` the token endpoint with the client creds +
+/// the current token, parse `{access_token, expires_in?}`. There is no refresh
+/// token here (the same token family self-renews), so [`RefreshedTokens::
+/// refresh_token`] is `None`. An expired token CANNOT be exchanged (paper §2.5)
+/// — the daemon must call this BEFORE expiry.
+pub fn refresh_long_lived(
+    config: &RefreshGrantConfig,
+    current_token: &str,
+    now_ms: u64,
+) -> Result<RefreshedTokens, OAuthError> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(config.timeout)
+        .build()
+        .map_err(|e| OAuthError::Transport(format!("client build: {e}")))?;
+    let resp = client
+        .get(&config.token_endpoint)
+        .query(&[
+            ("grant_type", "fb_exchange_token"),
+            ("client_id", config.client_key.as_str()),
+            ("client_secret", config.client_secret.as_str()),
+            ("fb_exchange_token", current_token),
+        ])
+        .send()
+        .map_err(|e| OAuthError::Transport(e.to_string()))?;
+    let status = resp.status().as_u16();
+    let body: serde_json::Value = resp
+        .json()
+        .map_err(|e| OAuthError::Transport(format!("non-JSON response: {e}")))?;
+    if status >= 400 {
+        let message = body
+            .pointer("/error/message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("(no error message)")
+            .to_string();
+        return Err(OAuthError::Platform { status, message });
+    }
+    let access_token = body
+        .pointer("/access_token")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| OAuthError::Malformed("missing access_token".to_string()))?
+        .to_string();
+    // A long-lived exchange usually omits expires_in (or reports ~60d); default
+    // to 60 days so `needs_refresh` schedules the next exchange well before then.
+    let expires_in = body.pointer("/expires_in").and_then(|v| v.as_u64()).unwrap_or(60 * 86_400);
+    Ok(RefreshedTokens {
+        access_token,
+        refresh_token: None,
+        access_expires_at_ms: now_ms.saturating_add(expires_in.saturating_mul(1000)),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -370,6 +422,52 @@ mod tests {
         assert_eq!(out.refresh_token.as_deref(), Some("rt-ROTATED"));
         // The endpoint received the ORIGINAL refresh token.
         assert_eq!(seen.lock().unwrap().as_slice(), &["rt-ORIGINAL".to_string()]);
+    }
+
+    /// A fixture that returns a fixed JSON body to any request.
+    fn spawn_json_server(body: &'static str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                std::thread::spawn(move || {
+                    let mut tmp = [0u8; 1024];
+                    let mut buf = Vec::new();
+                    loop {
+                        match stream.read(&mut tmp) {
+                            Ok(0) => return,
+                            Ok(n) => buf.extend_from_slice(&tmp[..n]),
+                            Err(_) => return,
+                        }
+                        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(resp.as_bytes());
+                });
+            }
+        });
+        format!("http://{addr}/")
+    }
+
+    #[test]
+    fn refresh_long_lived_exchanges_with_no_rotation() {
+        let endpoint = spawn_json_server(r#"{"access_token":"new-ll","expires_in":5184000}"#);
+        let cfg = RefreshGrantConfig {
+            token_endpoint: endpoint,
+            client_key: "ck".into(),
+            client_secret: "cs".into(),
+            timeout: Duration::from_secs(5),
+        };
+        let out = refresh_long_lived(&cfg, "old-ll", 1_000).expect("exchange");
+        assert_eq!(out.access_token, "new-ll");
+        assert!(out.refresh_token.is_none(), "a long-lived exchange has no refresh token");
+        assert_eq!(out.access_expires_at_ms, 1_000 + 5_184_000_000);
     }
 
     #[test]

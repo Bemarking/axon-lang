@@ -250,6 +250,11 @@ pub mod enrichment;
 /// library of axon-lang. Per-platform pluggable `SocialConnector` cores; every
 /// result born Untrusted. OSS default = typed refusal (no fabrication).
 pub mod agora_runtime;
+/// §Fase 116.b.2 — the agora OAuth token-refresh orchestration (the OSS core the
+/// enterprise §52 daemon drives): enumerate → decide → exchange → atomically
+/// persist, closing the rotating-refresh-token trap. Clock injected; the vault
+/// is the `SecretCustody` port.
+pub mod agora_refresh;
 /// §Fase 105 — Governed CRM Delivery (`deliver`): the egress-dual of acquisition.
 /// Canonical, idempotent CRM operations delivered via a pluggable enterprise
 /// transducer; each field carries its epistemic provenance (D105.2) or the author
