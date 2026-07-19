@@ -17,6 +17,7 @@ import agora.types.{ AgoraComment, AgoraReaction, AgoraMetrics, AgoraReceipt }
 tool linkedin_read_comments {
   provider: agora_linkedin
   runtime: read_comments
+  secret: agora.linkedin.token
   requires: [r_organization_social]
   parameters: { target: String }
   output_type: List<AgoraComment>
@@ -27,6 +28,7 @@ tool linkedin_read_comments {
 tool linkedin_read_reactions {
   provider: agora_linkedin
   runtime: read_reactions
+  secret: agora.linkedin.token
   requires: [r_organization_social]
   parameters: { target: String }
   output_type: List<AgoraReaction>
@@ -37,6 +39,7 @@ tool linkedin_read_reactions {
 tool linkedin_page_analytics {
   provider: agora_linkedin
   runtime: read_metrics
+  secret: agora.linkedin.token
   requires: [r_organization_social]
   parameters: { target: String }
   output_type: AgoraMetrics
@@ -47,6 +50,7 @@ tool linkedin_page_analytics {
 tool linkedin_reply {
   provider: agora_linkedin
   runtime: reply
+  secret: agora.linkedin.token
   requires: [w_organization_social]
   parameters: { comment_id: String, text: String }
   output_type: AgoraReceipt
@@ -57,6 +61,7 @@ tool linkedin_reply {
 tool linkedin_publish_post {
   provider: agora_linkedin
   runtime: publish
+  secret: agora.linkedin.token
   requires: [w_organization_social]
   parameters: { body: String }
   output_type: AgoraReceipt
@@ -67,6 +72,7 @@ tool linkedin_publish_post {
 tool linkedin_edit_post {
   provider: agora_linkedin
   runtime: edit
+  secret: agora.linkedin.token
   requires: [w_organization_social]
   parameters: { object_id: String, body: String }
   output_type: AgoraReceipt
@@ -77,6 +83,7 @@ tool linkedin_edit_post {
 tool linkedin_delete_post {
   provider: agora_linkedin
   runtime: delete
+  secret: agora.linkedin.token
   requires: [w_organization_social]
   parameters: { object_id: String }
   output_type: String

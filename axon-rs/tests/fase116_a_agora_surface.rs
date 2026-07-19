@@ -151,6 +151,13 @@ flow SurfaceDigest(target: String) -> Digest {{
     assert_eq!(tool("facebook_publish_post").provider, "agora_facebook");
     assert_eq!(tool("instagram_publish_media").runtime, "publish");
     assert_eq!(tool("tiktok_video_metrics").provider, "agora_tiktok");
+    // §116.b — every op declares its per-tenant custody key (§94.c). At
+    // production dispatch this resolves the tenant's token into `axon_secret`,
+    // which agora_runtime threads into the connector's CallContext.
+    assert_eq!(tool("facebook_read_comments").secret, "agora.facebook.token");
+    assert_eq!(tool("instagram_publish_media").secret, "agora.instagram.token");
+    assert_eq!(tool("linkedin_publish_post").secret, "agora.linkedin.token");
+    assert_eq!(tool("tiktok_video_metrics").secret, "agora.tiktok.token");
     // D116.7: TikTok is read-first — no publish op on its surface until §116.f.
     assert!(
         !success

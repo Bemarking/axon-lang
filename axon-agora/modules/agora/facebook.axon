@@ -19,6 +19,7 @@ import agora.types.{ AgoraComment, AgoraMetrics, AgoraReceipt }
 tool facebook_read_comments {
   provider: agora_facebook
   runtime: read_comments
+  secret: agora.facebook.token
   requires: [pages_read_engagement]
   parameters: { target: String }
   output_type: List<AgoraComment>
@@ -29,6 +30,7 @@ tool facebook_read_comments {
 tool facebook_page_insights {
   provider: agora_facebook
   runtime: read_metrics
+  secret: agora.facebook.token
   requires: [pages_read_engagement]
   parameters: { target: String }
   output_type: AgoraMetrics
@@ -39,6 +41,7 @@ tool facebook_page_insights {
 tool facebook_reply {
   provider: agora_facebook
   runtime: reply
+  secret: agora.facebook.token
   requires: [pages_manage_engagement]
   parameters: { comment_id: String, text: String }
   output_type: AgoraReceipt
@@ -49,6 +52,7 @@ tool facebook_reply {
 tool facebook_moderate {
   provider: agora_facebook
   runtime: moderate
+  secret: agora.facebook.token
   requires: [pages_manage_engagement]
   parameters: { comment_id: String, action: String }
   output_type: String
@@ -59,6 +63,7 @@ tool facebook_moderate {
 tool facebook_publish_post {
   provider: agora_facebook
   runtime: publish
+  secret: agora.facebook.token
   requires: [pages_manage_posts]
   parameters: { body: String }
   output_type: AgoraReceipt
@@ -69,6 +74,7 @@ tool facebook_publish_post {
 tool facebook_delete_post {
   provider: agora_facebook
   runtime: delete
+  secret: agora.facebook.token
   requires: [pages_manage_engagement]
   parameters: { object_id: String }
   output_type: String

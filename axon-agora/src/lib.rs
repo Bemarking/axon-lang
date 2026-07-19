@@ -26,6 +26,7 @@
 
 pub mod connector;
 pub mod facebook;
+pub mod oauth;
 pub mod platform;
 pub mod posture;
 pub mod protocol;
@@ -37,6 +38,10 @@ pub use connector::{
     PublishRequest, Reaction, SocialConnector,
 };
 pub use facebook::{FacebookPagesConfig, FacebookPagesConnector};
+pub use oauth::{
+    needs_refresh, refresh_grant, refresh_mechanism, OAuthError, RefreshGrantConfig,
+    RefreshMechanism, RefreshedTokens,
+};
 pub use platform::{Operation, Platform};
 pub use posture::{posture_check, AppAudit, Attendance, PostureRefusal, TargetKind};
 pub use protocol::{is_multi_step, publish_protocol, validate_sequence, ProtocolViolation};

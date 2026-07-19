@@ -19,6 +19,7 @@ import agora.types.{ AgoraComment, AgoraMetrics }
 tool tiktok_read_comments {
   provider: agora_tiktok
   runtime: read_comments
+  secret: agora.tiktok.token
   requires: [comment.list]
   parameters: { target: String }
   output_type: List<AgoraComment>
@@ -29,6 +30,7 @@ tool tiktok_read_comments {
 tool tiktok_video_metrics {
   provider: agora_tiktok
   runtime: read_metrics
+  secret: agora.tiktok.token
   requires: [video.list]
   parameters: { target: String }
   output_type: AgoraMetrics

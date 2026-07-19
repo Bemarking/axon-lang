@@ -18,6 +18,7 @@ import agora.types.{ AgoraComment, AgoraMetrics, AgoraReceipt }
 tool instagram_read_comments {
   provider: agora_instagram
   runtime: read_comments
+  secret: agora.instagram.token
   requires: [instagram_business_basic]
   parameters: { target: String }
   output_type: List<AgoraComment>
@@ -28,6 +29,7 @@ tool instagram_read_comments {
 tool instagram_insights {
   provider: agora_instagram
   runtime: read_metrics
+  secret: agora.instagram.token
   requires: [instagram_business_basic]
   parameters: { target: String }
   output_type: AgoraMetrics
@@ -38,6 +40,7 @@ tool instagram_insights {
 tool instagram_reply {
   provider: agora_instagram
   runtime: reply
+  secret: agora.instagram.token
   requires: [instagram_business_basic, instagram_business_manage_comments]
   parameters: { comment_id: String, text: String }
   output_type: AgoraReceipt
@@ -48,6 +51,7 @@ tool instagram_reply {
 tool instagram_moderate {
   provider: agora_instagram
   runtime: moderate
+  secret: agora.instagram.token
   requires: [instagram_business_basic, instagram_business_manage_comments]
   parameters: { comment_id: String, action: String }
   output_type: String
@@ -58,6 +62,7 @@ tool instagram_moderate {
 tool instagram_publish_media {
   provider: agora_instagram
   runtime: publish
+  secret: agora.instagram.token
   requires: [instagram_business_basic, instagram_business_content_publish]
   parameters: { body: String, media_urls: List<String> }
   output_type: AgoraReceipt
