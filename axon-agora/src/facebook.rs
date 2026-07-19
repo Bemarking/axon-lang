@@ -25,6 +25,7 @@ use crate::connector::{
     CallContext, Comment, ConnectorError, Metrics, ModerationAction, PublishReceipt,
     PublishRequest, Reaction, SocialConnector,
 };
+use crate::graph;
 use crate::platform::Platform;
 
 /// Default Graph API base. Overridable for fixture servers + regional gateways.
@@ -91,12 +92,7 @@ impl FacebookPagesConnector {
     }
 
     fn url(&self, path: &str) -> String {
-        format!(
-            "{}/{}/{}",
-            self.config.base_url.trim_end_matches('/'),
-            self.config.graph_version,
-            path.trim_start_matches('/')
-        )
+        graph::url(&self.config.base_url, &self.config.graph_version, path)
     }
 
     /// Per-call token: custody injection first (§94.c), configured fallback
@@ -108,30 +104,12 @@ impl FacebookPagesConnector {
             .ok_or(ConnectorError::MissingCredential { platform: Platform::FacebookPages })
     }
 
-    /// Run a request, mapping transport errors and Graph-shaped error bodies
-    /// (`{"error":{"message","code"}}`) into typed [`ConnectorError`]s.
     fn execute(
         &self,
         req: reqwest::blocking::RequestBuilder,
         token: &str,
     ) -> Result<serde_json::Value, ConnectorError> {
-        let resp = req
-            .bearer_auth(token)
-            .send()
-            .map_err(|e| ConnectorError::Transport(e.to_string()))?;
-        let status = resp.status().as_u16();
-        let body: serde_json::Value = resp
-            .json()
-            .map_err(|e| ConnectorError::Transport(format!("non-JSON response: {e}")))?;
-        if status >= 400 {
-            let message = body
-                .pointer("/error/message")
-                .and_then(|v| v.as_str())
-                .unwrap_or("(no Graph error message)")
-                .to_string();
-            return Err(ConnectorError::Platform { status, message });
-        }
-        Ok(body)
+        graph::execute(req, token)
     }
 }
 
@@ -163,9 +141,9 @@ impl SocialConnector for FacebookPagesConnector {
             .map(|rows| {
                 rows.iter()
                     .map(|r| Comment {
-                        id: str_at(r, "/id"),
-                        author: str_at(r, "/from/name"),
-                        text: str_at(r, "/message"),
+                        id: graph::str_at(r, "/id"),
+                        author: graph::str_at(r, "/from/name"),
+                        text: graph::str_at(r, "/message"),
                     })
                     .collect()
             })
@@ -238,7 +216,7 @@ impl SocialConnector for FacebookPagesConnector {
                 .form(&[("message", text)]),
             token,
         )?;
-        Ok(PublishReceipt { object_id: str_at(&body, "/id"), url: None })
+        Ok(PublishReceipt { object_id: graph::str_at(&body, "/id"), url: None })
     }
 
     /// Hide: `POST /{comment_id}` with `is_hidden=true`. Delete:
@@ -307,7 +285,7 @@ impl SocialConnector for FacebookPagesConnector {
             .pointer("/post_id")
             .and_then(|v| v.as_str())
             .map(str::to_string)
-            .unwrap_or_else(|| str_at(&body, "/id"));
+            .unwrap_or_else(|| graph::str_at(&body, "/id"));
         Ok(PublishReceipt { object_id, url: None })
     }
 
@@ -331,15 +309,6 @@ impl SocialConnector for FacebookPagesConnector {
         self.execute(self.client.delete(self.url(object_id)), token)?;
         Ok(())
     }
-}
-
-/// Extract a string at a JSON pointer, empty when absent (Graph omits fields
-/// the token cannot see — an absent author is empty, never fabricated).
-fn str_at(v: &serde_json::Value, pointer: &str) -> String {
-    v.pointer(pointer)
-        .and_then(|x| x.as_str())
-        .unwrap_or_default()
-        .to_string()
 }
 
 #[cfg(test)]

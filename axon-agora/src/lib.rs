@@ -26,6 +26,8 @@
 
 pub mod connector;
 pub mod facebook;
+mod graph;
+pub mod instagram;
 pub mod oauth;
 pub mod platform;
 pub mod posture;
@@ -38,6 +40,7 @@ pub use connector::{
     PublishRequest, Reaction, SocialConnector,
 };
 pub use facebook::{FacebookPagesConfig, FacebookPagesConnector};
+pub use instagram::{InstagramConfig, InstagramConnector};
 pub use oauth::{
     needs_refresh, refresh_grant, refresh_mechanism, OAuthError, RefreshGrantConfig,
     RefreshMechanism, RefreshedTokens,
