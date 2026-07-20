@@ -245,9 +245,13 @@ impl SocialConnector for FacebookPagesConnector {
     }
 
     /// Text → `POST /{page_id}/feed`; single photo → `POST /{page_id}/photos`
-    /// with `url` + `caption` (published). Multi-photo (unpublished-photos +
-    /// `attached_media`) is deferred, named: `Unsupported` until §116.c.2 lands
-    /// it with recorded fixtures — never a silently-degraded post.
+    /// with `url` + `caption` (published). **Multi-photo (§116.c.3)** = the
+    /// two-step `attached_media` flow the paper (§2.2) verified: each image is
+    /// first uploaded as an UNPUBLISHED photo container
+    /// (`POST /{page_id}/photos` with `published=false` → `{id}`), then a single
+    /// `POST /{page_id}/feed` attaches all containers via
+    /// `attached_media[i]={"media_fbid":<id>}`. One post carries the album — no
+    /// silent degradation to a first-photo-only post.
     fn publish(
         &self,
         ctx: &CallContext,
@@ -269,14 +273,43 @@ impl SocialConnector for FacebookPagesConnector {
                 ]),
                 token,
             )?,
-            n => {
-                return Err(ConnectorError::Unsupported {
-                    platform: Platform::FacebookPages,
-                    reason: format!(
-                        "multi-photo posts ({n} media) need the unpublished-photos + \
-                         attached_media flow — deferred to §116.c.2, not silently degraded"
-                    ),
-                })
+            _ => {
+                // §116.c.3 — step 1: upload each image as an UNPUBLISHED photo
+                // container, collecting its fbid. A container with no returned id
+                // is a hard failure (never attach a phantom media to the post).
+                let mut fbids: Vec<String> = Vec::with_capacity(req.media_urls.len());
+                for media in &req.media_urls {
+                    let container = self.execute(
+                        self.client.post(self.url(&format!("{page}/photos"))).form(&[
+                            ("url", media.as_str()),
+                            ("published", "false"),
+                        ]),
+                        token,
+                    )?;
+                    let fbid = graph::str_at(&container, "/id");
+                    if fbid.is_empty() {
+                        return Err(ConnectorError::Platform {
+                            status: 502,
+                            message: "unpublished photo upload returned no media id".to_string(),
+                        });
+                    }
+                    fbids.push(fbid);
+                }
+                // Step 2: one feed post attaching every container. `attached_media[i]`
+                // takes a JSON object as its value (built with serde so the fbid is
+                // escaped, never string-concatenated).
+                let mut form: Vec<(String, String)> = Vec::with_capacity(fbids.len() + 1);
+                form.push(("message".to_string(), req.body.clone()));
+                for (i, fbid) in fbids.iter().enumerate() {
+                    form.push((
+                        format!("attached_media[{i}]"),
+                        serde_json::json!({ "media_fbid": fbid }).to_string(),
+                    ));
+                }
+                self.execute(
+                    self.client.post(self.url(&format!("{page}/feed"))).form(&form),
+                    token,
+                )?
             }
         };
         // /photos returns {id, post_id}; /feed returns {id}. The POST id is the
@@ -363,17 +396,9 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn multi_photo_publish_is_deferred_not_degraded() {
-        let c = FacebookPagesConnector::new(FacebookPagesConfig::new("p")).unwrap();
-        let ctx = CallContext { secret: Some("t".into()) };
-        let req = PublishRequest {
-            body: "x".into(),
-            media_urls: vec!["https://a/1.png".into(), "https://a/2.png".into()],
-        };
-        assert!(matches!(
-            c.publish(&ctx, &req),
-            Err(ConnectorError::Unsupported { .. })
-        ));
-    }
+    // §116.c.3 — the multi-photo `attached_media` flow is HTTP-driven (two-step:
+    // unpublished containers → feed attach), so its coverage lives in the
+    // recorded-fixture integration test (`fase116_c_facebook.rs`) where a
+    // Graph-shaped server observes the two POST /photos + one POST /feed with
+    // `attached_media`. There is nothing network-free left to assert here.
 }

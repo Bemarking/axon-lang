@@ -65,7 +65,10 @@ tool facebook_publish_post {
   runtime: publish
   secret: agora.facebook.token
   requires: [pages_manage_posts]
-  parameters: { body: String }
+  // §116.c.3 — `media_urls` is OPTIONAL (Facebook, unlike Instagram, has
+  // text-only posts): absent/empty ⇒ text `/feed`; one url ⇒ single photo;
+  // two or more ⇒ the unpublished-containers + `attached_media` album flow.
+  parameters: { body: String, media_urls: List<String>? }
   output_type: AgoraReceipt
   effects: <network>
   timeout: 60s

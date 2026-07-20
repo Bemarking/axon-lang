@@ -27,8 +27,9 @@ use axon_agora::{
 };
 use axon_frontend::ems::{compile_project, EmsOptions};
 
-/// One observed request: (method, path-with-query, authorization header).
-type Seen = Arc<Mutex<Vec<(String, String, String)>>>;
+/// One observed request: (method, path-with-query, authorization header,
+/// request body). The body lets §116.c.3 assert the `attached_media` album.
+type Seen = Arc<Mutex<Vec<(String, String, String, String)>>>;
 
 /// A minimal deterministic Graph fixture server (std-only, one response per
 /// connection, `Connection: close`). Returns its base URL + the request log.
@@ -74,20 +75,25 @@ fn spawn_graph_fixture() -> (String, Seen) {
                         content_length = v.trim().parse().unwrap_or(0);
                     }
                 }
-                // Drain the body (form-encoded; the routes below don't parse it).
-                let mut body_have = buf.len() - (header_end + 4);
-                while body_have < content_length {
+                // Read the full form-encoded body into `buf` so tests can assert
+                // what was POSTed (e.g. the §116.c.3 `attached_media` album).
+                let body_start = header_end + 4;
+                while buf.len() - body_start < content_length {
                     match stream.read(&mut tmp) {
                         Ok(0) => break,
-                        Ok(n) => body_have += n,
+                        Ok(n) => buf.extend_from_slice(&tmp[..n]),
                         Err(_) => break,
                     }
                 }
+                let body_end = (body_start + content_length).min(buf.len());
+                let req_body = String::from_utf8_lossy(&buf[body_start..body_end]).to_string();
 
                 let mut parts = request_line.split_whitespace();
                 let method = parts.next().unwrap_or_default().to_string();
                 let path = parts.next().unwrap_or_default().to_string();
-                seen.lock().unwrap().push((method.clone(), path.clone(), auth.clone()));
+                seen.lock()
+                    .unwrap()
+                    .push((method.clone(), path.clone(), auth.clone(), req_body));
 
                 // ── The prod invariant: no valid Bearer, no data. ────────────
                 let authorized = auth == "Bearer test-token" || auth == "Bearer custody-token";
@@ -198,8 +204,67 @@ fn writes_reply_moderate_publish_delete_against_the_fixture() {
 
     // The fixture saw the right verbs on the right paths.
     let log = seen.lock().unwrap();
-    assert!(log.iter().any(|(m, p, _)| m == "POST" && p.starts_with("/v21.0/page1/feed")));
-    assert!(log.iter().any(|(m, p, _)| m == "DELETE" && p.starts_with("/v21.0/page1_post9")));
+    assert!(log.iter().any(|(m, p, _, _)| m == "POST" && p.starts_with("/v21.0/page1/feed")));
+    assert!(log.iter().any(|(m, p, _, _)| m == "DELETE" && p.starts_with("/v21.0/page1_post9")));
+}
+
+#[test]
+fn multi_photo_publish_uploads_unpublished_containers_then_attaches_to_feed() {
+    // §116.c.3 — three images become one album: three UNPUBLISHED photo
+    // uploads, then a single feed post attaching all three via `attached_media`.
+    let (base, seen) = spawn_graph_fixture();
+    let c = connector_for(&base, Some("test-token"));
+    let ctx = CallContext::none();
+
+    let album = PublishRequest {
+        body: "vacation album".into(),
+        media_urls: vec![
+            "https://img.example/1.png".into(),
+            "https://img.example/2.png".into(),
+            "https://img.example/3.png".into(),
+        ],
+    };
+    let receipt = c.publish(&ctx, &album).expect("multi-photo publish");
+    // The receipt is the FEED post (the album), not any single container.
+    assert_eq!(receipt.object_id, "page1_post9");
+
+    let log = seen.lock().unwrap();
+    // Exactly one UNPUBLISHED-photo upload per image…
+    let uploads: Vec<_> = log
+        .iter()
+        .filter(|(m, p, _, _)| m == "POST" && p == "/v21.0/page1/photos")
+        .collect();
+    assert_eq!(uploads.len(), 3, "one container upload per media url");
+    for (_, _, _, body) in &uploads {
+        // Each container is created unpublished (never a live post per photo).
+        assert!(
+            body.contains("published=false"),
+            "container must be unpublished; body: {body}"
+        );
+    }
+    // …then exactly one feed post attaching every container.
+    let feeds: Vec<_> = log
+        .iter()
+        .filter(|(m, p, _, _)| m == "POST" && p == "/v21.0/page1/feed")
+        .collect();
+    assert_eq!(feeds.len(), 1, "one feed post carries the album");
+    let feed_body = &feeds[0].3;
+    // `attached_media[0]` / `media_fbid` survive URL-encoding as substrings
+    // (`attached_media%5B0%5D`, `%22media_fbid%22`).
+    assert!(
+        feed_body.contains("attached_media") && feed_body.contains("media_fbid"),
+        "feed post must attach the containers; body: {feed_body}"
+    );
+    // Three attachment slots (indices 0..2) for three images.
+    for i in 0..3 {
+        assert!(
+            feed_body.contains(&format!("attached_media%5B{i}%5D"))
+                || feed_body.contains(&format!("attached_media[{i}]")),
+            "attached_media[{i}] must be present; body: {feed_body}"
+        );
+    }
+    // The message rides with the album.
+    assert!(feed_body.contains("message="), "the album carries its message");
 }
 
 #[test]
@@ -330,9 +395,9 @@ fn custody_injected_secret_takes_precedence_and_never_leaks() {
     );
     let log = seen.lock().unwrap();
     assert!(
-        log.iter().any(|(_, _, a)| a == "Bearer custody-token"),
+        log.iter().any(|(_, _, a, _)| a == "Bearer custody-token"),
         "the fixture must have seen the custody Bearer; saw: {:?}",
-        log.iter().map(|(_, _, a)| a.clone()).collect::<Vec<_>>()
+        log.iter().map(|(_, _, a, _)| a.clone()).collect::<Vec<_>>()
     );
     drop(log);
     clear_agora_connectors();
