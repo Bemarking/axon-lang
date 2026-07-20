@@ -365,6 +365,83 @@ fn ems_to_registry_to_connector_one_real_http_hop() {
     clear_agora_connectors();
 }
 
+/// §116.c.4 — the flow-reachability e2e for multi-photo. A flow that binds a
+/// `List<String>` argument in a `use` now BOTH type-checks (the surface accepts
+/// `media_urls: List<String>?`) AND, once the runner materializes that list into
+/// a JSON array (proven by the runner's `build_body_emits_a_list_param_as_a_json_array`
+/// unit test), drives the connector's attached_media album through dispatch_agora
+/// → build_publish_request. Here we compile such a flow and dispatch the exact
+/// array-shaped argument the runner builds, asserting the fixture sees the album.
+#[test]
+fn multi_photo_flow_typechecks_and_dispatch_materializes_the_album() {
+    let _g = REG_LOCK.lock().unwrap();
+    let (base, seen) = spawn_graph_fixture();
+
+    // (a) The flow with a List-typed `use` argument compiles.
+    let dir = std::env::temp_dir().join(format!(
+        "fase116c-album-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let entry = dir.join("main.axon");
+    std::fs::write(
+        &entry,
+        r#"import agora.facebook.{ facebook_publish_post }
+
+credential PageAuth { ttl: 1h grants: [pages_manage_posts] }
+
+type Digest { text: String }
+
+flow PostAlbum(caption: String) -> Digest {
+  use facebook_publish_post(body = "${caption}", media_urls = ["https://a/1.png", "https://a/2.png", "https://a/3.png"])
+  step Summarize { ask: "confirm the album" output: Digest }
+}
+"#,
+    )
+    .expect("write entry");
+    let opts = EmsOptions {
+        modules_root: Some(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../axon-agora/modules"),
+        ),
+        use_cache: false,
+        cache_dir: None,
+    };
+    let success = compile_project(&entry, &opts).expect("album flow compiles with a List arg");
+
+    // (b) Dispatch the array-shaped argument the runner assembles for that `use`.
+    let mut registry = ToolRegistry::new();
+    registry.register_from_ir(&success.ir.tools);
+    clear_agora_connectors();
+    register_agora_connector(Arc::new(connector_for(&base, Some("test-token"))));
+
+    let out = registry
+        .dispatch(
+            "facebook_publish_post",
+            r#"{"body":"album","media_urls":["https://a/1.png","https://a/2.png","https://a/3.png"]}"#,
+        )
+        .expect("dispatch multi-photo publish");
+    assert!(out.success, "got: {}", out.output);
+    clear_agora_connectors();
+
+    // The connector ran the attached_media album: 3 unpublished uploads + 1 feed.
+    let log = seen.lock().unwrap();
+    let uploads = log
+        .iter()
+        .filter(|(m, p, _, _)| m == "POST" && p == "/v21.0/page1/photos")
+        .count();
+    assert_eq!(uploads, 3, "one unpublished container per media url");
+    let feed = log
+        .iter()
+        .find(|(m, p, _, _)| m == "POST" && p == "/v21.0/page1/feed")
+        .expect("feed post");
+    assert!(
+        feed.3.contains("attached_media") && feed.3.contains("media_fbid"),
+        "feed attaches the album; body: {}",
+        feed.3
+    );
+}
+
 /// §94.c precedence, end to end: the custody-injected `axon_secret` becomes the
 /// Bearer header (overriding the connector's stale config token), and the value
 /// never reaches the output.

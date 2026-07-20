@@ -522,32 +522,137 @@ pub(crate) fn build_structured_tool_body(
     serde_json::Value::Object(map).to_string()
 }
 
-/// §Fase 58.e — coerce an interpolated arg value to JSON per its DECLARED type.
-/// `Int`/`Float`/`Bool` parse into the matching JSON scalar; a value that does
-/// not parse falls back to a JSON string (the §58.d type-checker already flags
-/// a literal mismatch at compile time — interpolated/runtime values are coerced
-/// leniently rather than dropped). `String`, custom domain types, lists, and
+/// §Fase 58.e / §116.c.4 — coerce an interpolated arg value to JSON per its
+/// DECLARED type. `Int`/`Float`/`Bool` parse into the matching JSON scalar;
+/// `List<T>` materializes into a JSON ARRAY (see [`coerce_list_value`]); a value
+/// that does not parse falls back to a JSON string (the §58.d type-checker
+/// already flags a literal mismatch at compile time — interpolated/runtime values
+/// are coerced leniently rather than dropped). `String`, custom domain types, and
 /// unknown / schema-less (`None`) stay JSON strings — so a `String` parameter
 /// keeps its value verbatim even when it is all-digits.
 pub(crate) fn coerce_tool_arg_value(value: &str, declared_type: Option<&str>) -> serde_json::Value {
-    let base = declared_type.map(|t| t.trim_end_matches('?').split('<').next().unwrap_or(t));
+    // Strip the optional `?` marker; the base is the head before `<` (`List` for
+    // `List<String>`), the inner is the `<…>` payload (element type).
+    let normalized = declared_type.map(|t| t.trim().trim_end_matches('?').trim());
+    let base = normalized.map(|t| t.split('<').next().unwrap_or(t).trim());
     match base {
-        Some("Int") => value
+        Some("List") => {
+            let inner = normalized
+                .and_then(|t| t.split_once('<'))
+                .map(|(_, rest)| rest.trim_end_matches('>').trim())
+                .unwrap_or("String");
+            coerce_list_value(value, inner)
+        }
+        Some(scalar) => coerce_scalar_value(value, scalar),
+        None => serde_json::Value::String(value.to_string()),
+    }
+}
+
+/// Coerce ONE scalar value to JSON per its base type. Non-parsing values fall
+/// back to a JSON string (lenient — the compile-time checker owns rejection).
+fn coerce_scalar_value(value: &str, base: &str) -> serde_json::Value {
+    match base {
+        "Int" => value
             .parse::<i64>()
             .map(|i| serde_json::Value::Number(i.into()))
             .unwrap_or_else(|_| serde_json::Value::String(value.to_string())),
-        Some("Float") => value
+        "Float" => value
             .parse::<f64>()
             .ok()
             .and_then(serde_json::Number::from_f64)
             .map(serde_json::Value::Number)
             .unwrap_or_else(|| serde_json::Value::String(value.to_string())),
-        Some("Bool") => match value {
+        "Bool" => match value {
             "true" => serde_json::Value::Bool(true),
             "false" => serde_json::Value::Bool(false),
             _ => serde_json::Value::String(value.to_string()),
         },
         _ => serde_json::Value::String(value.to_string()),
+    }
+}
+
+/// §Fase 116.c.4 — materialize a `List<T>` argument into a JSON array so a
+/// `use Tool(media_urls = ["a", "b"])` reaches the connector as a real array
+/// (pre-116.c.4 it stayed the opaque JSON STRING `"[a, b]"`, so EVERY list-typed
+/// tool param — FB multi-photo, IG carousel — was unreachable from a flow).
+///
+/// Two forms are accepted:
+///   1. Already-valid JSON (a step output, or a quoted-item literal `["a","b"]`)
+///      whose parse is an array — passed through verbatim.
+///   2. The parser's lossy surface rendering `[a, b, c]` (list items are
+///      comma-joined and unquoted by `parse_let_list_literal`) — split at the top
+///      level (quote/bracket-aware), surrounding quotes stripped, each element
+///      coerced by the inner type `T`.
+///
+/// Residual limitation (named, not silent): because the surface rendering drops
+/// the source quotes, an item that itself contains a top-level comma cannot be
+/// recovered from form (2) — realistic string/URL/number lists do not hit this;
+/// the deeper fix is structured list values carried through the IR (like §70.f's
+/// `value_ast` for expressions).
+fn coerce_list_value(value: &str, inner: &str) -> serde_json::Value {
+    let trimmed = value.trim();
+    // Form (1): already valid JSON array.
+    if let Ok(v @ serde_json::Value::Array(_)) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        return v;
+    }
+    // Form (2): the `[…]` surface rendering.
+    match trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+        Some(body) if body.trim().is_empty() => serde_json::Value::Array(Vec::new()),
+        Some(body) => serde_json::Value::Array(
+            split_top_level_commas(body)
+                .into_iter()
+                .map(|item| coerce_scalar_value(strip_matching_quotes(item.trim()), inner))
+                .collect(),
+        ),
+        // Not a list surface — a lone value for a `List` param is a 1-element list.
+        None => serde_json::Value::Array(vec![coerce_scalar_value(trimmed, inner)]),
+    }
+}
+
+/// Split on commas at bracket/brace depth 0 and outside quotes, so a nested
+/// structure or a quoted element containing a comma is not split mid-item.
+fn split_top_level_commas(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut buf = String::new();
+    let mut depth = 0i32;
+    let mut quote: Option<char> = None;
+    for c in s.chars() {
+        match quote {
+            Some(q) => {
+                buf.push(c);
+                if c == q {
+                    quote = None;
+                }
+            }
+            None => match c {
+                '"' | '\'' => {
+                    quote = Some(c);
+                    buf.push(c);
+                }
+                '[' | '{' => {
+                    depth += 1;
+                    buf.push(c);
+                }
+                ']' | '}' => {
+                    depth -= 1;
+                    buf.push(c);
+                }
+                ',' if depth == 0 => out.push(std::mem::take(&mut buf)),
+                _ => buf.push(c),
+            },
+        }
+    }
+    out.push(buf);
+    out
+}
+
+/// Strip a single pair of matching surrounding quotes (`"…"` or `'…'`).
+fn strip_matching_quotes(s: &str) -> &str {
+    let b = s.as_bytes();
+    if b.len() >= 2 && (b[0] == b'"' || b[0] == b'\'') && b[b.len() - 1] == b[0] {
+        &s[1..s.len() - 1]
+    } else {
+        s
     }
 }
 
@@ -4794,10 +4899,80 @@ mod fase58e_tests {
     #[test]
     fn coerce_optional_and_generic_types_use_base() {
         assert_eq!(coerce_tool_arg_value("7", Some("Int?")), serde_json::json!(7));
-        // `List<String>` → base `List` → not a scalar → string.
+        // §116.c.4 — `List<String>` → base `List` → a JSON ARRAY. A lone value
+        // for a List param is a 1-element list (never a bare string).
         assert_eq!(
             coerce_tool_arg_value("x", Some("List<String>")),
-            serde_json::json!("x")
+            serde_json::json!(["x"])
+        );
+    }
+
+    #[test]
+    fn coerce_list_materializes_the_surface_form_into_a_json_array() {
+        // §116.c.4 — the parser's lossy surface rendering `[a, b]` (items unquoted,
+        // comma-joined) becomes a real JSON array — the FB multi-photo / IG carousel
+        // unblocker. Pre-116.c.4 this stayed the opaque string "[a, b]".
+        assert_eq!(
+            coerce_tool_arg_value(
+                "[https://a/1.png, https://a/2.png]",
+                Some("List<String>?")
+            ),
+            serde_json::json!(["https://a/1.png", "https://a/2.png"])
+        );
+        // Empty list.
+        assert_eq!(
+            coerce_tool_arg_value("[]", Some("List<String>")),
+            serde_json::json!([])
+        );
+        // Inner element type coercion (List<Int>).
+        assert_eq!(
+            coerce_tool_arg_value("[1, 2, 3]", Some("List<Int>")),
+            serde_json::json!([1, 2, 3])
+        );
+    }
+
+    #[test]
+    fn coerce_list_passes_through_valid_json_and_strips_quotes() {
+        // Already-valid JSON (e.g. a step output) passes through unchanged.
+        assert_eq!(
+            coerce_tool_arg_value(r#"["x","y"]"#, Some("List<String>")),
+            serde_json::json!(["x", "y"])
+        );
+        // A quoted element containing a comma is NOT split mid-item.
+        assert_eq!(
+            coerce_tool_arg_value(r#"["a, b", c]"#, Some("List<String>")),
+            serde_json::json!(["a, b", "c"])
+        );
+    }
+
+    #[test]
+    fn build_body_emits_a_list_param_as_a_json_array_alongside_scalars() {
+        // §116.c.4 — the EXACT assembly the runner runs at dispatch: a
+        // `use facebook_publish_post(body = "album", media_urls = [a, b, c])`
+        // must reach the connector with `media_urls` as a JSON ARRAY (so
+        // build_publish_request materializes the multi-photo flow), while a
+        // sibling `String` param stays a string.
+        let interpolated = vec![
+            ("body".to_string(), "album".to_string()),
+            (
+                "media_urls".to_string(),
+                "[https://a/1.png, https://a/2.png, https://a/3.png]".to_string(),
+            ),
+        ];
+        let param_types = vec![
+            ("body".to_string(), "String".to_string()),
+            ("media_urls".to_string(), "List<String>?".to_string()),
+        ];
+        let body = build_structured_tool_body(&interpolated, &param_types);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["body"], serde_json::json!("album"));
+        assert_eq!(
+            v["media_urls"],
+            serde_json::json!([
+                "https://a/1.png",
+                "https://a/2.png",
+                "https://a/3.png"
+            ])
         );
     }
 
