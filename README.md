@@ -156,7 +156,7 @@ Each framework has an operational runbook and an audit-evidence pipeline that em
 ### Try it in 30 seconds
 
 ```bash
-pip install axon-lang           # or: download the Rust binary from Releases
+cargo install axon-lang         # or: download the native binary from Releases
 echo 'type PatientRecord compliance [HIPAA, GDPR] { ssn: String }
 shield PHIShield { scan: [pii_leak] on_breach: halt severity: critical
                    compliance: [HIPAA, GDPR] }
@@ -266,7 +266,7 @@ flow AnalyzeContract(doc: Document) -> StructuredReport {
 
 AXON v2.3.0 ships a **production-hardened** 100% Rust + C23 native runtime server with **285+ HTTP routes**, **65+ primitives** wired to runtime, an **algebraic-effects execution engine**, a **real-time SSE / NDJSON / session-typed WebSocket streaming wire**, a full **ℰMCP** (Epistemic Model Context Protocol) implementation, **PostgreSQL persistence**, **structured observability via tracing**, **LLM call resilience** (retry + circuit breaker + fallback chains across seven native backends), and a complete native CLI (`check`, `compile`, `run`, `serve`, `parse`, `dossier`, `sbom`, `audit`, `evidence-package`, and more).
 
-The **Rust + C23 stack is the canonical implementation** of the language. Fase 40 (*Pure Silicon*, v2.0.0) retired the Python interpreter — the original `pip install axon-lang` package is now a thin wrapper that downloads + invokes the native Rust binary. The FIPS-routable cryptographic + tokeniser kernels live in [`axon-csys`](axon-csys/) as standalone C23 (no `unsafe` glue: `_Generic`-dispatched headers, `[[nodiscard]]` everywhere, sanitizer-clean + valgrind-clean CI lanes).
+The **Rust + C23 stack is the canonical implementation** of the language. Fase 40 (*Pure Silicon*, v2.0.0) retired the Python interpreter — and the PyPI line has since been closed with a tombstone release that redirects to `cargo install axon-lang` (the historical Python releases remain archived on PyPI, unmaintained). The FIPS-routable cryptographic + tokeniser kernels live in [`axon-csys`](axon-csys/) as standalone C23 (no `unsafe` glue: `_Generic`-dispatched headers, `[[nodiscard]]` everywhere, sanitizer-clean + valgrind-clean CI lanes).
 
 **Production Foundation (Phase K):**
 - **Observability**: JSON structured logging with request tracing, daily log rotation, configurable levels
@@ -4743,10 +4743,9 @@ axon-constructor/
 > runtime, HTTP server, seven LLM backends, the SSE / NDJSON / WebSocket
 > streaming wire, the session-typed dialogue driver — ships as a single native
 > binary, no interpreter required. Download a prebuilt (Option 1) or
-> `cargo build` from source (Option 2). The original Python package
-> (`pip install axon-lang`) is now a thin wrapper that downloads + invokes the
-> native binary — the Python interpreter was retired in Fase 40 (*Pure Silicon*,
-> v2.0.0).
+> `cargo build` from source (Option 2). The Python interpreter was retired in
+> Fase 40 (*Pure Silicon*, v2.0.0); the PyPI package is now a tombstone that
+> redirects to `cargo install axon-lang`.
 
 ### Option 1 — Download the binary (recommended)
 
@@ -4938,7 +4937,7 @@ Plus dedicated integration lanes per cycle:
 - §Fase 39 FlowEnvelope wire contract drift gate
 - Real-`postgres:16` integration lane for the `axonstore` data plane
 
-> **Python wrapper note.** Since Fase 40 (*Pure Silicon*, v2.0.0) the `pip install axon-lang` package is a thin wrapper that downloads + invokes the native Rust binary; the historical Python interpreter has been retired. The `tests/` directory ships only the wrapper contract tests + the CLI smoke test (the runtime is exercised by the Rust suite above).
+> **Python note.** The Python interpreter was retired in Fase 40 (*Pure Silicon*, v2.0.0), and the PyPI distribution line was closed with a tombstone release that redirects to `cargo install axon-lang`. The root `tests/` directory holds cross-stack golden fixtures (consumed by the Rust drift-gate suites) and k6 load scripts — no Python.
 
 Every development cycle (Fase) lands behind a dedicated CI workflow under
 [`.github/workflows/`](.github/workflows/) — per-fase test lanes, cross-stack
