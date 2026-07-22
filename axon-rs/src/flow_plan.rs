@@ -90,7 +90,7 @@ pub fn compile_source_to_ir(
     let mut parser = crate::parser::Parser::new(tokens);
     let program = parser.parse().map_err(|e| PlanError::Parse(e.message))?;
 
-    let mut checker = crate::type_checker::TypeChecker::new(&program);
+    let checker = crate::type_checker::TypeChecker::new(&program);
     let type_errors = checker.check();
     if !type_errors.is_empty() {
         return Err(PlanError::TypeCheck(

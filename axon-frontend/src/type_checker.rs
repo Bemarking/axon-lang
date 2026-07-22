@@ -3040,7 +3040,7 @@ impl<'a> TypeChecker<'a> {
             })
             .unwrap_or_default();
 
-        let mut require = |this: &mut Self, base: &str, why: &str| {
+        let require = |this: &mut Self, base: &str, why: &str| {
             if !bases.contains(base) {
                 this.emit(
                     format!(

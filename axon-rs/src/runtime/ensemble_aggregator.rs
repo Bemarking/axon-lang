@@ -301,7 +301,7 @@ mod tests {
     #[test]
     fn majority_tie_resolves_to_partial() {
         let agg = EnsembleAggregator::new(mk_ensemble("majority", "min", Some(2))).unwrap();
-        let outs = vec![
+        let _outs = vec![
             outcome("O1", "ok", 0.9, "h1"),
             outcome("O2", "ok", 0.8, "h2"),
             outcome("O3", "failed", 0.5, "h3"),

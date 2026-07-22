@@ -360,7 +360,7 @@ pub fn render_introspection_output(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store_introspect::{IntrospectionRow, OmittedColumn};
+    use crate::store_introspect::OmittedColumn;
 
     #[test]
     fn render_introspection_output_emits_canonical_json_with_no_omission_tail() {

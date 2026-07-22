@@ -181,7 +181,7 @@ fn fips_140_3_controls() -> Vec<Control> {
         ctl!(Fips140_3, "FIPS.RNG", "Approved RNG source", "Python secrets.token_bytes (OS CSPRNG)", RuntimeInvariant, "HmacSigner.random"),
         ctl!(Fips140_3, "FIPS.CT_COMPARE", "Constant-time comparisons", "hmac.compare_digest for MAC verify", RuntimeInvariant, "HmacSigner.verify"),
         ctl!(Fips140_3, "FIPS.KEY_LIFECYCLE", "Key zeroization on dispose", "Garbage collection + no plaintext in repr", RuntimeInvariant, "Secret[T] invariant"),
-        ctl!(Fips140_3, "FIPS.DELIVERY", "Secure delivery procedures", "PyPI package + GitHub release signatures", ExternalOperational, "pyproject.toml + release workflow"),
+        ctl!(Fips140_3, "FIPS.DELIVERY", "Secure delivery procedures", "crates.io publishes + GitHub release signatures", ExternalOperational, "Cargo.toml + release workflow"),
         ctl!(Fips140_3, "FIPS.SELF_TEST", "Pre-operational self-test on load", "Pending: module-load KAT execution", TestSuite, "PENDING"),
         ctl!(Fips140_3, "FIPS.LAB_CAVP", "CAVP algorithm testing", "Business: engage NIST-accredited lab", ExternalOperational, "PENDING (external)"),
         ctl!(Fips140_3, "FIPS.CMVP", "CMVP module validation", "Business: submission to NIST", ExternalOperational, "PENDING (external)"),

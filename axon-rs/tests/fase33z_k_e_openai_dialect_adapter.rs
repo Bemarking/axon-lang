@@ -28,7 +28,7 @@
 //! can verify each expectation against the published reference.
 
 use axon::flow_execution_event::FlowExecutionEvent;
-use axon::wire_format::{select_adapter, WireFormatAdapter};
+use axon::wire_format::select_adapter;
 
 /// Helper to extract the data string from an Event via its Debug
 /// representation. axum's Event Debug shape is:

@@ -15,7 +15,7 @@
 
 use crate::ast::{
     ChannelDefinition, ConditionalNode, Declaration, DiscoverStatement, EmitStatement,
-    EpistemicBlock, FlowDefinition, FlowStep, ForInStatement, ListenStep, Loc, Program,
+    EpistemicBlock, FlowStep, ForInStatement, ListenStep, Loc, Program,
     PublishStatement,
 };
 use crate::tokens::Trivia;

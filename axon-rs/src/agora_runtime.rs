@@ -35,8 +35,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock, RwLock};
 
 use axon_agora::{
-    CallContext, Comment, ConnectorError, Metrics, ModerationAction, Operation, Platform,
-    PublishReceipt, PublishRequest, Reaction, SocialConnector,
+    CallContext, ConnectorError, ModerationAction, Operation, Platform, PublishRequest, SocialConnector,
 };
 
 use crate::emcp::EpistemicTaint;
@@ -347,6 +346,7 @@ pub use axon_agora::{
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axon_agora::{Comment, Metrics, PublishReceipt, Reaction};
     use crate::tool_registry::ToolSource;
 
     /// Serialises the registry-touching tests — the connector registry is

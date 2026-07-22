@@ -418,6 +418,9 @@ pub fn mask_dsn_pub(dsn: &str) -> String {
 /// value. This caps it ourselves on a UTF-8 char boundary so the
 /// stamped name is exactly what a DBA sees — never a server-mangled
 /// suffix.
+// Kept for the unit tests pinning the v1.36.3 truncation shape (production
+// callers use the namespace-aware variant below).
+#[cfg_attr(not(test), allow(dead_code))]
 fn application_name_for(store_name: &str) -> String {
     application_name_for_with_namespace(store_name, None)
 }

@@ -10,7 +10,7 @@
 //! published reference.
 
 use axon::flow_execution_event::FlowExecutionEvent;
-use axon::wire_format::{select_adapter, WireFormatAdapter};
+use axon::wire_format::select_adapter;
 
 /// Extract the `data:` string from axum's Event Debug repr.
 /// Same helper as in fase33z_k_e_openai_dialect_adapter.rs.

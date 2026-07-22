@@ -85,7 +85,7 @@ use super::tokens;
 use super::transport;
 use super::{
     Backend, Capability, ChatChunk, ChatRequest, ChatResponse, ChatStream,
-    FinishReason, Message, Role, Usage,
+    FinishReason, Role, Usage,
 };
 
 const PROVIDER_NAME: &str = "anthropic";
@@ -783,6 +783,7 @@ pub(crate) fn parse_anthropic_chunk(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::Message;
     use crate::backends::ToolSpec;
     use serde_json::json;
 

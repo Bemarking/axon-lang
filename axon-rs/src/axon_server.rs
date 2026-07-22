@@ -977,7 +977,7 @@ impl ServerState {
         let mut flow_rules = HashMap::new();
         let mut flow_quotas = HashMap::new();
         let mut readiness_gates = ReadinessGates::default();
-        let mut autoscale_config = AutoscaleConfig::default();
+        let autoscale_config = AutoscaleConfig::default();
         let mut endpoint_rate_limits = HashMap::new();
         let mut schedules: HashMap<String, ScheduleEntry> = HashMap::new();
         let mut recovered = false;
@@ -1875,19 +1875,6 @@ async fn deploy_handler(
         let engine = {
             let s = state.lock().unwrap();
             s.dataspace_engine.clone()
-        };
-        // §Fase 114.a — the shared, cross-request budget gate.
-        let http_budget = {
-            let s = state.lock().unwrap();
-            s.budgets.clone()
-        };
-        let http_channel_sems = {
-            let s = state.lock().unwrap();
-            s.channel_semaphores.clone()
-        };
-        let http_tool_leases = {
-            let s = state.lock().unwrap();
-            s.tool_leases.clone()
         };
         let merge_result = engine
             .write()
@@ -12468,7 +12455,7 @@ async fn execute_drain_handler(
         };
 
         match server_execute_full(&state, &source, &source_file, flow_name, backend).0 {
-            Ok(mut er) => {
+            Ok(er) => {
                 let mut trace_entry = crate::trace_store::build_trace(
                     &er.flow_name, &er.source_file, &er.backend, &client,
                     if er.success { crate::trace_store::TraceStatus::Success }
@@ -12812,8 +12799,6 @@ async fn backends_list_handler(
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let s = state.lock().unwrap();
     check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
-
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
 
     // Merge supported backends with registry entries
     let mut entries: Vec<serde_json::Value> = Vec::new();
@@ -13738,19 +13723,6 @@ fn execute_with_fallback(
         let s = state.lock().unwrap();
         s.dataspace_engine.clone()
     };
-    // §Fase 114.a — the shared, cross-request budget gate.
-    let http_budget = {
-        let s = state.lock().unwrap();
-        s.budgets.clone()
-    };
-    let http_channel_sems = {
-        let s = state.lock().unwrap();
-        s.channel_semaphores.clone()
-    };
-    let http_tool_leases = {
-        let s = state.lock().unwrap();
-        s.tool_leases.clone()
-    };
     // §Fase 114.a — the top-level `budget` gate, resolved from `ServerState` and
     // therefore the SAME bucket every request. Cloned Arc, not rebuilt: a fresh
     // gate per request starts full and bounds nothing.
@@ -13937,7 +13909,7 @@ pub fn resolve_backend_key(state: &ServerState, backend: &str) -> Result<String,
 
 /// Extract anchor names from a flow's source for CSP constraint schema.
 /// Best-effort: compiles the source and extracts anchor names from IR.
-fn extract_flow_anchors(source: &str, flow_name: &str) -> Vec<String> {
+fn extract_flow_anchors(source: &str, _flow_name: &str) -> Vec<String> {
     let tokens = match crate::lexer::Lexer::new(source, "mcp_schema").tokenize() {
         Ok(t) => t,
         Err(_) => return vec![],
@@ -14929,7 +14901,6 @@ async fn mcp_handler(
                 };
 
                 let mut s = state.lock().unwrap();
-                let client = client_key_from_headers(&headers);
                 check_auth(&mut s, &headers, AccessLevel::ReadOnly)?;
 
                 let corpus = match s.corpora.get_mut(corpus_name) {
@@ -15016,7 +14987,6 @@ async fn mcp_handler(
                         }
 
                         let query_lower = query.to_lowercase();
-                        let ontology = corpus.ontology.clone();
                         let mut citations: Vec<serde_json::Value> = Vec::new();
 
                         for doc in corpus.documents.values() {
@@ -16248,7 +16218,7 @@ async fn mcp_handler(
                     }
 
                     // Include first context as additional system context
-                    if let Some((ctx_name, scope, depth, max_tok, temp)) = contexts.first() {
+                    if let Some((ctx_name, scope, depth, _max_tok, temp)) = contexts.first() {
                         system_parts.push(format!("Context '{}': scope={}, depth={}.", ctx_name, scope, depth));
                         if let Some(t) = temp {
                             system_parts.push(format!("Temperature: {}.", t));
@@ -17301,7 +17271,7 @@ async fn execute_process_handler(
 
     // Execute
     match server_execute_full(&state, &source, &source_file, &flow_name, &backend).0 {
-        Ok(mut er) => {
+        Ok(er) => {
             let mut trace_entry = crate::trace_store::build_trace(
                 &er.flow_name, &er.source_file, &er.backend, &client,
                 if er.success { crate::trace_store::TraceStatus::Success }
@@ -18363,16 +18333,6 @@ pub struct EventStreamQuery {
 }
 
 fn default_stream_limit() -> usize { 50 }
-
-/// A stream event in SSE-like format.
-#[derive(Debug, Clone, Serialize)]
-struct StreamEvent {
-    id: u64,
-    timestamp: u64,
-    topic: String,
-    source: String,
-    payload: serde_json::Value,
-}
 
 /// GET /v1/events/stream — poll-based event stream (SSE-compatible).
 ///
@@ -22126,7 +22086,7 @@ async fn apply_output_validation_gate(
     method_str: &str,
     path_str: &str,
 ) -> axum::response::Response {
-    use axum::response::IntoResponse;
+    
     if route.output_type.is_empty() {
         return response; // D9 backwards-compat — no `output:` declared.
     }
@@ -26169,7 +26129,6 @@ async fn flow_dashboard_handler(
     }
 
     let total = flow_traces.len() as u64;
-    let errors: u64 = flow_traces.iter().map(|e| e.errors as u64).sum();
     let total_latency: u64 = flow_traces.iter().map(|e| e.latency_ms).sum();
     let total_tokens_in: u64 = flow_traces.iter().map(|e| e.tokens_input).sum();
     let total_tokens_out: u64 = flow_traces.iter().map(|e| e.tokens_output).sum();
@@ -27683,7 +27642,7 @@ async fn annotation_templates_list_handler(
     check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
 
     // Built-in + custom templates
-    let mut templates = builtin_annotation_templates();
+    let templates = builtin_annotation_templates();
     // Future: s.custom_annotation_templates would be appended here
 
     Ok(Json(serde_json::json!({
@@ -28150,7 +28109,6 @@ async fn alerts_evaluate_handler(
     check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
 
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
-    let bus_stats = s.event_bus.stats();
     let sup_counts = s.supervisor.state_counts();
 
     // Compute metrics

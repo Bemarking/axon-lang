@@ -198,7 +198,6 @@ fn hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::ooxml_read::{read_ooxml, IngestBounds};
-    use std::io::Write as _;
 
     fn build_zip(parts: &[(&str, &[u8])]) -> Vec<u8> {
         let mut buf = Vec::new();

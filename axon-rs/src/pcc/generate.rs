@@ -2179,7 +2179,7 @@ fn collect_secrets_write_violations(
     out: &mut Vec<(String, String, String)>,
 ) {
     use axon_frontend::ir_nodes::IRFlowNode;
-    let mut push = |verb: &str, store: &str, out: &mut Vec<(String, String, String)>| {
+    let push = |verb: &str, store: &str, out: &mut Vec<(String, String, String)>| {
         if secrets_stores.contains(store) {
             out.push((flow_name.to_string(), verb.to_string(), store.to_string()));
         }

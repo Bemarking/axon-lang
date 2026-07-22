@@ -1814,18 +1814,6 @@ impl Parser {
         }
     }
 
-    fn check_comparison(&self) -> bool {
-        matches!(
-            self.current().ttype,
-            TokenType::Lt
-                | TokenType::Gt
-                | TokenType::Lte
-                | TokenType::Gte
-                | TokenType::Eq
-                | TokenType::Neq
-        )
-    }
-
     fn check_run_modifier(&self) -> bool {
         matches!(
             self.current().ttype,

@@ -11,7 +11,7 @@
 //! in the window's `exclude` set (ISO `YYYY-MM-DD` literals) is OUTSIDE the
 //! window regardless of the hour spans.
 
-use chrono::{DateTime, Datelike, Duration, TimeZone, Timelike, Utc, Weekday};
+use chrono::{DateTime, Datelike, Duration, Timelike, Utc, Weekday};
 use chrono_tz::Tz;
 
 use crate::ir_nodes::IRWindow;

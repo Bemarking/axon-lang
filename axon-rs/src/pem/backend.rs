@@ -93,11 +93,6 @@ pub trait PersistenceBackend: Send + Sync {
 
 // ── InMemoryBackend ─────────────────────────────────────────────────
 
-struct InMemoryEntry {
-    state: CognitiveState,
-    expires_at: DateTime<Utc>,
-}
-
 /// Single-process, Mutex-guarded. Rejects stale fetches so the
 /// same semantics as the Postgres impl hold in tests.
 #[derive(Debug, Default)]

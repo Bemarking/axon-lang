@@ -29,7 +29,7 @@
 //!    (defensive — adapters land in subsequent sub-fases).
 
 use axon::flow_execution_event::FlowExecutionEvent;
-use axon::wire_format::{select_adapter, WireFormatAdapter};
+use axon::wire_format::select_adapter;
 
 // ─── §1 — AxonDialectAdapter constructs cleanly ─────────────────────
 

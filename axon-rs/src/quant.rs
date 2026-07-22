@@ -22,7 +22,6 @@
 //! the input carrier has unit L2 norm `‖x‖₂ = 1` ([`QuantError::NotNormalized`])
 //! — the numeric realization the type system could not prove statically.
 
-use std::f64::consts::PI;
 
 // ── Minimal complex scalar (no external dep) ────────────────────────────────
 
@@ -480,6 +479,7 @@ impl ReferenceSimulator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::f64::consts::PI;
 
     fn approx(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-9

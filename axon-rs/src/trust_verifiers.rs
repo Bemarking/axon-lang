@@ -28,7 +28,6 @@
 
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
-use subtle::ConstantTimeEq;
 
 use crate::refinement::TrustProof;
 
@@ -314,6 +313,7 @@ pub async fn verify_oauth_code_exchange(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use subtle::ConstantTimeEq;
 
     #[test]
     fn hmac_roundtrip() {

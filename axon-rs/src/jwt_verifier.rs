@@ -134,6 +134,9 @@ impl JwtVerifierConfig {
 struct JwksEntry {
     kid: String,
     kty: String,
+    /// Wire-shape documentation (JWKS carries it); verification pins the alg
+    /// via the header check, so this entry field has no reader.
+    #[allow(dead_code)]
     alg: Option<String>,
     n: Option<String>,
     e: Option<String>,

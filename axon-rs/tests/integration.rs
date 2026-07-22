@@ -3099,7 +3099,7 @@ fn run_export_plan_flag() {
 #[test]
 fn execution_report_has_schema_header() {
     use axon::hooks::HookManager;
-    use axon::output::{ReportBuilder, ExecutionReport};
+    use axon::output::ReportBuilder;
 
     let hooks = HookManager::new();
     let rb = ReportBuilder::new("test.axon", "anthropic", "stub");
@@ -3638,7 +3638,7 @@ fn deploy_client_connection_refused() {
 #[tokio::test]
 async fn deploy_to_live_server() {
     use axon::axon_server::{build_router, ServerConfig};
-    use axon::deployer::{DeployConfig, DeployResult};
+    
     use axum::body::Body;
     use axum::http::Request;
     use http_body_util::BodyExt;
@@ -5640,7 +5640,7 @@ fn server_config_snapshot_and_apply() {
     use axon::api_keys::ApiKeyManager;
     use axon::rate_limiter::{RateLimiter, RateLimitConfig};
     use axon::request_log::{RequestLogger, RequestLogConfig};
-    use axon::server_config::{self, ConfigUpdate, RateLimitUpdate, RequestLogUpdate};
+    use axon::server_config::{self, RateLimitUpdate, RequestLogUpdate};
 
     let mut rl = RateLimiter::new(RateLimitConfig::default_config());
     let mut log = RequestLogger::new(RequestLogConfig::default_config());
@@ -5696,7 +5696,7 @@ fn server_config_no_op_when_same_values() {
 
 #[test]
 fn server_config_change_tracking_and_serialization() {
-    use axon::api_keys::ApiKeyManager;
+    
     use axon::rate_limiter::{RateLimiter, RateLimitConfig};
     use axon::request_log::{RequestLogger, RequestLogConfig};
     use axon::server_config::{self, ConfigUpdate, RateLimitUpdate, RequestLogUpdate, AuthSection};
@@ -5859,9 +5859,9 @@ fn webhooks_stats_and_serialization() {
 
 #[test]
 fn config_persistence_save_load_roundtrip() {
-    use axon::config_persistence::{self, PersistedConfig};
+    use axon::config_persistence::{self};
     use axon::server_config::{ConfigSnapshot, RateLimitSection, RequestLogSection, AuthSection};
-    use std::path::PathBuf;
+    
 
     let path = std::env::temp_dir().join(format!("axon_integ_roundtrip_{}.json", std::process::id()));
 
@@ -6680,7 +6680,7 @@ fn request_middleware_meta_serialization() {
 
 #[test]
 fn flow_inspect_full_introspection() {
-    use axon::flow_inspect::{inspect_flow, FlowInspection};
+    use axon::flow_inspect::inspect_flow;
 
     let source = r#"
 persona Researcher {
@@ -6775,7 +6775,7 @@ flow Other(x: Text) -> Text {
 
 #[test]
 fn flow_inspect_all_flows_summary() {
-    use axon::flow_inspect::{inspect_all_flows, FlowSummary};
+    use axon::flow_inspect::inspect_all_flows;
 
     let source = r#"
 anchor SafeOutput {
@@ -6829,7 +6829,7 @@ flow Beta(y: Number) -> Report {
 
 #[test]
 fn flow_graph_export_dot_and_mermaid() {
-    use axon::flow_inspect::{export_flow_graph, GraphFormat, GraphExport};
+    use axon::flow_inspect::{export_flow_graph, GraphFormat};
 
     let source = r#"
 persona Expert {
@@ -8518,7 +8518,7 @@ fn trace_annotation_tag_filter() {
     let id2 = store.record(t2);
 
     let t3 = build_trace("FlowC", "c.axon", "stub", "k3", TraceStatus::Success, 2, 200);
-    let id3 = store.record(t3);
+    let _id3 = store.record(t3);
 
     // Annotate trace 1 with "bug" tag
     store.annotate(id1, TraceAnnotation {
@@ -9540,7 +9540,7 @@ fn schedule_metrics_empty_schedules_zero_division() {
 
 #[test]
 fn trace_search_by_flow_name_and_backend() {
-    use axon::trace_store::{TraceStore, TraceStoreConfig, TraceStatus, TraceEvent, TraceAnnotation, build_trace};
+    use axon::trace_store::{TraceStore, TraceStoreConfig, TraceStatus, build_trace};
 
     let mut store = TraceStore::new(TraceStoreConfig { enabled: true, capacity: 100, max_events_per_trace: 50, max_age_secs: 0 });
 
@@ -9823,7 +9823,7 @@ fn health_components_schedules_and_audit() {
 
 #[test]
 fn daemon_metrics_per_daemon_snapshot() {
-    use axon::server_metrics::{ServerSnapshot, DaemonMetric, to_prometheus};
+    use axon::server_metrics::{ServerSnapshot, DaemonMetric};
     use std::collections::HashMap;
 
     let daemon_metrics = vec![
@@ -11698,7 +11698,7 @@ fn trace_timeline_missing_traces_and_empty() {
 fn trace_heatmap_bucketing_by_timestamp() {
     use axon::trace_store::{TraceStore, TraceStoreConfig, TraceStatus, build_trace};
     use std::collections::BTreeMap;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    
 
     let mut store = TraceStore::new(TraceStoreConfig {
         enabled: true, capacity: 100, max_events_per_trace: 50, max_age_secs: 0,
@@ -11752,7 +11752,7 @@ fn trace_heatmap_bucketing_by_timestamp() {
 #[test]
 fn trace_heatmap_latency_stats_per_bucket() {
     use axon::trace_store::{TraceStore, TraceStoreConfig, TraceStatus, build_trace};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    
 
     let mut store = TraceStore::new(TraceStoreConfig {
         enabled: true, capacity: 100, max_events_per_trace: 50, max_age_secs: 0,
@@ -12556,7 +12556,7 @@ fn cost_tracking_from_traces() {
         store.record(t);
     }
 
-    let pricing = CostPricing::default();
+    let _pricing = CostPricing::default();
 
     // Compute costs per flow
     let entries = store.recent(store.len(), None);
@@ -12590,7 +12590,7 @@ fn cost_tracking_from_traces() {
 #[test]
 fn cost_pricing_serialization_and_update() {
     use axon::axon_server::CostPricing;
-    use std::collections::HashMap;
+    
 
     let pricing = CostPricing::default();
 
@@ -12912,7 +12912,7 @@ fn dashboard_data_structure() {
 fn dashboard_subsystem_aggregation() {
     use axon::trace_store::{TraceStore, TraceStoreConfig, TraceStatus, build_trace};
     use axon::event_bus::EventBus;
-    use axon::axon_server::{CostPricing, ScheduleEntry, QueuedExecution};
+    use axon::axon_server::{ScheduleEntry, QueuedExecution};
     use std::collections::HashMap;
 
     // Traces subsystem
@@ -12991,7 +12991,7 @@ fn dashboard_empty_server_state() {
 
 #[test]
 fn api_docs_route_table_completeness() {
-    use axon::axon_server::build_router;
+    
 
     // The route table is a static function — we test it indirectly by
     // verifying the expected categories and minimum route count.
@@ -13206,7 +13206,7 @@ fn request_log_export_empty_and_combined_filters() {
 
 #[test]
 fn webhook_template_variable_substitution() {
-    use axon::webhooks::{WebhookRegistry, render_template};
+    use axon::webhooks::render_template;
 
     // Test render_template directly
     let template = r#"{"event":"{{topic}}","from":"{{source}}","hook":"{{webhook_name}}","data":{{payload}}}"#;
@@ -14076,7 +14076,7 @@ fn pipeline_summary_aggregation() {
 
 #[test]
 fn flow_validation_rules_crud() {
-    use axon::axon_server::{FlowValidationRules, ValidationResult};
+    use axon::axon_server::FlowValidationRules;
 
     // Create rules
     let rules = FlowValidationRules {
@@ -15149,7 +15149,7 @@ fn stream_emitter_publishes_to_event_bus() {
 
 #[test]
 fn stream_bridge_end_to_end_sse_consumption() {
-    use axon::axon_server::{StreamEmitter, StreamToken};
+    use axon::axon_server::StreamEmitter;
     use axon::event_bus::EventBus;
 
     let bus = EventBus::new();
@@ -15571,7 +15571,7 @@ fn server_backup_serialization() {
 
 #[test]
 fn server_backup_restore_round_trip() {
-    use axon::axon_server::{ServerBackup, CostPricing, CostBudget, FlowValidationRules, FlowQuota, ReadinessGates, EndpointRateLimit, ScheduleBackupEntry, EpistemicEnvelope};
+    use axon::axon_server::{ServerBackup, CostPricing, ReadinessGates, ScheduleBackupEntry, EpistemicEnvelope};
     use std::collections::HashMap;
 
     // Create backup
@@ -17810,7 +17810,7 @@ fn webhook_filters_multiple_webhooks() {
 
     let mut reg = WebhookRegistry::new();
     let id1 = reg.register("deploy-hook", "https://a.com", vec!["deploy".into()], None);
-    let id2 = reg.register("all-hook", "https://b.com", vec!["*".into()], None);
+    let _id2 = reg.register("all-hook", "https://b.com", vec!["*".into()], None);
     let id3 = reg.register("daemon-hook", "https://c.com", vec!["daemon.*".into()], None);
 
     // "deploy" matches hook1 and hook2
@@ -18499,7 +18499,7 @@ fn step_profile_empty_and_unclosed() {
 
 #[test]
 fn alert_escalation_fields_serde() {
-    use axon::axon_server::{AlertRule, FiredAlert};
+    use axon::axon_server::AlertRule;
 
     // Escalation fields serialize correctly
     let rule = AlertRule {
@@ -18571,7 +18571,7 @@ fn alert_escalation_window_logic() {
 
 #[test]
 fn alert_escalation_no_escalation_when_disabled() {
-    use axon::axon_server::FiredAlert;
+    
 
     // escalate_after=0 means no escalation regardless of history
     let escalate_after = 0u32;
@@ -18672,7 +18672,7 @@ fn cost_forecast_linear_regression() {
     assert!((forecast_day5 - 11.0).abs() < 1e-10);
 
     // Edge: single data point → denom=0, fallback to average
-    let single: Vec<(f64, f64)> = vec![(0.0, 4.0)];
+    let _single: Vec<(f64, f64)> = vec![(0.0, 4.0)];
     let n1 = 1.0f64;
     let denom1 = n1 * 0.0 - 0.0;
     assert!(denom1.abs() < 1e-12); // triggers flat fallback
@@ -18848,7 +18848,7 @@ fn alert_silence_expiry_logic() {
 fn alert_silence_suppression_in_evaluation() {
     use axon::axon_server::AlertSilence;
 
-    let now = 1700000300u64;
+    let _now = 1700000300u64;
 
     // Simulate silences after eviction (only active)
     let silences = vec![
@@ -18923,8 +18923,8 @@ fn backend_registry_entry_serde() {
 
 #[test]
 fn backend_resolve_key_priority() {
-    use axon::axon_server::{BackendRegistryEntry, ServerState};
-    use axon::axon_server::resolve_backend_key;
+    use axon::axon_server::BackendRegistryEntry;
+    
 
     // We can't easily construct a full ServerState in tests, so test the logic inline
     // Priority: server registry key > env var > error
@@ -19093,7 +19093,7 @@ fn resolve_backend_key_function_exported() {
 #[test]
 fn backend_key_override_none_vs_some_semantics() {
     // Test the semantics: None means "resolve from env", Some means "use this key directly"
-    use axon::backend::BackendError;
+    
 
     // Simulate the resolution logic from execute_real:
     // api_key = match api_key_override { Some(key) => key, None => get_api_key(backend) }
@@ -20043,7 +20043,7 @@ fn server_execute_full_resolves_key_and_records_metrics() {
     // Step 1: resolve key (server registry → env → error)
     let has_registry_key = false;
     let has_env_key = false; // would check std::env
-    let key: Option<String> = if has_registry_key { Some("sk-registry".into()) }
+    let _key: Option<String> = if has_registry_key { Some("sk-registry".into()) }
         else if has_env_key { Some("sk-env".into()) }
         else { None };
 
@@ -20058,7 +20058,7 @@ fn server_execute_full_resolves_key_and_records_metrics() {
 
     // Step 3: record_backend_metrics on the actual backend
     let mut total_calls = 0u64;
-    let mut total_errors = 0u64;
+    let total_errors = 0u64;
     total_calls += 1; // success on fallback
     assert_eq!(total_calls, 1);
     assert_eq!(total_errors, 0);
@@ -20128,6 +20128,8 @@ fn server_execute_full_records_metrics_on_failure() {
         total_errors += 1;
         consecutive_failures += 1;
     }
+    assert_eq!(total_calls, 8);
+    assert_eq!(total_errors, 4);
     assert_eq!(consecutive_failures, 5);
     assert!(consecutive_failures >= threshold); // circuit opens
 }
@@ -21205,7 +21207,7 @@ fn test_emcp_resource_blame_on_missing_dataspace() {
     // the MCP handler returns CT-2 (caller) blame per Findler-Felleisen.
 
     let ds_name = "nonexistent";
-    let uri = format!("axon://dataspaces/{}", ds_name);
+    let _uri = format!("axon://dataspaces/{}", ds_name);
 
     // Simulate the error response the handler would produce
     let error_response = serde_json::json!({
@@ -21451,7 +21453,7 @@ fn test_server_backup_includes_axon_stores_and_dataspaces() {
 
 #[test]
 fn test_server_backup_backward_compatible_without_stores() {
-    use axon::axon_server::{ServerBackup, EpistemicEnvelope, CostPricing, ReadinessGates};
+    use axon::axon_server::ServerBackup;
 
     // Simulate a backup from before G6 (no axon_stores/dataspaces fields)
     let old_json = serde_json::json!({
@@ -21486,7 +21488,7 @@ fn test_server_backup_backward_compatible_without_stores() {
 #[test]
 fn test_server_backup_epistemic_envelopes_preserved_on_roundtrip() {
     use axon::axon_server::{ServerBackup, EpistemicEnvelope, CostPricing, ReadinessGates,
-        AxonStoreInstance, AxonStoreEntry, DataspaceInstance};
+        AxonStoreInstance, AxonStoreEntry};
     use std::collections::HashMap;
 
     // AxonStore with a raw entry and a derived entry
@@ -24572,7 +24574,7 @@ fn test_ots_epistemic_alignment() {
     use axon::axon_server::{OtsSecret, EpistemicEnvelope};
 
     // Created secret: c=1.0, δ=raw (the secret IS the ground truth)
-    let secret = OtsSecret {
+    let _secret = OtsSecret {
         token: "ots_epi_1".into(),
         value: "secret_value".into(),
         consumed: false,
@@ -24619,7 +24621,7 @@ fn test_ots_epistemic_alignment() {
     // Token generation produces unique tokens
     let t1 = axon::axon_server::generate_ots_token("test");
     // Small delay to ensure different nanos
-    let t2 = axon::axon_server::generate_ots_token("test");
+    let _t2 = axon::axon_server::generate_ots_token("test");
     assert!(t1.starts_with("ots_test_"));
     // Tokens should be non-empty and contain hex
     assert!(t1.len() > 10);
@@ -26196,7 +26198,7 @@ fn test_cross_chain_pix_compute_axonendpoint() {
 
     // ── Stage 2: Compute — calculate scene metrics from annotations ──
     let annotations = &pix.images.get(&img_id).unwrap().annotations;
-    let avg_confidence: f64 = annotations.iter().map(|a| a.confidence).sum::<f64>() / annotations.len() as f64;
+    let _avg_confidence: f64 = annotations.iter().map(|a| a.confidence).sum::<f64>() / annotations.len() as f64;
 
     // Use compute to evaluate: total area covered by annotations
     let mut vars = HashMap::new();
@@ -26348,7 +26350,7 @@ fn test_cross_chain_dataspace_drill_corroborate_consensus() {
     consensus.vote("speed_agent".into(), "openai".into(), 0.7, "Fastest latency".into()).unwrap();
     consensus.vote("cost_agent".into(), "anthropic".into(), 0.8, "Good balance per corroboration".into()).unwrap();
 
-    let (winner, cons_agreement, cons_cert) = consensus.resolve().unwrap();
+    let (winner, _cons_agreement, cons_cert) = consensus.resolve().unwrap();
     assert_eq!(winner, "anthropic");
     assert!(cons_cert <= 0.99);
 
@@ -26643,7 +26645,7 @@ fn test_cross_chain_flow_step_reason_validate_anchor_type_lambda() {
     assert!(anchor_passed, "validate step checks anchor constraint");
 
     // anchor_breaches count
-    let anchor_checks = 1;
+    let _anchor_checks = 1;
     let anchor_breaches = if anchor_passed { 0 } else { 1 };
     assert_eq!(anchor_breaches, 0, "no breaches when constraint satisfied");
 
@@ -26680,15 +26682,15 @@ fn test_cross_chain_persona_context_memory_recall_epistemic_lattice() {
     use axon::session_store::SessionStore;
 
     // ── persona: cognitive identity definition ──
-    let persona_name = "researcher";
+    let _persona_name = "researcher";
     let persona_domain = vec!["machine_learning", "nlp"];
-    let persona_tone = "academic";
-    let persona_confidence = 0.8;
+    let _persona_tone = "academic";
+    let _persona_confidence = 0.8;
     assert_eq!(persona_domain.len(), 2);
 
     // ── context: enrichment configuration ──
-    let context_scope = "research";
-    let context_depth = "comprehensive";
+    let _context_scope = "research";
+    let _context_depth = "comprehensive";
     let context_max_tokens = 4096;
     assert!(context_max_tokens > 0);
 
@@ -27358,7 +27360,7 @@ fn test_smoke_primitive_lifecycle_store_shield_retrieve() {
 fn test_smoke_mcp_protocol_round_trip() {
     // MCP protocol smoke: verify all 3 pillars produce well-formed responses
     use axon::axon_server::{
-        EpistemicEnvelope, CorpusInstance, CorpusDocument,
+        EpistemicEnvelope,
         ShieldInstance, ShieldRule, ForgeSession, MandatePolicy, MandateRule,
     };
     use axon::axon_server::compute_evaluate;
@@ -27453,7 +27455,7 @@ fn test_sdk_contract_tool_response_shape() {
     // The TypeScript SDK expects tool call results with this shape:
     // { content: [{ type: "text", text: "..." }], isError: false,
     //   _axon: { epistemic_envelope: { certainty, derivation }, lattice_position, effect_row, blame } }
-    use axon::axon_server::EpistemicEnvelope;
+    
 
     // Simulate a tool result as the MCP handler would produce it
     let tool_result = serde_json::json!({
@@ -27716,8 +27718,7 @@ fn test_perf_baseline_compute_evaluator_throughput() {
 #[test]
 fn test_perf_baseline_primitive_construction_serialization() {
     use axon::axon_server::{
-        AxonStoreInstance, AxonStoreEntry, ShieldInstance, ShieldRule,
-        CorpusDocument, EpistemicEnvelope, ForgeSession, MandatePolicy, MandateRule,
+        AxonStoreEntry, ShieldInstance, ShieldRule, EpistemicEnvelope, ForgeSession, MandatePolicy, MandateRule,
     };
     use std::collections::HashMap;
     use std::time::Instant;
@@ -27992,7 +27993,7 @@ fn test_k5_resilient_backend_all_providers_initialized() {
 #[test]
 fn test_k5_resilient_backend_circuit_reset() {
     use axon::resilient_backend::ResilientBackend;
-    use axon::circuit_breaker::CircuitState;
+    
 
     let rb = ResilientBackend::new();
     // reset_circuit on non-existent (tenant, provider) is a no-op — no panic
@@ -28114,7 +28115,7 @@ async fn test_k5_server_config_new_fields() {
 #[test]
 fn test_k5_server_state_has_storage_and_resilient_backend() {
     use axon::axon_server::{ServerConfig, build_router_with_state};
-    use axon::circuit_breaker::CircuitState;
+    
 
     let config = ServerConfig {
         host: "127.0.0.1".into(),

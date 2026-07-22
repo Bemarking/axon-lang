@@ -2620,7 +2620,7 @@ mod tests {
     async fn run_emit_ephemeral_channel_uses_the_bus_not_the_outbox() {
         // §Fase 74.c — an `ephemeral` channel goes to the bus even when an
         // outbox is attached (the outbox is only for `persistent_axonstore`).
-        use crate::event_outbox::{EventOutbox, InMemoryEventOutbox};
+        use crate::event_outbox::InMemoryEventOutbox;
         use crate::runtime::channels::{TypedChannelHandle, TypedEventBus};
         let bus = std::sync::Arc::new(TypedEventBus::new());
         bus.register(TypedChannelHandle::new("Tick", "T")); // default persistence = ephemeral

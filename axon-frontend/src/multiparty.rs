@@ -345,7 +345,7 @@ fn project_inner(g: &GlobalType, r: &Role) -> Result<SessionType, ProjectionErro
                 let mut iter = arm_projections.into_iter();
                 let (first_label, first_proj) =
                     iter.next().expect("non-empty arms (checked above)");
-                let mut canonical = first_proj;
+                let canonical = first_proj;
                 let canonical_label = first_label.clone();
                 for (label, proj) in iter {
                     if !canonical.equiv(&proj) {

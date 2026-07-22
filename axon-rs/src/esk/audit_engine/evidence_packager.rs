@@ -35,7 +35,7 @@ use super::super::attestation::{
     generate_dossier, generate_in_toto_statement, generate_sbom,
 };
 use super::control_statements::{generate_control_statements, statements_to_value};
-use super::frameworks::{FrameworkId, all_frameworks};
+use super::frameworks::all_frameworks;
 use super::gap_analyzer::analyze_all;
 use super::risk_register::{generate_risk_register, risk_register_to_value};
 

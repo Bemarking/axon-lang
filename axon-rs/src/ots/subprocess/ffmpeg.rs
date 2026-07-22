@@ -93,6 +93,10 @@ impl Default for FfmpegPoolConfig {
 
 #[derive(Debug, Clone)]
 struct PoolEntry {
+    /// Stored for the warm-reuse read-back leg, which has NOT landed: today
+    /// `register` + TTL eviction run but nothing fetches a cached pipeline
+    /// back (named dead wire — §111 discipline, never silently deleted).
+    #[allow(dead_code)]
     pipeline: FfmpegPipeline,
     last_used: Instant,
     /// Cumulative invocation count for observability.

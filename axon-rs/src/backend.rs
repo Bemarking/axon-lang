@@ -46,7 +46,6 @@ const DEFAULT_MAX_TOKENS: u32 = 4096;
 // ── Provider specifications ─────────────────────────────────────────────────
 
 struct ProviderSpec {
-    env_var: &'static str,
     base_url: &'static str,
     default_model: &'static str,
     api_family: ApiFamily,
@@ -62,43 +61,36 @@ enum ApiFamily {
 fn provider_spec(name: &str) -> Option<ProviderSpec> {
     match name {
         "anthropic" => Some(ProviderSpec {
-            env_var: "ANTHROPIC_API_KEY",
             base_url: "https://api.anthropic.com",
             default_model: "claude-sonnet-4-20250514",
             api_family: ApiFamily::Anthropic,
         }),
         "openai" => Some(ProviderSpec {
-            env_var: "OPENAI_API_KEY",
             base_url: "https://api.openai.com",
             default_model: "gpt-4o-mini",
             api_family: ApiFamily::OpenAICompatible,
         }),
         "gemini" => Some(ProviderSpec {
-            env_var: "GEMINI_API_KEY",
             base_url: "https://generativelanguage.googleapis.com",
             default_model: "gemini-2.0-flash",
             api_family: ApiFamily::Gemini,
         }),
         "kimi" => Some(ProviderSpec {
-            env_var: "KIMI_API_KEY",
             base_url: "https://api.moonshot.ai",
             default_model: "moonshot-v1-8k",
             api_family: ApiFamily::OpenAICompatible,
         }),
         "glm" => Some(ProviderSpec {
-            env_var: "GLM_API_KEY",
             base_url: "https://open.bigmodel.cn/api/paas",
             default_model: "glm-4-flash",
             api_family: ApiFamily::OpenAICompatible,
         }),
         "openrouter" => Some(ProviderSpec {
-            env_var: "OPENROUTER_API_KEY",
             base_url: "https://openrouter.ai/api",
             default_model: "anthropic/claude-sonnet-4",
             api_family: ApiFamily::OpenAICompatible,
         }),
         "ollama" => Some(ProviderSpec {
-            env_var: "OLLAMA_API_KEY",  // Optional for local
             base_url: "http://localhost:11434",
             default_model: "llama3.2",
             api_family: ApiFamily::OpenAICompatible,

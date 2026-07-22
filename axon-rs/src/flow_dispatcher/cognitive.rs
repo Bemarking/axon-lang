@@ -1308,7 +1308,7 @@ fn emit_step_complete(
 mod tests {
     use super::*;
     use crate::cancel_token::CancellationFlag;
-    use crate::ir_nodes::*;
+    
     use crate::pem::InMemoryBackend;
     use std::sync::Arc;
     use tokio::sync::mpsc;

@@ -25,7 +25,7 @@ use axon::cancel_token::CancellationFlag;
 use axon::effects::ir::{IRHandlerClause, IRHandlerFrame, IRPerform, IRResume, Instruction};
 use axon::effects::{EffectRuntime, ExecutionResult};
 use axon::flow_dispatcher::effects_bridge::{bridge_effect_stream_yield, run_stream};
-use axon::flow_dispatcher::parallel::{run_branches_concurrently, run_par};
+use axon::flow_dispatcher::parallel::run_branches_concurrently;
 use axon::flow_dispatcher::{dispatch_node, DispatchCtx, DispatchError, NodeOutcome};
 use axon::ir_nodes::*;
 use tokio::sync::mpsc;

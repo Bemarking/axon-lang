@@ -42,7 +42,7 @@ use crate::step_deps;
 use crate::store::epistemic;
 use crate::store::filter::SqlValue;
 use crate::store::row_stream;
-use crate::store::postgres_backend::{PostgresStoreBackend, StoreError};
+use crate::store::postgres_backend::StoreError;
 use crate::store::registry::{StoreBackendKind, StoreRegistry};
 use crate::tool_registry::ToolRegistry;
 use crate::tool_validator::{self, EffectTracker};
@@ -1403,6 +1403,10 @@ async fn execute_sql_store_step_async(
 /// safe ONLY when the caller's pin map is empty (legacy Pool path)
 /// — production callers MUST use the async variant directly inside
 /// the OUTER block_on_store at `execute_server_flow`.
+// The §37.x.j source-gate (fase37xj_connection_pinning) pins this wrapper's
+// pinned_conns threading; the legacy Pool path that called it is retired, so
+// the fn is unreferenced in the lib build.
+#[allow(dead_code)]
 fn execute_sql_store_step(
     store_registry: &StoreRegistry,
     pinned_conns: &mut std::collections::HashMap<String, sqlx::pool::PoolConnection<sqlx::Postgres>>,
@@ -2870,7 +2874,7 @@ fn execute_step_with_retry(
 ) -> String {
     let mut user_prompt = original_user_prompt.to_string();
     let mut attempt: u32 = 0;
-    let mut last_response_text = String::new();
+    let mut last_response_text;
     let effective_stream = stream && !json; // No streaming in JSON mode
 
     loop {

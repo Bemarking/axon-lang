@@ -11,10 +11,9 @@ use std::path::Path;
 use serde_json::Value;
 
 use crate::ast::Program;
-use crate::esk::attestation::{generate_dossier, generate_in_toto_statement, generate_sbom};
+use crate::esk::attestation::{generate_dossier, generate_sbom};
 use crate::esk::audit_engine::{
-    FrameworkId, analyze_all, analyze_gaps, build_evidence_package, generate_risk_register,
-    risk_register_to_value,
+    FrameworkId, analyze_all, analyze_gaps, build_evidence_package,
 };
 use crate::ir_generator::IRGenerator;
 use crate::ir_nodes::IRProgram;

@@ -731,7 +731,6 @@ fn parse_selector(sel: &str) -> Selector {
     let sel = sel.trim();
     let mut out = Selector::default();
     // Split into a leading tag and #id/.class fragments.
-    let mut i = 0;
     let bytes = sel.as_bytes();
     // leading tag = run until a '.' or '#'
     let mut j = 0;
@@ -741,7 +740,7 @@ fn parse_selector(sel: &str) -> Selector {
     if j > 0 {
         out.tag = Some(sel[..j].to_ascii_lowercase());
     }
-    i = j;
+    let mut i = j;
     while i < bytes.len() {
         let marker = bytes[i];
         let start = i + 1;

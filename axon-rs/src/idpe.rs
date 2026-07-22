@@ -53,11 +53,6 @@ pub struct RasterTile {
 }
 
 impl RasterTile {
-    #[inline]
-    fn at(&self, x: usize, y: usize) -> u8 {
-        self.gray[y * self.width + x]
-    }
-
     /// Parse a bounded **PGM (P5)** or **PBM (P4)** binary raster. Bounds are
     /// checked BEFORE the pixel buffer is read, so a hostile header cannot force
     /// a giant allocation (D101.12). This is the ONLY decode the kernel does
@@ -437,6 +432,9 @@ struct GlyphSignature {
     aspect: f64,
     density: f64,
     /// mean normalised vertical hole position (0=top … 1=bottom); NaN → 0.
+    /// Computed for the §101.f enterprise-KB seam; the v1 OSS matcher is
+    /// topology-first (D101.17) and has no reader yet — named, not silent.
+    #[allow(dead_code)]
     hole_y: f64,
 }
 

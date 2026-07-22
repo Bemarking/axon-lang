@@ -17,7 +17,7 @@
 
 use axon::buffer::{BufferKind, ZeroCopyBuffer};
 use axon::legal_basis::LegalBasis;
-use axon::ots::{global_registry, Pipeline, TransformerBackend};
+use axon::ots::{global_registry, Pipeline};
 use axon::pem::{
     CognitiveState, ContinuityTokenSigner, FixedPoint, InMemoryBackend,
     MemoryEntry, PersistenceBackend,
@@ -26,7 +26,7 @@ use axon::refinement::TrustProof;
 use axon::replay_token::{
     InMemoryReplayLog, ReplayLog, ReplayTokenBuilder, SamplingParams,
 };
-use axon::stream_effect::{parse_backpressure_annotation, BackpressurePolicy};
+use axon::stream_effect::parse_backpressure_annotation;
 use axon::stream_runtime::Stream as AxonStream;
 use axon::trust_verifiers::{verify_hmac_sha256, VerifiedPayload};
 use chrono::{Duration, TimeZone, Utc};

@@ -7,7 +7,7 @@
 
 use axon::buffer::{BufferKind, ZeroCopyBuffer};
 use axon::lexer::Lexer;
-use axon::ots::{global_registry, Pipeline, TransformerBackend};
+use axon::ots::{global_registry, Pipeline};
 use axon::parser::Parser;
 use axon::type_checker::{TypeChecker, TypeError};
 
