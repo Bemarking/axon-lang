@@ -32,12 +32,17 @@ type CacheEntry = (String, Instant); // (api_key, fetched_at)
 pub struct TenantSecretsClient {
     cache: RwLock<HashMap<CacheKey, CacheEntry>>,
     /// None when AWS credentials are unavailable (open-source / local dev).
+    /// §116.c.5 — the field (and the whole AWS SDK dependency tree) only exists
+    /// under the default-on `aws-secrets` feature; without it the resolution
+    /// chain is cache → env-var, identical to a creds-less box.
+    #[cfg(feature = "aws-secrets")]
     sm_client: Option<aws_sdk_secretsmanager::Client>,
 }
 
 impl TenantSecretsClient {
     /// Creates a client with AWS credentials loaded from the environment.
     /// Falls back gracefully to `None` if credentials or region are missing.
+    #[cfg(feature = "aws-secrets")]
     pub async fn new() -> Self {
         let sm_client = Self::try_init_sm_client().await;
         if sm_client.is_none() {
@@ -48,14 +53,29 @@ impl TenantSecretsClient {
         Self { cache: RwLock::new(HashMap::new()), sm_client }
     }
 
+    /// §116.c.5 — compiled without the `aws-secrets` feature: same constructor
+    /// signature, env-var fallback only (the SM leg does not exist).
+    #[cfg(not(feature = "aws-secrets"))]
+    pub async fn new() -> Self {
+        tracing::info!(
+            "tenant_secrets: compiled without the `aws-secrets` feature — env-var fallback only"
+        );
+        Self::new_stub()
+    }
+
     /// Creates a stub client for use before async init (sync contexts, tests).
     /// Has no SM client — only env-var fallback operates.
     pub fn new_stub() -> Self {
-        Self { cache: RwLock::new(HashMap::new()), sm_client: None }
+        Self {
+            cache: RwLock::new(HashMap::new()),
+            #[cfg(feature = "aws-secrets")]
+            sm_client: None,
+        }
     }
 
     /// Replaces the SM client after async initialization completes.
     /// Called from `run_serve()` after the tokio runtime is ready.
+    #[cfg(feature = "aws-secrets")]
     pub fn set_sm_client(&mut self, client: aws_sdk_secretsmanager::Client) {
         self.sm_client = Some(client);
     }
@@ -89,48 +109,63 @@ impl TenantSecretsClient {
             return Ok(key);
         }
 
-        // 2. AWS Secrets Manager
-        if let Some(ref sm) = self.sm_client {
-            let secret_id = Self::secret_path(tenant_id, provider);
-            match sm
-                .get_secret_value()
-                .secret_id(&secret_id)
-                .send()
-                .await
-            {
-                Ok(resp) => {
-                    if let Some(value) = resp.secret_string() {
-                        let api_key = value.trim().to_string();
-                        if !api_key.is_empty() {
-                            self.store_cache(tenant_id, provider, &api_key);
-                            tracing::debug!(
-                                tenant_id, provider, secret_id,
-                                "tenant_secret_resolved_from_sm"
-                            );
-                            return Ok(api_key);
-                        }
-                    }
-                }
-                Err(e) => {
-                    // Log but do not hard-fail — fall through to env var
-                    tracing::warn!(
-                        tenant_id, provider, secret_id, error = %e,
-                        "tenant_secret_sm_lookup_failed"
-                    );
-                }
-            }
+        // 2. AWS Secrets Manager (only exists under `aws-secrets`, §116.c.5)
+        if let Some(api_key) = self.get_from_sm(tenant_id, provider).await {
+            return Ok(api_key);
         }
 
         // 3. Global env-var fallback
         crate::backend::get_api_key(provider).map_err(|e| e.message)
     }
 
+    /// The AWS SM leg of the resolution chain: fetch, cache, log. `None` on any
+    /// miss/failure (the chain falls through to the env-var fallback).
+    #[cfg(feature = "aws-secrets")]
+    async fn get_from_sm(&self, tenant_id: &str, provider: &str) -> Option<String> {
+        let sm = self.sm_client.as_ref()?;
+        let secret_id = Self::secret_path(tenant_id, provider);
+        match sm.get_secret_value().secret_id(&secret_id).send().await {
+            Ok(resp) => {
+                if let Some(value) = resp.secret_string() {
+                    let api_key = value.trim().to_string();
+                    if !api_key.is_empty() {
+                        self.store_cache(tenant_id, provider, &api_key);
+                        tracing::debug!(
+                            tenant_id, provider, secret_id,
+                            "tenant_secret_resolved_from_sm"
+                        );
+                        return Some(api_key);
+                    }
+                }
+                None
+            }
+            Err(e) => {
+                // Log but do not hard-fail — fall through to env var
+                tracing::warn!(
+                    tenant_id, provider, secret_id, error = %e,
+                    "tenant_secret_sm_lookup_failed"
+                );
+                None
+            }
+        }
+    }
+
+    /// §116.c.5 — without the feature the SM leg is a no-op: the chain is
+    /// cache → env-var, byte-identical to a creds-less deployment.
+    #[cfg(not(feature = "aws-secrets"))]
+    async fn get_from_sm(&self, _tenant_id: &str, _provider: &str) -> Option<String> {
+        None
+    }
+
     // ── Internal helpers ──────────────────────────────────────────────────────
 
+    #[cfg(feature = "aws-secrets")]
     fn secret_path(tenant_id: &str, provider: &str) -> String {
         format!("axon/tenants/{tenant_id}/{provider}_api_key")
     }
 
+    // (`test` too: the cache unit tests exercise store_cache without the SM leg.)
+    #[cfg(any(feature = "aws-secrets", test))]
     fn store_cache(&self, tenant_id: &str, provider: &str, api_key: &str) {
         if let Ok(mut cache) = self.cache.write() {
             cache.insert(
@@ -140,6 +175,7 @@ impl TenantSecretsClient {
         }
     }
 
+    #[cfg(feature = "aws-secrets")]
     async fn try_init_sm_client() -> Option<aws_sdk_secretsmanager::Client> {
         // aws_config::load_from_env() returns a config even without credentials;
         // the actual credential error surfaces on first API call. We guard here

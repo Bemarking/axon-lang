@@ -64,8 +64,14 @@ chrono = { version = "0.4", features = ["serde"] }
 # authoritative IANA resolution + DST-correct local-time math here.
 chrono-tz = "0.10"
 base64 = "0.22"
-aws-config = { version = "1", features = ["behavior-version-latest"] }
-aws-sdk-secretsmanager = "1"
+# §Fase 116.c.5 — OPTIONAL behind the default-on `aws-secrets` feature: the
+# per-tenant API-key resolution chain (`tenant_secrets.rs`, M3) can read
+# `axon/tenants/{tenant}/{provider}_api_key` from AWS Secrets Manager. Most
+# adopters never touch AWS — `--no-default-features` skips compiling the whole
+# AWS SDK tree (env-var fallback keeps working identically). Default stays ON
+# so 2.x semver behavior is unchanged.
+aws-config = { version = "1", features = ["behavior-version-latest"], optional = true }
+aws-sdk-secretsmanager = { version = "1", optional = true }
 # §λ-L-E Fase 5 — cognitive immune system needs SHA-256 + HMAC for signed traces.
 sha2 = "0.10"
 hmac = "0.12"
@@ -118,6 +124,11 @@ axon-csys = { path = "../axon-csys", version = "=0.2.0" }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "tiff"], optional = true }
 
 [features]
+# §Fase 116.c.5 — default-on so existing consumers see zero change; opt out with
+# `--no-default-features` to skip the AWS SDK tree entirely (tenant secrets then
+# resolve via env-vars only, the same graceful fallback as a creds-less box).
+default = ["aws-secrets"]
+aws-secrets = ["dep:aws-config", "dep:aws-sdk-secretsmanager"]
 # Enables the isolated image-decode sidecar binary. Off by default: adopters who
 # only ingest OOXML (§100) or feed pre-decoded rasters never pull `image`.
 idpe-sidecar = ["dep:image"]
